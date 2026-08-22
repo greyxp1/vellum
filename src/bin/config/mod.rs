@@ -1,4 +1,4 @@
-use super::cli::{Backend, Cli};
+use super::cli::Cli;
 use super::{Rgb, state};
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -85,7 +85,6 @@ fn validate_tool_defaults(tools: &ToolDefaults) -> Result<(), String> {
 pub(super) struct Settings {
     pub(super) stroke_width: f32,
     pub(super) stroke_color: Rgb,
-    pub(super) force_backend: Option<Backend>,
     pub(super) default_tool: state::Tool,
     pub(super) remember_last_tool: bool,
     pub(super) palette: Vec<Rgb>,
@@ -148,7 +147,6 @@ impl Settings {
         Ok(Self {
             stroke_width,
             stroke_color,
-            force_backend: cli.force_backend,
             default_tool,
             remember_last_tool: file.remember_last_tool.unwrap_or(true),
             palette,

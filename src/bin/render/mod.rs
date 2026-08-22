@@ -4,7 +4,6 @@ mod text;
 pub use geometry::{DrawCommand, FillRule, Geometry, LocalGeometry, StrokeStyle};
 pub use text::TextSpec;
 
-use crate::cli::Backend;
 use kurbo::Affine;
 use text::TextState;
 use wayland_client::Proxy;
@@ -105,26 +104,11 @@ pub struct WgpuState {
 }
 
 impl WgpuState {
-    pub fn new(
-        display: &WlDisplay,
-        surface: &WlSurface,
-        width: u32,
-        height: u32,
-        force_backend: Option<Backend>,
-    ) -> Self {
-        let mut instance_descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
-        instance_descriptor.backends = match force_backend {
-            Some(Backend::Vulkan) => wgpu::Backends::VULKAN,
-            Some(Backend::OpenGL) => wgpu::Backends::GL,
-            None => wgpu::Backends::all(),
-        };
-        instance_descriptor.display = Some(Box::new(
-            display
-                .backend()
-                .upgrade()
-                .expect("live Wayland display backend"),
-        ));
-        let instance = wgpu::Instance::new(instance_descriptor);
+    pub fn new(display: &WlDisplay, surface: &WlSurface, width: u32, height: u32) -> Self {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::VULKAN,
+            ..wgpu::InstanceDescriptor::new_without_display_handle()
+        });
 
         let raw_display_handle =
             wgpu::rwh::RawDisplayHandle::Wayland(wgpu::rwh::WaylandDisplayHandle::new(

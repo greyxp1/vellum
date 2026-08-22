@@ -39,7 +39,6 @@ use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::{
     KeyboardInteractivity, ZwlrLayerSurfaceV1,
 };
 
-use crate::cli::Backend;
 use crate::render::WgpuState;
 use draw::{Action, Modifiers, Point};
 
@@ -61,8 +60,6 @@ macro_rules! delegate_noop {
 
 #[derive(Default)]
 struct SetupWaylandState {
-    force_backend: Option<Backend>,
-
     compositor: Option<WlCompositor>,
     seat: Option<WlSeat>,
     shm: Option<WlShm>,
@@ -73,13 +70,6 @@ struct SetupWaylandState {
 }
 
 impl SetupWaylandState {
-    fn new(force_backend: Option<Backend>) -> Self {
-        Self {
-            force_backend,
-            ..Default::default()
-        }
-    }
-
     fn into_state(
         self,
         connection: Connection,
@@ -103,7 +93,7 @@ impl SetupWaylandState {
             Layer::Overlay,
             "vellum".into(),
             qhandle,
-            self.force_backend,
+            (),
         );
         layer_surface.set_anchor(Anchor::all());
         layer_surface.set_keyboard_interactivity(KeyboardInteractivity::None);
@@ -220,7 +210,7 @@ impl State {
         let display = connection.display();
         let _registry = display.get_registry(&setup_queue.handle(), event_queue.handle());
 
-        let mut tmp_wayland_state = SetupWaylandState::new(settings.force_backend);
+        let mut tmp_wayland_state = SetupWaylandState::default();
 
         setup_queue
             .roundtrip(&mut tmp_wayland_state)
@@ -616,12 +606,12 @@ impl Dispatch<WlCallback, ()> for State {
 }
 
 delegate_noop!(ZwlrLayerShellV1);
-impl Dispatch<ZwlrLayerSurfaceV1, Option<Backend>> for State {
+impl Dispatch<ZwlrLayerSurfaceV1, ()> for State {
     fn event(
         state: &mut Self,
         layer_surface: &ZwlrLayerSurfaceV1,
         event: <ZwlrLayerSurfaceV1 as Proxy>::Event,
-        force_backend: &Option<Backend>,
+        _data: &(),
         _conn: &Connection,
         _qhandle: &QueueHandle<Self>,
     ) {
@@ -644,7 +634,6 @@ impl Dispatch<ZwlrLayerSurfaceV1, Option<Backend>> for State {
                         &state.wayland.surface,
                         width,
                         height,
-                        *force_backend,
                     );
 
                     state.wgpu = Some(wgpu);

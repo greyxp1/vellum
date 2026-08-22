@@ -29,7 +29,6 @@
         RUST_SRC_PATH = "${pkgs.rust.packages.stable.rustPlatform.rustLibSrc}";
 
         LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [
-          pkgs.libGL
           pkgs.vulkan-loader
           pkgs.wayland
           pkgs.libxkbcommon

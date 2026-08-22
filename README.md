@@ -98,27 +98,27 @@ order.
 For a manual build:
 
 ```sh
-sudo pacman -S --needed base-devel git rust wayland libxkbcommon libglvnd vulkan-icd-loader
+sudo pacman -S --needed base-devel git rust wayland libxkbcommon vulkan-icd-loader
 ```
 
 For a PKGBUILD:
 
 ```bash
-depends=('wayland' 'libxkbcommon' 'libglvnd' 'vulkan-icd-loader')
+depends=('wayland' 'libxkbcommon' 'vulkan-icd-loader')
 makedepends=('cargo')
 ```
 
 ### Debian 13+
 
 ```sh
-sudo apt install build-essential git pkg-config rustup libwayland-dev libxkbcommon-dev libegl1 libvulkan1
+sudo apt install build-essential git pkg-config rustup libwayland-dev libxkbcommon-dev libvulkan1
 rustup default stable
 ```
 
 ### Fedora
 
 ```sh
-sudo dnf install cargo gcc git pkgconf-pkg-config wayland-devel libxkbcommon-devel libglvnd-egl vulkan-loader
+sudo dnf install cargo gcc git pkgconf-pkg-config wayland-devel libxkbcommon-devel vulkan-loader
 ```
 
 Then build:

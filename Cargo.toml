@@ -23,13 +23,12 @@ wayland-protocols = { version = "0.32.9", features = [
     "staging",
     "unstable",
 ] }
-# Enables the raw Wayland handles required to create the WGPU surface.
-wayland-backend = { version = "0.3.11", features = ["client_system", "rwh_06"] }
+# Provides the libwayland object pointers required to create the Vulkan surface.
+wayland-backend = { version = "0.3.11", features = ["client_system"] }
 
 wgpu = { version = "29.0.0", default-features = false, features = [
     "std",
     "parking_lot",
-    "gles",
     "vulkan",
     "wgsl",
 ] }
