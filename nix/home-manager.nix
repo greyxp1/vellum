@@ -8,7 +8,7 @@
   tomlFormat = pkgs.formats.toml {};
 in {
   options.services.vellum = {
-    enable = lib.mkEnableOption "Vellum screen annotation overlay";
+    enable = lib.mkEnableOption "vellum, a live screen annotation overlay for Wayland";
     package = lib.mkOption {
       type = lib.types.package;
       default = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
@@ -18,13 +18,23 @@ in {
       type = tomlFormat.type;
       default = {};
       example = {
-        default_tool = "pen";
-        remember_last_tool = true;
-        default_fill_shapes = false;
-        feedback_duration_ms = 500;
-        tools.pen.opacity = 1.0;
+        default_tool = "arrow";
+        remember_last_tool = false;
+        default_fill_shapes = true;
+        feedback_duration_ms = 250;
+        tools.pen.opacity = 0.75;
+        palette = [
+          "#FF6B6B"
+          "#FFD93D"
+          "#6BCB77"
+          "#4D96FF"
+          "#845EC2"
+        ];
       };
-      description = "Preferences written to vellum/config.toml.";
+      description = ''
+        Configuration options for vellum.
+        See available options at <https://github.com/greyxp1/vellum/blob/master/docs/configuration.md>.
+      '';
     };
   };
 

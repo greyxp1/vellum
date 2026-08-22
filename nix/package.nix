@@ -47,7 +47,7 @@ rustPlatform.buildRustPackage {
     installManPage "$manDir"/*.1
 
     wrapProgram $out/bin/vellum \
-      --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath [vulkan-loader]}
+      --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath [vulkan-loader wayland]}
   '';
 
   doInstallCheck = true;
