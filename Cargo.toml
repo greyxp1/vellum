@@ -5,7 +5,7 @@ authors = ["greyxp1 <greyxp999@gmail.com>"]
 edition = "2024"
 description = "Live screen annotation overlay for Wayland"
 repository = "https://github.com/greyxp1/vellum"
-license = "MIT"
+license = "MIT AND ISC"
 keywords = ["wayland", "annotation"]
 
 [dependencies]
