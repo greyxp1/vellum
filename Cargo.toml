@@ -1,6 +1,6 @@
 [package]
 name = "vellum"
-version = "0.6.0"
+version = "0.7.0"
 authors = ["greyxp1 <greyxp999@gmail.com>"]
 edition = "2024"
 description = "Live screen annotation overlay for Wayland"
