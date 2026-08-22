@@ -32,6 +32,8 @@ pub(crate) enum Command {
     Clear,
     /// Clear annotations and deactivate drawing mode
     ClearAndDeactivate,
+    /// Report whether drawing mode is active
+    IsActive,
     /// Stop Vellum
     Exit,
 }

@@ -10,6 +10,7 @@ impl Command {
             Self::Deactivate => b"deactivate",
             Self::Clear => b"clear",
             Self::ClearAndDeactivate => b"clear_and_deactivate",
+            Self::IsActive => b"is_active",
             Self::Exit => b"exit",
         }
     }
@@ -21,6 +22,7 @@ impl Command {
             b"deactivate" => Ok(Self::Deactivate),
             b"clear" => Ok(Self::Clear),
             b"clear_and_deactivate" => Ok(Self::ClearAndDeactivate),
+            b"is_active" => Ok(Self::IsActive),
             b"exit" => Ok(Self::Exit),
             _ => Err("invalid command"),
         }

@@ -261,6 +261,10 @@ impl State {
         self.set_input_active(!self.active);
     }
 
+    pub fn is_active(&self) -> bool {
+        self.active
+    }
+
     pub fn set_input_active(&mut self, active: bool) {
         if active == self.active {
             return;

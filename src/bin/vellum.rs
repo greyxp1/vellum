@@ -1,7 +1,8 @@
 use std::os::linux::net::SocketAddrExt;
 use std::os::unix::net::SocketAddr;
 use std::os::unix::net::UnixDatagram;
-use std::time::Instant;
+use std::process::ExitCode;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use clap::Parser;
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
@@ -20,21 +21,34 @@ use protocol::CONTROL_SOCKET;
 const MAX_SOCKET_MESSAGE: usize = 4096;
 pub(crate) type Rgb = [f32; 3];
 
-fn main() {
-    if let Err(error) = run() {
-        eprintln!("vellum: {error}");
-        std::process::exit(2);
+fn main() -> ExitCode {
+    match run() {
+        Ok(exit_code) => exit_code,
+        Err(error) => {
+            eprintln!("vellum: {error}");
+            ExitCode::from(2)
+        }
     }
 }
 
-fn run() -> Result<(), String> {
+fn run() -> Result<ExitCode, String> {
     let arguments = Cli::parse();
     if let Some(subcommand) = &arguments.command {
-        return send_command(subcommand);
+        if matches!(subcommand, Command::IsActive) {
+            let active = query_active()?;
+            println!("{active}");
+            return Ok(if active {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::from(1)
+            });
+        }
+        send_command(subcommand)?;
+        return Ok(ExitCode::SUCCESS);
     }
     let settings = Settings::load(arguments)?;
     run_overlay(settings);
-    Ok(())
+    Ok(ExitCode::SUCCESS)
 }
 
 fn send_command(command: &Command) -> Result<(), String> {
@@ -48,6 +62,52 @@ fn send_command(command: &Command) -> Result<(), String> {
         .send(command.serialize())
         .map_err(|error| format!("could not send command: {error}"))?;
     Ok(())
+}
+
+fn query_active() -> Result<bool, String> {
+    let socket_addr =
+        SocketAddr::from_abstract_name(CONTROL_SOCKET).map_err(|error| error.to_string())?;
+    let reply_name = format!(
+        "vellum-query-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|error| error.to_string())?
+            .as_nanos()
+    );
+    let reply_addr =
+        SocketAddr::from_abstract_name(reply_name).map_err(|error| error.to_string())?;
+    let socket = UnixDatagram::bind_addr(&reply_addr).map_err(|error| error.to_string())?;
+    if let Err(error) = socket.connect_addr(&socket_addr) {
+        if error.kind() == std::io::ErrorKind::ConnectionRefused {
+            return Ok(false);
+        }
+        return Err(format!("could not connect to the overlay: {error}"));
+    }
+    socket
+        .set_read_timeout(Some(Duration::from_secs(1)))
+        .map_err(|error| format!("could not configure control socket: {error}"))?;
+    if let Err(error) = socket.send(Command::IsActive.serialize()) {
+        if error.kind() == std::io::ErrorKind::ConnectionRefused {
+            return Ok(false);
+        }
+        return Err(format!("could not send command: {error}"));
+    }
+
+    let mut response = [0; 5];
+    let size = match socket.recv(&mut response) {
+        Ok(size) => size,
+        Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => {
+            return Ok(false);
+        }
+        Err(error) => return Err(format!("could not receive overlay status: {error}")),
+    };
+    let active = match &response[..size] {
+        b"true" => true,
+        b"false" => false,
+        _ => return Err("invalid overlay status".into()),
+    };
+    Ok(active)
 }
 
 fn run_overlay(settings: Settings) {
@@ -133,8 +193,8 @@ fn run_overlay(settings: Settings) {
         if socket_ready {
             let mut message = [0; MAX_SOCKET_MESSAGE + 1];
             loop {
-                let size = match socket.recv(&mut message) {
-                    Ok(size) => size,
+                let (size, sender) = match socket.recv_from(&mut message) {
+                    Ok(message) => message,
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
                     Err(error) => {
                         eprintln!("vellum: socket read failed: {error}");
@@ -160,6 +220,12 @@ fn run_overlay(settings: Settings) {
                     Command::ClearAndDeactivate => {
                         state.clear();
                         state.set_input_active(false);
+                    }
+                    Command::IsActive => {
+                        let response: &[u8] = if state.is_active() { b"true" } else { b"false" };
+                        if let Err(error) = socket.send_to_addr(response, &sender) {
+                            eprintln!("vellum: could not send status: {error}");
+                        }
                     }
                     Command::Exit => break 'running,
                 }
