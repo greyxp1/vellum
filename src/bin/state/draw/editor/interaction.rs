@@ -286,9 +286,10 @@ impl Editor {
             return self.tool_cursor(effective_tool);
         }
         match &self.interaction {
-            Some(Interaction::Drawing { tool, .. })
-                if [Tool::Triangle, Tool::Rectangle, Tool::Ellipse].contains(tool) =>
-            {
+            Some(Interaction::Drawing {
+                tool: Tool::Triangle | Tool::Rectangle | Tool::Ellipse,
+                ..
+            }) => {
                 return Cursor::Shape(selection::CursorHint::Crosshair);
             }
             Some(
