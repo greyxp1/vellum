@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
-use clap::CommandFactory;
-use clap_complete::Shell;
+use clap::{CommandFactory, ValueEnum};
+use clap_complete::aot::{Shell, generate_to};
 use clap_complete_nushell::Nushell;
 
 #[path = "src/bin/cli/mod.rs"]
@@ -12,33 +12,22 @@ fn main() -> std::io::Result<()> {
     println!("cargo:rerun-if-changed=src/bin/cli/mod.rs");
 
     let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").ok_or(std::io::ErrorKind::NotFound)?);
+    let man_dir = out_dir.join("man");
+    let completions_dir = out_dir.join("completions");
 
-    {
-        let output = out_dir.join("man");
+    for output in [&man_dir, &completions_dir] {
         if output.exists() {
-            std::fs::remove_dir_all(&output)?;
+            std::fs::remove_dir_all(output)?;
         }
-        std::fs::create_dir_all(&output)?;
-        clap_mangen::generate_to(cli::Cli::command(), output)?;
+        std::fs::create_dir_all(output)?;
     }
+    clap_mangen::generate_to(cli::Cli::command(), man_dir)?;
 
-    {
-        let output = out_dir.join("completions");
-        if output.exists() {
-            std::fs::remove_dir_all(&output)?;
-        }
-        std::fs::create_dir_all(&output)?;
-        for shell in [
-            Shell::Bash,
-            Shell::Elvish,
-            Shell::Fish,
-            Shell::PowerShell,
-            Shell::Zsh,
-        ] {
-            clap_complete::generate_to(shell, &mut cli::Cli::command(), "vellum", &output)?;
-        }
-        clap_complete::generate_to(Nushell, &mut cli::Cli::command(), "vellum", &output)?;
+    let mut command = cli::Cli::command();
+    for &shell in Shell::value_variants() {
+        generate_to(shell, &mut command, "vellum", &completions_dir)?;
     }
+    generate_to(Nushell, &mut command, "vellum", completions_dir)?;
 
     Ok(())
 }

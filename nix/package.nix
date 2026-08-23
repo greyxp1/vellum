@@ -43,8 +43,10 @@ rustPlatform.buildRustPackage {
   ];
 
   postInstall = ''
-    manDir=$(find target -type d -path '*/build/vellum-*/out/man' -print -quit)
-    installManPage "$manDir"/*.1
+    outputDir=$(find target -type d -path '*/build/vellum-*/out' -print -quit)
+    installManPage "$outputDir"/man/*.1
+    installShellCompletion "$outputDir"/completions/vellum.{bash,fish,nu} \
+      --zsh "$outputDir"/completions/_vellum
 
     wrapProgram $out/bin/vellum \
       --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath [vulkan-loader wayland]}
