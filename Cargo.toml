@@ -46,4 +46,6 @@ perfect_freehand = "0.1.1"
 
 [build-dependencies]
 clap = { version = "4.6.6", features = ["derive"] }
+clap_complete = "4.6.9"
+clap_complete_nushell = "4.6.2"
 clap_mangen = "0.3.0"
