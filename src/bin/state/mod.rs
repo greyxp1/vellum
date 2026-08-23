@@ -255,6 +255,10 @@ impl State {
         self.active
     }
 
+    pub fn is_text_editing(&self) -> bool {
+        self.draw.is_editing_text()
+    }
+
     pub fn set_input_active(&mut self, active: bool) {
         if active == self.active {
             return;

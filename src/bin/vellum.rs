@@ -34,17 +34,20 @@ fn main() -> ExitCode {
 fn run() -> Result<ExitCode, String> {
     let arguments = Cli::parse();
     if let Some(subcommand) = &arguments.command {
-        if matches!(subcommand, Command::IsActive) {
-            let active = query_active()?;
-            println!("{active}");
-            return Ok(if active {
-                ExitCode::SUCCESS
-            } else {
-                ExitCode::from(1)
-            });
-        }
-        send_command(subcommand)?;
-        return Ok(ExitCode::SUCCESS);
+        let truthy_value = match subcommand {
+            Command::IsActive => query_active()?,
+            Command::IsTextEditing => query_text_editing()?,
+            _ => {
+                send_command(subcommand)?;
+                return Ok(ExitCode::SUCCESS);
+            }
+        };
+        println!("{truthy_value}");
+        return Ok(if truthy_value {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::from(1)
+        });
     }
     let settings = Settings::load(arguments)?;
     run_overlay(settings);
@@ -65,6 +68,14 @@ fn send_command(command: &Command) -> Result<(), String> {
 }
 
 fn query_active() -> Result<bool, String> {
+    query(Command::IsActive.serialize())
+}
+
+fn query_text_editing() -> Result<bool, String> {
+    query(Command::IsTextEditing.serialize())
+}
+
+fn query(request: &[u8]) -> Result<bool, String> {
     let socket_addr =
         SocketAddr::from_abstract_name(CONTROL_SOCKET).map_err(|error| error.to_string())?;
     let reply_name = format!(
@@ -87,7 +98,7 @@ fn query_active() -> Result<bool, String> {
     socket
         .set_read_timeout(Some(Duration::from_secs(1)))
         .map_err(|error| format!("could not configure control socket: {error}"))?;
-    if let Err(error) = socket.send(Command::IsActive.serialize()) {
+    if let Err(error) = socket.send(request) {
         if error.kind() == std::io::ErrorKind::ConnectionRefused {
             return Ok(false);
         }
@@ -223,6 +234,16 @@ fn run_overlay(settings: Settings) {
                     }
                     Command::IsActive => {
                         let response: &[u8] = if state.is_active() { b"true" } else { b"false" };
+                        if let Err(error) = socket.send_to_addr(response, &sender) {
+                            eprintln!("vellum: could not send status: {error}");
+                        }
+                    }
+                    Command::IsTextEditing => {
+                        let response: &[u8] = if state.is_text_editing() {
+                            b"true"
+                        } else {
+                            b"false"
+                        };
                         if let Err(error) = socket.send_to_addr(response, &sender) {
                             eprintln!("vellum: could not send status: {error}");
                         }

@@ -30,6 +30,8 @@ pub(crate) enum Command {
     ClearAndDeactivate,
     /// Report whether drawing mode is active
     IsActive,
+    /// Report whether you are currently in a text edit
+    IsTextEditing,
     /// Stop Vellum
     Exit,
 }
