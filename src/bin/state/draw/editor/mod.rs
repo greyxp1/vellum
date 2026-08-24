@@ -260,7 +260,7 @@ impl Editor {
                     effect.damage = Damage::Preview;
                 }
             }
-            _ => {}
+            Action::Redo | Action::Undo => (),
         }
         effect.damage = effect.damage.max(Damage::from_preview(closed_picker));
         effect
