@@ -72,6 +72,14 @@ impl TextEdit {
         true
     }
 
+    pub(super) fn delete_to_end(&mut self) -> bool {
+        if self.cursor == self.content.len() {
+            return false;
+        }
+        self.content.drain(self.cursor..);
+        true
+    }
+
     pub(super) fn move_cursor(&mut self, movement: CursorMove) -> bool {
         let cursor = match movement {
             CursorMove::Left => previous_boundary(&self.content, self.cursor),

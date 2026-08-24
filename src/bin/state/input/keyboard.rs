@@ -14,6 +14,7 @@ const UNDO_KEY: &str = "z";
 const REDO_KEY: &str = "y";
 const TOGGLE_FILL_KEY: &str = "f";
 const DELETE_TO_START_KEY: &str = "u";
+const DELETE_TO_END_KEY: &str = "k";
 
 enum LogicalKey {
     Character(String),
@@ -53,6 +54,8 @@ fn resolve_keybinding(chord: &KeyChord, editing_text: bool) -> Option<Action> {
             Character(text) if chord.modifiers.ctrl => {
                 if text.eq_ignore_ascii_case(DELETE_TO_START_KEY) {
                     Some(Action::DeleteToStart)
+                } else if text.eq_ignore_ascii_case(DELETE_TO_END_KEY) {
+                    Some(Action::DeleteToEnd)
                 } else {
                     None
                 }
