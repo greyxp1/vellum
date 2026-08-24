@@ -352,10 +352,11 @@ impl Dispatch<WlPointer, (), State> for PointerState {
                     state.pointer.left_press_pos = None;
                 }
                 if right_released {
-                    let latch_picker = short_click(
-                        state.pointer.right_press_time.take(),
-                        sequence.right_button_time,
-                    );
+                    let latch_picker = !state.is_toggle_radial_disabled()
+                        && short_click(
+                            state.pointer.right_press_time.take(),
+                            sequence.right_button_time,
+                        );
                     state.pointer_up(pos, modifiers, latch_picker);
                 }
                 if middle_released {
@@ -363,7 +364,7 @@ impl Dispatch<WlPointer, (), State> for PointerState {
                     let clicked = state.pointer.middle_press.take().is_some_and(|(time, _)| {
                         short_click(Some(time), sequence.middle_button_time)
                     });
-                    if dragging {
+                    if dragging || state.is_toggle_eraser_disabled() {
                         state.pointer_up(pos, modifiers, false);
                     } else if clicked {
                         state.apply_action(Action::ToggleEraser);

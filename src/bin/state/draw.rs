@@ -87,6 +87,8 @@ impl DrawState {
                 settings.stroke_width,
                 settings.stroke_color,
                 settings.default_tool,
+                settings.disable_toggle_eraser,
+                settings.disable_toggle_radial,
                 settings.remember_last_tool,
                 settings.default_fill_shapes,
                 &settings.tool_defaults,
@@ -123,6 +125,14 @@ impl DrawState {
 
     pub fn is_editing_text(&self) -> bool {
         self.editor.is_editing_text()
+    }
+
+    pub fn is_toggle_eraser_disabled(&self) -> bool {
+        self.editor.is_toggle_eraser_disabled()
+    }
+
+    pub fn is_toggle_radial_disabled(&self) -> bool {
+        self.editor.is_toggle_radial_disabled()
     }
 
     pub fn is_drawing_pen(&self) -> bool {

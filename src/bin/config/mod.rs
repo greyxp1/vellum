@@ -21,6 +21,8 @@ struct FileConfig {
     feedback_duration_ms: Option<u64>,
     clear_on_escape: Option<bool>,
     default_fill_shapes: Option<bool>,
+    disable_toggle_eraser: Option<bool>,
+    disable_toggle_radial: Option<bool>,
     #[serde(default)]
     tools: ToolDefaults,
 }
@@ -92,6 +94,8 @@ pub(super) struct Settings {
     pub(super) clear_on_escape: bool,
     pub(super) default_fill_shapes: bool,
     pub(super) tool_defaults: ToolDefaults,
+    pub(super) disable_toggle_eraser: bool,
+    pub(super) disable_toggle_radial: bool,
 }
 
 impl Settings {
@@ -142,6 +146,9 @@ impl Settings {
             return Err("feedback_duration_ms must not exceed 60000".into());
         }
 
+        let disable_toggle_eraser = file.disable_toggle_eraser.unwrap_or(false);
+        let disable_toggle_radial = file.disable_toggle_radial.unwrap_or(false);
+
         validate_tool_defaults(&file.tools)?;
 
         Ok(Self {
@@ -154,6 +161,8 @@ impl Settings {
             clear_on_escape: file.clear_on_escape.unwrap_or(false),
             default_fill_shapes: file.default_fill_shapes.unwrap_or(false),
             tool_defaults: file.tools,
+            disable_toggle_eraser,
+            disable_toggle_radial,
         })
     }
 }
