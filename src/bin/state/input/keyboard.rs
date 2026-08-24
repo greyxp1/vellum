@@ -38,6 +38,7 @@ fn resolve_keybinding(chord: &KeyChord, editing_text: bool) -> Option<Action> {
     if editing_text {
         return match &chord.key {
             Escape => Some(Action::Cancel),
+            Delete if chord.modifiers.ctrl => Some(Action::DeleteWord),
             Delete => Some(Action::Delete),
             Backspace if chord.modifiers.ctrl => Some(Action::BackspaceWord),
             Backspace => Some(Action::Backspace),
