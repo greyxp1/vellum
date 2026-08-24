@@ -23,6 +23,7 @@ pub(crate) enum Action {
     ToggleFill,
     Delete,
     DeleteWord,
+    DeleteToStart,
     Clear,
     Cancel,
     CommitText,
@@ -227,6 +228,11 @@ impl Editor {
             Action::DeleteWord => {
                 if let Some(edit) = self.text_edit_mut() {
                     effect.damage = Damage::from_preview(edit.delete_word());
+                }
+            }
+            Action::DeleteToStart => {
+                if let Some(edit) = self.text_edit_mut() {
+                    effect.damage = Damage::from_preview(edit.delete_to_start());
                 }
             }
             Action::Clear => effect.damage = self.clear(),

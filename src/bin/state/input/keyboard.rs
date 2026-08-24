@@ -13,6 +13,7 @@ const SELECT_ALL_KEY: &str = "a";
 const UNDO_KEY: &str = "z";
 const REDO_KEY: &str = "y";
 const TOGGLE_FILL_KEY: &str = "f";
+const DELETE_TO_START_KEY: &str = "u";
 
 enum LogicalKey {
     Character(String),
@@ -49,7 +50,14 @@ fn resolve_keybinding(chord: &KeyChord, editing_text: bool) -> Option<Action> {
             ArrowRight => Some(Action::MoveCursor(CursorMove::Right)),
             Home => Some(Action::MoveCursor(CursorMove::Home)),
             End => Some(Action::MoveCursor(CursorMove::End)),
-            Character(text) if !chord.modifiers.ctrl && !text.chars().any(char::is_control) => {
+            Character(text) if chord.modifiers.ctrl => {
+                if text.eq_ignore_ascii_case(DELETE_TO_START_KEY) {
+                    Some(Action::DeleteToStart)
+                } else {
+                    None
+                }
+            }
+            Character(text) if !text.chars().any(char::is_control) => {
                 Some(Action::InsertText(text.clone()))
             }
             _ => None,
