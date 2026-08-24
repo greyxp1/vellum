@@ -292,6 +292,15 @@ impl Editor {
             }) => {
                 return Cursor::Shape(selection::CursorHint::Crosshair);
             }
+            Some(Interaction::Resizing {
+                original:
+                    ElementKind::Triangle { .. }
+                    | ElementKind::Rectangle { .. }
+                    | ElementKind::Ellipse { .. },
+                ..
+            }) => {
+                return Cursor::Shape(selection::CursorHint::Crosshair);
+            }
             Some(
                 Interaction::Freehand(_)
                 | Interaction::Drawing { .. }
