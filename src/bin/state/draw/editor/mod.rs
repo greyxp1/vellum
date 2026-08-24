@@ -86,6 +86,7 @@ pub struct Editor {
 }
 
 impl Editor {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         width: f32,
         rgb: crate::Rgb,
