@@ -73,6 +73,23 @@ Mod+A { spawn "vellum" "toggle"; }
 | `Ctrl` + scroll | Change opacity |
 | `Shift` + scroll | Change roundness |
 
+### Text editing
+
+|Input|Action|
+|-|-|
+|<kbd>Left</kbd> / <kbd>Ctrl+B</kbd>|Move cursor to the left|
+|<kbd>Right</kbd> / <kbd>Ctrl+F</kbd>|Move cursor to the right|
+|<kbd>Ctrl+Left</kbd> / <kbd>Alt+B</kbd>|Move cursor to the previous word|
+|<kbd>Ctrl+Right</kbd> / <kbd>Alt+F</kbd>|Move cursor to the next word|
+|<kbd>Home</kbd> / <kbd>Ctrl+A</kbd>|Move cursor to start|
+|<kbd>End</kbd> / <kbd>Ctrl+E</kbd>|Move cursor to end|
+|<kbd>Backspace</kbd> / <kbd>Ctrl+H</kbd>|Delete previous character|
+|<kbd>Ctrl+Backspace</kbd> / <kbd>Ctrl+W</kbd>|Delete previous word|
+|<kbd>Delete</kbd> / <kbd>Ctrl+D</kbd>|Delete next character|
+|<kbd>Ctrl+Delete</kbd> / <kbd>Alt+D</kbd>|Delete next word|
+|<kbd>Ctrl+U</kbd>|Delete to start|
+|<kbd>Ctrl+K</kbd>|Delete to end|
+
 Drag selection handles to reshape supported elements.
 
 Run `vellum --help` or `man vellum` for startup options and commands.
