@@ -1,6 +1,6 @@
 use kurbo::{BezPath, ParamCurveNearest, Shape};
 
-use super::scene::{Point, Style};
+use super::scene::{Point, Style, pixel_aligned_point, pixel_aligned_points};
 use super::{CIRCLE_KAPPA, STABILIZER_FOLLOW, stabilizer_delay};
 use crate::render::{FillRule, Geometry};
 
@@ -22,6 +22,7 @@ pub(super) struct LiveStroke {
     sample_anchor: Point,
     sample_pending: bool,
     stabilized_point: Point,
+    alignment_offset: Point,
     direction_locked: bool,
     style: Style,
     cache_anchor: Option<CacheAnchor>,
@@ -30,11 +31,13 @@ pub(super) struct LiveStroke {
 
 impl LiveStroke {
     pub fn new(point: Point, style: Style) -> Self {
+        let aligned = pixel_aligned_point(point, style.width);
         Self {
-            points: vec![point],
-            sample_anchor: point,
+            points: vec![aligned],
+            sample_anchor: aligned,
             sample_pending: false,
-            stabilized_point: point,
+            stabilized_point: aligned,
+            alignment_offset: aligned - point,
             direction_locked: false,
             style,
             cache_anchor: None,
@@ -43,6 +46,7 @@ impl LiveStroke {
     }
 
     pub fn push(&mut self, point: Point, snap: bool) -> bool {
+        let point = point + self.alignment_offset;
         if !self.direction_locked {
             if !self.direction_is_ready(point) {
                 return false;
@@ -84,6 +88,16 @@ impl LiveStroke {
         if self.style == style {
             return;
         }
+        if self.style.width != style.width {
+            let raw_start = self.points[0] - self.alignment_offset;
+            let offset = pixel_aligned_point(raw_start, style.width) - self.points[0];
+            self.points
+                .iter_mut()
+                .for_each(|point| *point = point.translated(offset));
+            self.sample_anchor = self.sample_anchor.translated(offset);
+            self.stabilized_point = self.stabilized_point.translated(offset);
+            self.alignment_offset = self.alignment_offset + offset;
+        }
         self.style = style;
         self.cache_anchor = None;
         self.cached.clear();
@@ -91,6 +105,7 @@ impl LiveStroke {
     }
 
     pub fn finish(mut self, point: Point, snap: bool) -> (Vec<Point>, Style, Geometry) {
+        let point = point + self.alignment_offset;
         if self.direction_locked {
             push(
                 &mut self.points,
@@ -269,6 +284,8 @@ pub(super) fn hit_test(points: &[Point], style: Style, point: Point, slop: f32) 
 }
 
 fn stroke_path(points: &[Point], style: Style, complete: bool) -> Option<kurbo::BezPath> {
+    let points = pixel_aligned_points(points, style.width);
+    let points = points.as_ref();
     let distinct = points
         .windows(2)
         .any(|pair| pair[0] == pair[1])

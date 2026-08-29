@@ -46,7 +46,9 @@ pub(crate) struct ToolCursor {
     pub color: [f32; 4],
 }
 
-pub(crate) const MIN_TOOL_SIZE: f32 = 2.0;
+pub(crate) const MIN_STROKE_WIDTH: f32 = 1.0;
+pub(crate) const MIN_ERASER_WIDTH: f32 = 2.0;
+pub(crate) const MIN_FONT_SIZE: f32 = 2.0;
 pub(crate) const MAX_STROKE_WIDTH: f32 = 100.0;
 pub(crate) const MAX_FONT_SIZE: f32 = 200.0;
 pub(crate) const STABILIZER_FOLLOW: f32 = 0.35;
@@ -57,7 +59,7 @@ pub(crate) fn stabilizer_delay(width: f32) -> f32 {
 }
 
 pub(crate) fn eraser_radius(width: f32) -> f32 {
-    width.max(MIN_TOOL_SIZE) * 0.5
+    width.max(MIN_ERASER_WIDTH) * 0.5
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -423,8 +425,12 @@ fn tool_cursor_geometry(point: Point, cursor: ToolCursor) -> Geometry {
         Tool::Pen => cursor.width * 0.5,
         Tool::Eraser => eraser_radius(cursor.width),
         _ => unreachable!("only pen and eraser have tool cursors"),
-    })
-    .max(1.0);
+    });
+    let point = if cursor.tool == Tool::Pen {
+        scene::pixel_aligned_point(point, cursor.width)
+    } else {
+        point
+    };
     let center = kurbo::Point::new(f64::from(point.x), f64::from(point.y));
     if cursor.tool == Tool::Eraser {
         const OUTLINE_WIDTH: f64 = 0.75;

@@ -1,6 +1,8 @@
 use super::super::scene::{ElementKind, Style, default_roundness};
 use super::super::tool::Tool;
-use super::super::{MAX_FONT_SIZE, MAX_STROKE_WIDTH, MIN_TOOL_SIZE};
+use super::super::{
+    MAX_FONT_SIZE, MAX_STROKE_WIDTH, MIN_ERASER_WIDTH, MIN_FONT_SIZE, MIN_STROKE_WIDTH,
+};
 use super::{Damage, Editor, HistoryEntry, Interaction};
 
 const MIN_OPACITY: f32 = 0.05;
@@ -158,7 +160,7 @@ impl Editor {
                 default_text_size,
                 steps,
                 1.0,
-                MIN_TOOL_SIZE,
+                MIN_FONT_SIZE,
                 MAX_FONT_SIZE,
             );
             let label = text_size_label(font_size, default_text_size);
@@ -178,7 +180,7 @@ impl Editor {
                             default_text_size,
                             steps,
                             1.0,
-                            MIN_TOOL_SIZE,
+                            MIN_FONT_SIZE,
                             MAX_FONT_SIZE,
                         );
                         text_size_label(*font_size, default_text_size)
@@ -189,7 +191,7 @@ impl Editor {
                             default_width,
                             steps,
                             1.0,
-                            MIN_TOOL_SIZE,
+                            MIN_STROKE_WIDTH,
                             MAX_STROKE_WIDTH,
                         );
                         stroke_size_label(style.width, default_width)
@@ -206,7 +208,7 @@ impl Editor {
                 default_text_size,
                 steps,
                 1.0,
-                MIN_TOOL_SIZE,
+                MIN_FONT_SIZE,
                 MAX_FONT_SIZE,
             );
             let label = text_size_label(size, default_text_size);
@@ -223,12 +225,17 @@ impl Editor {
             let properties = self
                 .properties_mut(tool)
                 .expect("tools with a default size have adjustable properties");
+            let minimum = if tool == Tool::Eraser {
+                MIN_ERASER_WIDTH
+            } else {
+                MIN_STROKE_WIDTH
+            };
             let width = stepped_size(
                 properties.size,
                 default,
                 steps,
                 1.0,
-                MIN_TOOL_SIZE,
+                minimum,
                 MAX_STROKE_WIDTH,
             );
             let label = stroke_size_label(width, default);
