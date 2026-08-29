@@ -178,7 +178,7 @@ pub struct State {
     active: bool,
     clear_on_escape: bool,
     frame_pending: bool,
-    pending_pen_motion: Option<(Point, Modifiers)>,
+    pending_pen_motion: Option<Point>,
 
     wayland: WaylandState,
     draw: draw::DrawState,
@@ -339,6 +339,13 @@ impl State {
         self.keyboard.modifiers()
     }
 
+    fn modifiers_changed(&mut self) {
+        let modifiers = self.modifiers();
+        if self.draw.modifiers_changed(modifiers) {
+            self.request_render();
+        }
+    }
+
     fn cancel_pointer_gesture(&mut self) {
         let interaction_active = self.pointer.cancel_gesture();
         self.pending_pen_motion = None;
@@ -383,7 +390,7 @@ impl State {
         // The first point is consumed immediately by request_render; while that
         // presentation is pending, newer motion replaces the unrendered point.
         if self.draw.is_drawing_pen() {
-            self.pending_pen_motion = Some((point, modifiers));
+            self.pending_pen_motion = Some(point);
             self.request_render();
             return;
         }
@@ -492,7 +499,8 @@ impl State {
     }
 
     fn flush_pen_motion(&mut self) {
-        if let Some((point, modifiers)) = self.pending_pen_motion.take() {
+        if let Some(point) = self.pending_pen_motion.take() {
+            let modifiers = self.modifiers();
             self.draw.pointer_motion(point, modifiers);
         }
     }

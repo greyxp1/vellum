@@ -272,9 +272,12 @@ impl Dispatch<WlKeyboard, ()> for State {
                 mods_locked,
                 group,
                 ..
-            } => state
-                .keyboard
-                .update_modifiers(mods_depressed, mods_latched, mods_locked, group),
+            } => {
+                state
+                    .keyboard
+                    .update_modifiers(mods_depressed, mods_latched, mods_locked, group);
+                state.modifiers_changed();
+            }
             Event::Leave { .. } => {
                 state.keyboard.cancel_repeat();
                 state.cancel_pointer_gesture();

@@ -74,7 +74,7 @@ impl Cursor {
 
 const CARET_BLINK_INTERVAL: Duration = Duration::from_millis(530);
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct Modifiers {
     pub shift: bool,
     pub ctrl: bool,
@@ -181,6 +181,11 @@ impl DrawState {
 
     pub fn pointer_motion(&mut self, point: Point, modifiers: Modifiers) -> bool {
         let damage = self.editor.pointer_motion(point, modifiers);
+        self.record(damage)
+    }
+
+    pub fn modifiers_changed(&mut self, modifiers: Modifiers) -> bool {
+        let damage = self.editor.modifiers_changed(modifiers);
         self.record(damage)
     }
 

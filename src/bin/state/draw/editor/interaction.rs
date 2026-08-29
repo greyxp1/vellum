@@ -23,6 +23,7 @@ pub(super) enum Interaction {
         id: ElementId,
         handle: Handle,
         start: Point,
+        point: Point,
         roundness: f32,
         original: ElementKind,
         current: ElementKind,
@@ -33,6 +34,43 @@ pub(super) enum Interaction {
 }
 
 impl Editor {
+    pub fn modifiers_changed(&mut self, modifiers: Modifiers) -> Damage {
+        match &mut self.interaction {
+            Some(Interaction::Drawing {
+                modifiers: current, ..
+            }) if *current != modifiers => {
+                *current = modifiers;
+                Damage::Preview
+            }
+            Some(Interaction::Resizing {
+                handle,
+                start,
+                point,
+                roundness,
+                original,
+                current,
+                equal_side_anchor,
+                ..
+            }) => {
+                let resized = selection::resize(
+                    original,
+                    *handle,
+                    *point - *start,
+                    *roundness,
+                    modifiers,
+                    equal_side_anchor,
+                );
+                if resized == *current {
+                    Damage::None
+                } else {
+                    *current = resized;
+                    Damage::Preview
+                }
+            }
+            _ => Damage::None,
+        }
+    }
+
     pub fn pointer_down(
         &mut self,
         point: Point,
@@ -88,6 +126,7 @@ impl Editor {
                         id,
                         handle,
                         start: point,
+                        point,
                         roundness: element.style.roundness,
                         current: original.clone(),
                         original,
@@ -178,6 +217,7 @@ impl Editor {
                     id,
                     handle,
                     start,
+                    point,
                     roundness,
                     original,
                     current,
