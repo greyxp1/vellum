@@ -107,12 +107,13 @@ impl LiveStroke {
     pub fn finish(mut self, point: Point, snap: bool) -> (Vec<Point>, Style, Geometry) {
         let point = point + self.alignment_offset;
         if self.direction_locked {
-            push(
-                &mut self.points,
-                &mut self.sample_anchor,
-                &mut self.sample_pending,
-                point,
-            );
+            // Keep the endpoint shown by the stabilized live preview.
+            if let Some([x, y]) = self.tail_centerline(false).last().copied() {
+                *self
+                    .points
+                    .last_mut()
+                    .expect("freehand starts with one point") = Point::new(x as f32, y as f32);
+            }
         } else {
             let point = self.oriented_point(point, snap);
             if point != self.points[0] {
