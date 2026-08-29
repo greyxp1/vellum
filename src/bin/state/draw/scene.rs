@@ -250,18 +250,18 @@ impl Element {
                 if matches!(end_marker, Some(EndMarker::Arrow))
                     && let Some((start, end)) = path_endpoints(points)
                 {
-                    let head = arrow_head(start, end, self.style.width);
-                    let tolerance_squared = tolerance * tolerance;
-                    let shaft_hit = points[..points.len() - 1].windows(2).any(|segment| {
-                        segment_distance_squared(point, segment[0], segment[1]) <= tolerance_squared
-                    }) || (head.shaft_length > f32::EPSILON
-                        && segment_distance_squared(point, start, head.base) <= tolerance_squared);
-                    shaft_hit
-                        || rounded_triangle_hit(&head.vertices, self.style.roundness, point, slop)
-                } else if *smooth {
-                    freehand::hit_test(points, self.style, point, slop)
+                    arrow_hit_test(
+                        arrow_head(start, end, self.style.width),
+                        self.style,
+                        point,
+                        slop,
+                    )
                 } else {
-                    polyline_hit(points, point, tolerance)
+                    if *smooth {
+                        freehand::hit_test(points, self.style, point, slop)
+                    } else {
+                        polyline_hit(points, point, tolerance)
+                    }
                 }
             }
             ElementKind::Triangle { vertices } => {
@@ -388,6 +388,13 @@ pub(super) fn geometry(kind: &ElementKind, style: Style) -> Geometry {
         } => path_endpoints(points).map(|(start, end)| arrow_head(start, end, style.width)),
         _ => None,
     };
+    if let Some(head) = marker {
+        return Geometry::fill(
+            arrow_path(head, style.roundness),
+            FillRule::NonZero,
+            style.color,
+        );
+    }
     let mut path = kurbo::BezPath::new();
     let mut caps = Vec::new();
     match kind {
@@ -398,26 +405,16 @@ pub(super) fn geometry(kind: &ElementKind, style: Style) -> Geometry {
         } => {
             if let [start, end] = points.as_slice() {
                 let radius = style.width * 0.5;
-                let start_roundness = marker.map_or_else(
-                    || {
-                        style
-                            .roundness
-                            .min((*end - *start).length() / style.width.max(f32::EPSILON))
-                    },
-                    |head| arrow_tail_roundness(head, style),
-                );
+                let start_roundness = style
+                    .roundness
+                    .min((*end - *start).length() / style.width.max(f32::EPSILON));
                 let start_center = inset_endpoint(*start, *end, radius * start_roundness);
-                let end_center = marker.map_or_else(
-                    || inset_endpoint(*end, *start, radius * start_roundness),
-                    |head| head.base,
-                );
+                let end_center = inset_endpoint(*end, *start, radius * start_roundness);
 
                 path.move_to((f64::from(start_center.x), f64::from(start_center.y)));
                 path.line_to((f64::from(end_center.x), f64::from(end_center.y)));
                 caps.push((start_center, *start - *end, start_roundness));
-                if marker.is_none() {
-                    caps.push((end_center, *end - *start, start_roundness));
-                }
+                caps.push((end_center, *end - *start, start_roundness));
             }
         }
         ElementKind::Path { smooth: true, .. } => unreachable!(),
@@ -445,13 +442,6 @@ pub(super) fn geometry(kind: &ElementKind, style: Style) -> Geometry {
             style.color,
         ));
     }
-    if let Some(head) = marker {
-        geometry.append(rounded_triangle(
-            &head.vertices,
-            style.roundness,
-            style.color,
-        ));
-    }
     geometry
 }
 
@@ -473,13 +463,6 @@ pub(super) fn rendered_path_endpoints(kind: &ElementKind, style: Style) -> Optio
         *last
     };
     Some([*first, end])
-}
-
-fn arrow_tail_roundness(head: ArrowHead, style: Style) -> f32 {
-    let radius = style.width * 0.5;
-    let progress = (head.shaft_length / radius.max(f32::EPSILON)).clamp(0.0, 1.0);
-    let smooth_progress = progress * progress * (3.0 - 2.0 * progress);
-    (style.roundness * smooth_progress).min(progress)
 }
 
 fn inset_endpoint(endpoint: Point, neighbor: Point, amount: f32) -> Point {
@@ -599,14 +582,18 @@ fn polyline_hit(points: &[Point], point: Point, tolerance: f32) -> bool {
 
 #[derive(Clone, Copy)]
 struct ArrowHead {
+    tail: Point,
     vertices: [Point; 3],
     base: Point,
+    normal: Point,
+    radius: f32,
     shaft_length: f32,
 }
 
 impl ArrowHead {
-    fn rendered_tip(self, _roundness: f32) -> Point {
-        self.vertices[0]
+    fn rendered_tip(self, roundness: f32) -> Point {
+        let (before, after) = rounded_polygon_corner(&self.vertices, 0, roundness);
+        (before + self.vertices[0] * 2.0 + after) * 0.25
     }
 }
 
@@ -615,8 +602,11 @@ fn arrow_head(start: Point, end: Point, width: f32) -> ArrowHead {
     let length = delta.length();
     if length <= f32::EPSILON {
         return ArrowHead {
+            tail: start,
             vertices: [end; 3],
             base: end,
+            normal: Point::default(),
+            radius: width * 0.5,
             shaft_length: 0.0,
         };
     }
@@ -627,90 +617,99 @@ fn arrow_head(start: Point, end: Point, width: f32) -> ArrowHead {
     let base = Point::new(end.x - direction.x * size, end.y - direction.y * size);
     let half = size * 0.45;
     ArrowHead {
+        tail: start,
         vertices: [
             end,
             Point::new(base.x + normal.x * half, base.y + normal.y * half),
             Point::new(base.x - normal.x * half, base.y - normal.y * half),
         ],
         base,
+        normal,
+        radius: width * 0.5,
         shaft_length: length - size,
     }
 }
 
-fn rounded_triangle(vertices: &[Point; 3], roundness: f32, color: [f32; 4]) -> Geometry {
-    let mut path = kurbo::BezPath::new();
-    add_triangle_path(&mut path, vertices, roundness);
-    Geometry::fill(path, FillRule::NonZero, color)
+fn arrow_path(head: ArrowHead, roundness: f32) -> kurbo::BezPath {
+    if head.shaft_length <= f32::EPSILON {
+        return rounded_polygon_path(&head.vertices, roundness);
+    }
+    let shaft_offset = head.normal * head.radius;
+    rounded_polygon_path(
+        &[
+            head.tail + shaft_offset,
+            head.base + shaft_offset,
+            head.vertices[1],
+            head.vertices[0],
+            head.vertices[2],
+            head.base - shaft_offset,
+            head.tail - shaft_offset,
+        ],
+        roundness,
+    )
 }
 
-fn add_triangle_path(path: &mut kurbo::BezPath, vertices: &[Point; 3], roundness: f32) {
-    let inset = POLYGON_CORNER_INSET * roundness;
-    let before = |index: usize| {
-        let vertex = vertices[index];
-        vertex + (vertices[(index + 2) % 3] - vertex) * inset
-    };
-    let first = before(0);
-    path.move_to((f64::from(first.x), f64::from(first.y)));
+fn rounded_polygon_path(vertices: &[Point], roundness: f32) -> kurbo::BezPath {
+    let mut path = kurbo::BezPath::new();
+    if vertices.len() < 3 {
+        return path;
+    }
+    let mut corner = rounded_polygon_corner(vertices, 0, roundness);
+    path.move_to(kurbo_point(corner.0));
     for index in 0..vertices.len() {
         let vertex = vertices[index];
-        if inset > f32::EPSILON {
-            let next = vertices[(index + 1) % 3];
-            let after = vertex + (next - vertex) * inset;
-            let before = before(index);
-            let control = vertex * 2.0 - (before + after) * 0.5;
-            path.quad_to(
-                (f64::from(control.x), f64::from(control.y)),
-                (f64::from(after.x), f64::from(after.y)),
-            );
+        let (before, after) = corner;
+        if before == after {
+            path.line_to(kurbo_point(vertex));
+        } else {
+            path.quad_to(kurbo_point(vertex), kurbo_point(after));
         }
         if index + 1 < vertices.len() {
-            let next = before(index + 1);
-            path.line_to((f64::from(next.x), f64::from(next.y)));
+            corner = rounded_polygon_corner(vertices, index + 1, roundness);
+            path.line_to(kurbo_point(corner.0));
         }
     }
     path.close_path();
+    path
 }
 
-fn rounded_triangle_hit(
-    vertices: &[Point; 3],
-    roundness: f32,
-    point: Point,
-    tolerance: f32,
-) -> bool {
-    const CURVE_STEPS: usize = 8;
-
-    let inset = POLYGON_CORNER_INSET * roundness;
-    let mut inside = false;
-    let mut near_edge = false;
-    let tolerance_squared = tolerance * tolerance;
-    let mut test_segment = |start: Point, end: Point| {
-        near_edge |= segment_distance_squared(point, start, end) <= tolerance_squared;
-        if (start.y > point.y) != (end.y > point.y)
-            && point.x < start.x + (point.y - start.y) * (end.x - start.x) / (end.y - start.y)
-        {
-            inside = !inside;
-        }
-    };
-
-    for index in 0..vertices.len() {
-        let vertex = vertices[index];
-        let previous = vertices[(index + vertices.len() - 1) % vertices.len()];
-        let next = vertices[(index + 1) % vertices.len()];
-        let before = vertex + (previous - vertex) * inset;
-        let after = vertex + (next - vertex) * inset;
-        let mut start = before;
-        for step in 1..=CURVE_STEPS {
-            let t = step as f32 / CURVE_STEPS as f32;
-            let inverse = 1.0 - t;
-            let end = before * (inverse * inverse) + vertex * (2.0 * inverse * t) + after * (t * t);
-            test_segment(start, end);
-            start = end;
-        }
-        let next_before = next + (vertex - next) * inset;
-        test_segment(after, next_before);
+fn rounded_polygon_corner(vertices: &[Point], index: usize, roundness: f32) -> (Point, Point) {
+    let vertex = vertices[index];
+    let roundness = roundness.clamp(0.0, 1.0);
+    if roundness <= f32::EPSILON {
+        return (vertex, vertex);
     }
+    let to_previous = vertices[(index + vertices.len() - 1) % vertices.len()] - vertex;
+    let to_next = vertices[(index + 1) % vertices.len()] - vertex;
+    let previous_length = to_previous.length();
+    let next_length = to_next.length();
+    if previous_length <= f32::EPSILON || next_length <= f32::EPSILON {
+        return (vertex, vertex);
+    }
+    let cut = POLYGON_CORNER_INSET * roundness * previous_length.min(next_length);
+    (
+        vertex + to_previous * (cut / previous_length),
+        vertex + to_next * (cut / next_length),
+    )
+}
 
-    near_edge || inside
+fn arrow_hit_test(head: ArrowHead, style: Style, point: Point, tolerance: f32) -> bool {
+    use kurbo::{ParamCurveNearest, Shape};
+
+    let path = arrow_path(head, style.roundness);
+    let point = kurbo_point(point);
+    if path.winding(point) != 0 {
+        return true;
+    }
+    let tolerance_squared = f64::from(tolerance.max(0.0).powi(2));
+    tolerance_squared > 0.0
+        && path
+            .segments()
+            .any(|segment| segment.nearest(point, 0.1).distance_sq <= tolerance_squared)
+}
+
+fn kurbo_point(point: Point) -> kurbo::Point {
+    kurbo::Point::new(f64::from(point.x), f64::from(point.y))
 }
 
 fn path_endpoints(points: &[Point]) -> Option<(Point, Point)> {
