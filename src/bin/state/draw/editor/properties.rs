@@ -157,7 +157,7 @@ impl Editor {
         }
         let default_text_size = self.default_text_size;
         if let Some(edit) = self.text_edit_mut() {
-            edit.font_size = stepped_size(
+            let font_size = stepped_size(
                 edit.font_size,
                 default_text_size,
                 steps,
@@ -165,10 +165,12 @@ impl Editor {
                 MIN_FONT_SIZE,
                 MAX_FONT_SIZE,
             );
-            return (
-                Damage::Preview,
-                text_size_label(edit.font_size, default_text_size),
-            );
+            let label = text_size_label(font_size, default_text_size);
+            if font_size == edit.font_size {
+                return (Damage::Preview, label);
+            }
+            edit.font_size = font_size;
+            return (Damage::Preview, label);
         }
         if !self.selected.is_empty() {
             let default_width = self.default_width;
@@ -203,7 +205,7 @@ impl Editor {
             let properties = self
                 .properties_mut(Tool::Text)
                 .expect("text must have adjustable properties");
-            properties.size = stepped_size(
+            let size = stepped_size(
                 properties.size,
                 default_text_size,
                 steps,
@@ -211,10 +213,12 @@ impl Editor {
                 MIN_FONT_SIZE,
                 MAX_FONT_SIZE,
             );
-            (
-                Damage::Preview,
-                text_size_label(properties.size, default_text_size),
-            )
+            let label = text_size_label(size, default_text_size);
+            if size == properties.size {
+                return (Damage::Preview, label);
+            }
+            properties.size = size;
+            (Damage::Preview, label)
         } else {
             let tool = self.tool;
             let Some(default) = self.default_size(tool) else {
@@ -227,7 +231,7 @@ impl Editor {
             let properties = self
                 .properties_mut(tool)
                 .expect("tools with a default size have adjustable properties");
-            properties.size = stepped_size(
+            let width = stepped_size(
                 properties.size,
                 default,
                 steps,
@@ -235,13 +239,14 @@ impl Editor {
                 minimum,
                 MAX_STROKE_WIDTH,
             );
-            let width = properties.size;
+            let label = stroke_size_label(width, default);
+            if width == properties.size {
+                return (Damage::Preview, label);
+            }
+            properties.size = width;
             self.sync_active_style();
             let damage = self.update_live_stroke_style();
-            (
-                damage.max(Damage::Preview),
-                stroke_size_label(width, default),
-            )
+            (damage.max(Damage::Preview), label)
         }
     }
 
@@ -259,14 +264,12 @@ impl Editor {
                 MIN_OPACITY,
                 1.0,
             );
+            let label = percent_label(opacity, default_text_opacity);
             if opacity == edit.style.color[3] {
-                return (Damage::None, String::new());
+                return (Damage::Preview, label);
             }
             edit.style.color[3] = opacity;
-            return (
-                Damage::Preview,
-                percent_label(opacity, default_text_opacity),
-            );
+            return (Damage::Preview, label);
         }
         if self.selected.is_empty() {
             if self.tool == Tool::Eraser {
@@ -278,13 +281,14 @@ impl Editor {
                 return (Damage::None, String::new());
             };
             let opacity = stepped_size(properties.opacity, default, steps, 0.01, MIN_OPACITY, 1.0);
+            let label = percent_label(opacity, default);
             if opacity == properties.opacity {
-                return (Damage::None, String::new());
+                return (Damage::Preview, label);
             }
             properties.opacity = opacity;
             self.sync_active_style();
             let damage = self.update_live_stroke_style();
-            return (damage.max(Damage::Preview), percent_label(opacity, default));
+            return (damage.max(Damage::Preview), label);
         }
         self.adjust_selected(|_, style| {
             style.color[3] = stepped_size(style.color[3], 1.0, steps, 0.01, MIN_OPACITY, 1.0);
@@ -306,16 +310,14 @@ impl Editor {
                 .properties_mut(tool)
                 .expect("tools with roundness have adjustable properties");
             let roundness = stepped_size(properties.roundness, default, steps, 0.01, 0.0, 1.0);
+            let label = percent_label(roundness, default);
             if roundness == properties.roundness {
-                return (Damage::None, String::new());
+                return (Damage::Preview, label);
             }
             properties.roundness = roundness;
             self.sync_active_style();
             let damage = self.update_live_stroke_style();
-            return (
-                damage.max(Damage::Preview),
-                percent_label(roundness, default),
-            );
+            return (damage.max(Damage::Preview), label);
         }
         self.adjust_selected(|kind, style| {
             let default = default_roundness(kind)?;
@@ -340,14 +342,18 @@ impl Editor {
             let Some(label) = adjust(&mut kind, &mut style) else {
                 continue;
             };
+            feedback = label;
             if kind != element.kind || style != element.style {
-                feedback = label;
                 let (kind, style) = element.replace(kind, style);
                 updates.push((id, kind, style));
             }
         }
         if updates.is_empty() {
-            return (Damage::None, String::new());
+            return if feedback.is_empty() {
+                (Damage::None, feedback)
+            } else {
+                (Damage::Preview, feedback)
+            };
         }
         self.history.record(HistoryEntry::Update(updates));
         (Damage::Scene, feedback)
