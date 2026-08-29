@@ -1,4 +1,3 @@
-use super::super::eraser_radius;
 use super::super::scene::{Element, ElementId, ElementKind, HIT_SLOP, Point, Style};
 use super::super::text_edit::TextEdit;
 use super::{Damage, Editor, HistoryEntry, Interaction};
@@ -149,7 +148,7 @@ impl Editor {
     }
 
     pub(super) fn erase_at(&mut self, point: Point) -> bool {
-        let radius = eraser_radius(self.eraser_width());
+        let radius = self.eraser_width() * 0.5;
         let hit = self
             .elements
             .iter()

@@ -40,10 +40,9 @@ fn validate_tool_defaults(tools: &ToolDefaults) -> Result<(), String> {
     for (&tool, defaults) in tools {
         let prefix = format!("tools.{}", tool.name());
         let size_range = match tool {
-            state::Tool::Text => Some((state::MIN_FONT_SIZE, state::MAX_FONT_SIZE)),
-            state::Tool::Eraser => Some((state::MIN_ERASER_WIDTH, state::MAX_STROKE_WIDTH)),
+            state::Tool::Text => Some((state::MIN_FONT_SIZE, state::MAX_TOOL_SIZE)),
             state::Tool::Select => None,
-            _ => Some((state::MIN_STROKE_WIDTH, state::MAX_STROKE_WIDTH)),
+            _ => Some((state::MIN_STROKE_WIDTH, state::MAX_TOOL_SIZE)),
         };
         match defaults.size {
             Some(_) if size_range.is_none() => {
@@ -106,12 +105,12 @@ impl Settings {
 
         let stroke_width = file.stroke_width.unwrap_or(5.0);
         if !stroke_width.is_finite()
-            || !(state::MIN_STROKE_WIDTH..=state::MAX_STROKE_WIDTH).contains(&stroke_width)
+            || !(state::MIN_STROKE_WIDTH..=state::MAX_TOOL_SIZE).contains(&stroke_width)
         {
             return Err(format!(
                 "stroke_width must be between {} and {}",
                 state::MIN_STROKE_WIDTH,
-                state::MAX_STROKE_WIDTH,
+                state::MAX_TOOL_SIZE,
             ));
         }
 
