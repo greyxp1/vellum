@@ -247,8 +247,6 @@ impl Element {
                 smooth,
                 end_marker,
             } => {
-                let centerline = smooth.then(|| freehand::centerline(points, self.style.width));
-                let points = centerline.as_deref().unwrap_or(points);
                 if matches!(end_marker, Some(EndMarker::Arrow))
                     && let Some((start, end)) = path_endpoints(points)
                 {
@@ -260,16 +258,10 @@ impl Element {
                         && segment_distance_squared(point, start, head.base) <= tolerance_squared);
                     shaft_hit
                         || rounded_triangle_hit(&head.vertices, self.style.roundness, point, slop)
+                } else if *smooth {
+                    freehand::hit_test(points, self.style, point, slop)
                 } else {
-                    polyline_hit(
-                        points,
-                        point,
-                        if *smooth {
-                            self.style.width * 0.8 + slop
-                        } else {
-                            tolerance
-                        },
-                    )
+                    polyline_hit(points, point, tolerance)
                 }
             }
             ElementKind::Triangle { vertices } => {
@@ -346,10 +338,14 @@ pub(super) fn bounds_for(kind: &ElementKind, style: Style) -> Bounds {
             ),
         },
     };
-    bounds.expanded(match kind {
-        ElementKind::Path { smooth: true, .. } => width * 0.8,
-        _ => width * 0.5,
-    })
+    let radius = width * 0.5;
+    let expansion = if matches!(kind, ElementKind::Path { smooth: true, .. }) {
+        let roundness = style.roundness.clamp(0.0, 1.0);
+        radius * (std::f32::consts::SQRT_2 - (std::f32::consts::SQRT_2 - 1.0) * roundness)
+    } else {
+        radius
+    };
+    bounds.expanded(expansion)
 }
 
 pub(super) fn geometry(kind: &ElementKind, style: Style) -> Geometry {
@@ -578,7 +574,7 @@ pub(super) fn default_roundness(kind: &ElementKind) -> Option<f32> {
     use super::tool::Tool;
 
     match kind {
-        ElementKind::Path { smooth: true, .. } => None,
+        ElementKind::Path { smooth: true, .. } => Tool::Pen.default_roundness(),
         ElementKind::Path {
             end_marker: Some(EndMarker::Arrow),
             ..

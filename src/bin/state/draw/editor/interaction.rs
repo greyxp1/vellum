@@ -136,13 +136,9 @@ impl Editor {
     pub fn pointer_motion(&mut self, point: Point, modifiers: Modifiers) -> Damage {
         match self.interaction.take() {
             Some(Interaction::Freehand(mut stroke)) => {
-                let (changed, froze_chunk) = stroke.push(point);
+                let changed = stroke.push(point, modifiers.shift);
                 self.interaction = Some(Interaction::Freehand(stroke));
-                if froze_chunk {
-                    Damage::Scene
-                } else {
-                    Damage::from_preview(changed)
-                }
+                Damage::from_preview(changed)
             }
             Some(Interaction::Drawing { tool, start, .. }) => {
                 self.interaction = Some(Interaction::Drawing {
@@ -203,7 +199,7 @@ impl Editor {
     pub fn pointer_up(&mut self, point: Point, modifiers: Modifiers) -> Damage {
         match self.interaction.take() {
             Some(Interaction::Freehand(stroke)) => {
-                let (points, style, geometry) = stroke.finish(point);
+                let (points, style, geometry) = stroke.finish(point, modifiers.shift);
                 self.insert_kind_with_geometry(
                     ElementKind::Path {
                         points,
@@ -359,7 +355,6 @@ impl Editor {
     pub(super) fn cancel_interaction(&mut self) -> Damage {
         match self.interaction.take() {
             Some(Interaction::Moving { .. } | Interaction::Resizing { .. }) => Damage::Scene,
-            Some(Interaction::Freehand(stroke)) if !stroke.cached().is_empty() => Damage::Scene,
             Some(_) => Damage::Preview,
             None => Damage::None,
         }

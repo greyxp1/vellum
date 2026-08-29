@@ -220,10 +220,9 @@ impl Editor {
             let Some(default) = self.default_size(tool) else {
                 return (Damage::None, String::new());
             };
-            let minimum = if tool == Tool::Eraser {
-                MIN_ERASER_WIDTH
-            } else {
-                MIN_STROKE_WIDTH
+            let minimum = match tool {
+                Tool::Eraser => MIN_ERASER_WIDTH,
+                _ => MIN_STROKE_WIDTH,
             };
             let properties = self
                 .properties_mut(tool)
@@ -357,11 +356,8 @@ impl Editor {
     fn update_live_stroke_style(&mut self) -> Damage {
         match &mut self.interaction {
             Some(Interaction::Freehand(stroke)) => {
-                if stroke.update_style(self.style) {
-                    Damage::Scene
-                } else {
-                    Damage::Preview
-                }
+                stroke.update_style(self.style);
+                Damage::Preview
             }
             _ => Damage::None,
         }

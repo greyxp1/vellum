@@ -26,7 +26,7 @@ Per-tool values override `stroke_width` and `default_fill_shapes`. Supported pro
 
 | Tool | Properties |
 | --- | --- |
-| `pen` | `size`, `opacity` |
+| `pen` | `size`, `opacity`, `roundness` |
 | `line`, `arrow` | `size`, `opacity`, `roundness` |
 | `triangle`, `rectangle` | `size`, `opacity`, `roundness`, `filled` |
 | `ellipse` | `size`, `opacity`, `filled` |
@@ -58,6 +58,7 @@ palette = [
 [tools.pen]
 size = 5.0
 opacity = 1.0
+roundness = 1.0
 
 [tools.line]
 size = 5.0

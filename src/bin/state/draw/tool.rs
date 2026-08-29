@@ -34,7 +34,7 @@ impl Tool {
 
     pub(crate) fn default_roundness(self) -> Option<f32> {
         match self {
-            Self::Line | Self::Arrow | Self::Triangle | Self::Rectangle => {
+            Self::Pen | Self::Line | Self::Arrow | Self::Triangle | Self::Rectangle => {
                 Some(self.initial_roundness())
             }
             _ => None,

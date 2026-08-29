@@ -46,6 +46,11 @@ pub(crate) struct ToolCursor {
 }
 
 pub(crate) const MIN_ERASER_WIDTH: f32 = 4.0;
+pub(crate) const STABILIZER_FOLLOW: f32 = 0.35;
+
+pub(crate) fn stabilizer_delay(width: f32) -> f32 {
+    (width * 0.15).clamp(4.0, 16.0)
+}
 
 pub(crate) fn eraser_radius(width: f32) -> f32 {
     width.max(MIN_ERASER_WIDTH) * 0.5
@@ -278,8 +283,7 @@ impl DrawState {
                     .elements()
                     .iter()
                     .filter(|element| !self.editor.element_is_previewed(element.id))
-                    .map(|element| &element.geometry)
-                    .chain(self.editor.cached_freehand_geometry()),
+                    .map(|element| &element.geometry),
             );
         }
 

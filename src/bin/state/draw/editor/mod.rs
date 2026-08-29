@@ -146,11 +146,10 @@ impl Editor {
         let damage = if self.is_editing_text() {
             self.commit_text()
         } else {
-            let restore_scene = match &self.interaction {
-                Some(Interaction::Moving { .. } | Interaction::Resizing { .. }) => true,
-                Some(Interaction::Freehand(stroke)) => !stroke.cached().is_empty(),
-                _ => false,
-            };
+            let restore_scene = matches!(
+                self.interaction,
+                Some(Interaction::Moving { .. } | Interaction::Resizing { .. })
+            );
             let changed = self.interaction.take().is_some();
             if restore_scene {
                 Damage::Scene
@@ -384,13 +383,6 @@ impl Editor {
                 show_handles && self.interaction.is_none(),
                 output,
             );
-        }
-    }
-
-    pub fn cached_freehand_geometry(&self) -> &[Geometry] {
-        match &self.interaction {
-            Some(Interaction::Freehand(stroke)) => stroke.cached(),
-            _ => &[],
         }
     }
 
