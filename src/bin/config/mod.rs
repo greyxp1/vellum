@@ -40,10 +40,9 @@ fn validate_tool_defaults(tools: &ToolDefaults) -> Result<(), String> {
     for (&tool, defaults) in tools {
         let prefix = format!("tools.{}", tool.name());
         let size_range = match tool {
-            state::Tool::Text => Some((8.0, 192.0)),
-            state::Tool::Eraser => Some((4.0, 64.0)),
+            state::Tool::Text => Some((state::MIN_TOOL_SIZE, state::MAX_FONT_SIZE)),
             state::Tool::Select => None,
-            _ => Some((1.0, 64.0)),
+            _ => Some((state::MIN_TOOL_SIZE, state::MAX_STROKE_WIDTH)),
         };
         match defaults.size {
             Some(_) if size_range.is_none() => {
@@ -105,8 +104,14 @@ impl Settings {
         };
 
         let stroke_width = file.stroke_width.unwrap_or(5.0);
-        if !valid_width(stroke_width) {
-            return Err("stroke_width must be a positive finite number".into());
+        if !stroke_width.is_finite()
+            || !(state::MIN_TOOL_SIZE..=state::MAX_STROKE_WIDTH).contains(&stroke_width)
+        {
+            return Err(format!(
+                "stroke_width must be between {} and {}",
+                state::MIN_TOOL_SIZE,
+                state::MAX_STROKE_WIDTH,
+            ));
         }
 
         let default_tool = file
@@ -160,10 +165,6 @@ impl Settings {
 
 fn parse_named_color(name: &str, value: &str) -> Result<Rgb, String> {
     parse_color(value).map_err(|error| format!("invalid {name} {value:?}: {error}"))
-}
-
-fn valid_width(width: f32) -> bool {
-    width.is_finite() && width > 0.0
 }
 
 fn parse_color(value: &str) -> Result<Rgb, &'static str> {

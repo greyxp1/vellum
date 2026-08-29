@@ -1,7 +1,7 @@
 mod draw;
 mod input;
 
-pub(crate) use draw::Tool;
+pub(crate) use draw::{MAX_FONT_SIZE, MAX_STROKE_WIDTH, MIN_TOOL_SIZE, Tool};
 
 use wayland_client::delegate_dispatch;
 

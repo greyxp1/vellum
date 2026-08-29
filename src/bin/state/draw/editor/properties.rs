@@ -1,13 +1,9 @@
-use super::super::MIN_ERASER_WIDTH;
 use super::super::scene::{ElementKind, Style, default_roundness};
 use super::super::tool::Tool;
+use super::super::{MAX_FONT_SIZE, MAX_STROKE_WIDTH, MIN_TOOL_SIZE};
 use super::{Damage, Editor, HistoryEntry, Interaction};
 
-pub(super) const MIN_STROKE_WIDTH: f32 = 1.0;
-pub(super) const MAX_STROKE_WIDTH: f32 = 64.0;
 const MIN_OPACITY: f32 = 0.05;
-const MIN_FONT_SIZE: f32 = 8.0;
-const MAX_FONT_SIZE: f32 = 192.0;
 pub(super) const DEFAULT_ERASER_WIDTH: f32 = 10.0;
 pub(super) const DEFAULT_TEXT_SIZE: f32 = 20.0;
 
@@ -162,7 +158,7 @@ impl Editor {
                 default_text_size,
                 steps,
                 1.0,
-                MIN_FONT_SIZE,
+                MIN_TOOL_SIZE,
                 MAX_FONT_SIZE,
             );
             let label = text_size_label(font_size, default_text_size);
@@ -182,7 +178,7 @@ impl Editor {
                             default_text_size,
                             steps,
                             1.0,
-                            MIN_FONT_SIZE,
+                            MIN_TOOL_SIZE,
                             MAX_FONT_SIZE,
                         );
                         text_size_label(*font_size, default_text_size)
@@ -193,7 +189,7 @@ impl Editor {
                             default_width,
                             steps,
                             1.0,
-                            MIN_STROKE_WIDTH,
+                            MIN_TOOL_SIZE,
                             MAX_STROKE_WIDTH,
                         );
                         stroke_size_label(style.width, default_width)
@@ -210,7 +206,7 @@ impl Editor {
                 default_text_size,
                 steps,
                 1.0,
-                MIN_FONT_SIZE,
+                MIN_TOOL_SIZE,
                 MAX_FONT_SIZE,
             );
             let label = text_size_label(size, default_text_size);
@@ -224,10 +220,6 @@ impl Editor {
             let Some(default) = self.default_size(tool) else {
                 return (Damage::None, String::new());
             };
-            let minimum = match tool {
-                Tool::Eraser => MIN_ERASER_WIDTH,
-                _ => MIN_STROKE_WIDTH,
-            };
             let properties = self
                 .properties_mut(tool)
                 .expect("tools with a default size have adjustable properties");
@@ -236,7 +228,7 @@ impl Editor {
                 default,
                 steps,
                 1.0,
-                minimum,
+                MIN_TOOL_SIZE,
                 MAX_STROKE_WIDTH,
             );
             let label = stroke_size_label(width, default);

@@ -3,8 +3,7 @@ mod interaction;
 mod properties;
 
 use self::interaction::Interaction;
-use self::properties::{MAX_STROKE_WIDTH, MIN_STROKE_WIDTH, ToolPropertySet};
-use super::Modifiers;
+use self::properties::ToolPropertySet;
 use super::history::{Entry as HistoryEntry, History};
 use super::picker::{Choice, Picker, ShapeFills, choice, picker_geometry};
 use super::scene::{Element, geometry};
@@ -13,6 +12,7 @@ use super::selection;
 pub(crate) use super::text_edit::CursorMove;
 use super::text_edit::TextEdit;
 use super::tool::Tool;
+use super::{MAX_STROKE_WIDTH, MIN_TOOL_SIZE, Modifiers};
 use crate::render::Geometry;
 
 pub(crate) enum Action {
@@ -93,7 +93,7 @@ impl Editor {
         tool_defaults: &crate::config::ToolDefaults,
         palette: Vec<crate::Rgb>,
     ) -> Self {
-        let width = width.clamp(MIN_STROKE_WIDTH, MAX_STROKE_WIDTH);
+        let width = width.clamp(MIN_TOOL_SIZE, MAX_STROKE_WIDTH);
         let default_tool_properties =
             ToolPropertySet::new(width, default_fill_shapes, tool_defaults);
         let tool_properties = default_tool_properties.clone();

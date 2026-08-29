@@ -46,7 +46,9 @@ pub(crate) struct ToolCursor {
     pub color: [f32; 4],
 }
 
-pub(crate) const MIN_ERASER_WIDTH: f32 = 4.0;
+pub(crate) const MIN_TOOL_SIZE: f32 = 2.0;
+pub(crate) const MAX_STROKE_WIDTH: f32 = 100.0;
+pub(crate) const MAX_FONT_SIZE: f32 = 200.0;
 pub(crate) const STABILIZER_FOLLOW: f32 = 0.35;
 const CIRCLE_KAPPA: f64 = 0.552_284_749_830_793_6;
 
@@ -55,7 +57,7 @@ pub(crate) fn stabilizer_delay(width: f32) -> f32 {
 }
 
 pub(crate) fn eraser_radius(width: f32) -> f32 {
-    width.max(MIN_ERASER_WIDTH) * 0.5
+    width.max(MIN_TOOL_SIZE) * 0.5
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -425,13 +427,14 @@ fn tool_cursor_geometry(point: Point, cursor: ToolCursor) -> Geometry {
     .max(1.0);
     let center = kurbo::Point::new(f64::from(point.x), f64::from(point.y));
     if cursor.tool == Tool::Eraser {
+        const OUTLINE_WIDTH: f64 = 0.75;
         let mut geometry = Geometry::fill(
-            kurbo::Circle::new(center, radius).to_path(0.1),
+            kurbo::Circle::new(center, radius + OUTLINE_WIDTH).to_path(0.1),
             FillRule::NonZero,
             [0.0, 0.0, 0.0, 1.0],
         );
         geometry.append(Geometry::fill(
-            kurbo::Circle::new(center, (radius - 0.75).max(0.0)).to_path(0.1),
+            kurbo::Circle::new(center, radius).to_path(0.1),
             FillRule::NonZero,
             [1.0, 1.0, 1.0, 1.0],
         ));
