@@ -6,10 +6,10 @@ use wayland_client::Proxy;
 use wayland_client::QueueHandle;
 use wayland_client::WEnum;
 use wayland_client::backend::ObjectId;
-use wayland_client::protocol::wl_shm::WlShm;
 
-use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::Shape;
-use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::WpCursorShapeDeviceV1;
+use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::{
+    Shape, WpCursorShapeDeviceV1,
+};
 
 use wayland_protocols::wp::tablet::zv2::client::zwp_tablet_pad_v2::ZwpTabletPadV2;
 use wayland_protocols::wp::tablet::zv2::client::zwp_tablet_seat_v2::ZwpTabletSeatV2;
@@ -21,7 +21,6 @@ use wayland_protocols::wp::tablet::zv2::client::zwp_tablet_seat_v2::EVT_TABLET_A
 use wayland_protocols::wp::tablet::zv2::client::zwp_tablet_seat_v2::EVT_TOOL_ADDED_OPCODE;
 
 use super::super::State;
-use super::super::cursor::CursorSurface;
 use super::super::draw::{Cursor, Point, ToolOverride};
 use super::pointer::cursor_shape;
 use super::short_click;
@@ -37,11 +36,9 @@ pub(in crate::state) struct TabletState {
 
     _tablet_seat: Option<ZwpTabletSeatV2>,
     tablet_cursor_shape_devices: HashMap<ObjectId, WpCursorShapeDeviceV1>,
-    tablet_cursor_surfaces: HashMap<ObjectId, CursorSurface>,
     cursor_serials: HashMap<ObjectId, u32>,
     current_cursors: HashMap<ObjectId, Cursor>,
     eraser_tools: HashSet<ObjectId>,
-
     pos: Option<(f64, f64)>,
     pen_held: bool,
     button_held: bool,
@@ -62,46 +59,45 @@ impl TabletState {
         update_held(&mut self.button_held, sequence, BUTTON);
     }
 
-    fn refresh_cursor(
-        &mut self,
-        tablet_tool: &ZwpTabletToolV2,
-        cursor: Cursor,
-        shm: &WlShm,
-        qhandle: &QueueHandle<State>,
-    ) {
+    fn refresh_cursor(&mut self, tablet_tool: &ZwpTabletToolV2, cursor: Cursor) {
         let id = tablet_tool.id();
         let Some(&serial) = self.cursor_serials.get(&id) else {
             return;
         };
-        if self.current_cursors.get(&id) == Some(&cursor) {
+        if self
+            .current_cursors
+            .get(&id)
+            .is_some_and(|current| current.same_compositor_cursor(cursor))
+        {
             return;
         }
+        let Some(device) = self.tablet_cursor_shape_devices.get(&id) else {
+            return;
+        };
         match cursor {
             Cursor::Hidden => tablet_tool.set_cursor(serial, None, 0, 0),
-            Cursor::Shape(hint) => {
-                if let Some(device) = self.tablet_cursor_shape_devices.get(&id) {
-                    device.set_shape(serial, cursor_shape(hint));
-                }
-            }
-            Cursor::Tool(preview) => {
-                if !self.tablet_cursor_shape_devices.contains_key(&id) {
-                    return;
-                }
-                let Some(surface) = self.tablet_cursor_surfaces.get_mut(&id) else {
-                    return;
-                };
-                if let Err(error) = surface.update(preview, shm, qhandle) {
-                    eprintln!("vellum: could not update tablet cursor preview: {error}");
-                    if let Some(device) = self.tablet_cursor_shape_devices.get(&id) {
-                        device.set_shape(serial, Shape::Crosshair);
-                    }
-                    return;
-                }
-                let [hotspot_x, hotspot_y] = surface.hotspot();
-                tablet_tool.set_cursor(serial, Some(surface.surface()), hotspot_x, hotspot_y);
-            }
+            Cursor::Shape(hint) => device.set_shape(serial, cursor_shape(hint)),
+            Cursor::Tool(_) => tablet_tool.set_cursor(serial, None, 0, 0),
         }
         self.current_cursors.insert(id, cursor);
+    }
+
+    pub(in crate::state) fn cursor_active(&self) -> bool {
+        !self.cursor_serials.is_empty()
+    }
+
+    fn tool_cursor_supported(&self, tablet_tool: &ZwpTabletToolV2) -> bool {
+        self.tablet_cursor_shape_devices
+            .contains_key(&tablet_tool.id())
+    }
+
+    pub(in crate::state) fn restore_cursors(&mut self) {
+        for (id, serial) in &self.cursor_serials {
+            if let Some(device) = self.tablet_cursor_shape_devices.get(id) {
+                device.set_shape(*serial, Shape::Default);
+            }
+        }
+        self.current_cursors.clear();
     }
 }
 
@@ -124,10 +120,6 @@ impl Dispatch<ZwpTabletSeatV2, (), State> for TabletState {
                     .tablet_cursor_shape_devices
                     .insert(object_id.clone(), device);
             }
-            state.tablet.tablet_cursor_surfaces.insert(
-                object_id,
-                CursorSurface::new(&state.wayland.compositor, qhandle),
-            );
         }
     }
 
@@ -154,13 +146,10 @@ impl Dispatch<ZwpTabletToolV2, (), State> for TabletState {
                     .tablet
                     .tablet_cursor_shape_devices
                     .remove(&tablet_tool.id());
-                state
-                    .tablet
-                    .tablet_cursor_surfaces
-                    .remove(&tablet_tool.id());
                 state.tablet.cursor_serials.remove(&tablet_tool.id());
                 state.tablet.current_cursors.remove(&tablet_tool.id());
                 state.tablet.eraser_tools.remove(&tablet_tool.id());
+                state.refresh_pointer_cursor();
                 return;
             }
             Event::Type {
@@ -249,12 +238,23 @@ impl Dispatch<ZwpTabletToolV2, (), State> for TabletState {
                 let cursor = state
                     .draw
                     .cursor(Point::new(x as f32, y as f32), tool_override);
-                state.tablet.refresh_cursor(
-                    tablet_tool,
-                    cursor,
-                    &state.wayland.shm,
-                    &state.qhandle,
-                );
+                let point = Point::new(x as f32, y as f32);
+                let preview_changed = state.draw.set_tool_cursor(match cursor {
+                    Cursor::Tool(preview)
+                        if state.active && state.tablet.tool_cursor_supported(tablet_tool) =>
+                    {
+                        Some((point, preview))
+                    }
+                    _ => None,
+                });
+                if state.active {
+                    state.tablet.refresh_cursor(tablet_tool, cursor);
+                }
+                if preview_changed {
+                    state.request_render();
+                }
+            } else {
+                state.refresh_pointer_cursor();
             }
         }
     }

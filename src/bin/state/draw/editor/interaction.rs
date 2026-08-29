@@ -344,6 +344,7 @@ impl Editor {
         Cursor::Tool(ToolCursor {
             tool,
             width: self.width_for(tool),
+            roundness: self.style.roundness,
             color: self.style.color,
         })
     }

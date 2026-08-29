@@ -39,7 +39,7 @@ vello_hybrid = { version = "0.2.0", default-features = false, features = ["std",
 peniko = { version = "0.6.1", default-features = false }
 unicode-segmentation = "1.13.3"
 xkbcommon = "0.9.0"
-rustix = { version = "1.1.2", features = ["event", "fs"] }
+rustix = { version = "1.1.2", features = ["event"] }
 
 kurbo = "0.13.1"
 perfect_freehand = "0.1.1"

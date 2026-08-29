@@ -42,6 +42,7 @@ impl ToolOverride {
 pub(crate) struct ToolCursor {
     pub tool: Tool,
     pub width: f32,
+    pub roundness: f32,
     pub color: [f32; 4],
 }
 
@@ -63,6 +64,14 @@ pub(crate) enum Cursor {
     Tool(ToolCursor),
 }
 
+impl Cursor {
+    pub(crate) fn same_compositor_cursor(self, other: Self) -> bool {
+        self == other
+            || matches!(self, Self::Hidden | Self::Tool(_))
+                && matches!(other, Self::Hidden | Self::Tool(_))
+    }
+}
+
 const CARET_BLINK_INTERVAL: Duration = Duration::from_millis(530);
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -81,6 +90,7 @@ pub struct DrawState {
     feedback_duration: Duration,
     caret_visible: bool,
     caret_until: Option<Instant>,
+    tool_cursor: Option<(Point, ToolCursor)>,
     previews: Vec<Geometry>,
     picker: Option<LocalGeometry>,
 }
@@ -104,6 +114,7 @@ impl DrawState {
             feedback_duration: settings.feedback_duration,
             caret_visible: true,
             caret_until: None,
+            tool_cursor: None,
             previews: Vec::new(),
             picker: None,
         }
@@ -119,6 +130,7 @@ impl DrawState {
         if self.feedback.take().is_some()
             | self.property_feedback_anchor.take().is_some()
             | self.feedback_until.take().is_some()
+            | self.tool_cursor.take().is_some()
         {
             damage = damage.max(Damage::Preview);
         }
@@ -183,6 +195,15 @@ impl DrawState {
 
     pub fn cursor(&self, point: Point, tool_override: ToolOverride) -> Cursor {
         self.editor.cursor(point, tool_override)
+    }
+
+    pub fn set_tool_cursor(&mut self, cursor: Option<(Point, ToolCursor)>) -> bool {
+        if self.tool_cursor == cursor {
+            return false;
+        }
+        self.tool_cursor = cursor;
+        self.damage.merge(Damage::Preview);
+        true
     }
 
     pub fn open_picker(&mut self, center: Point) -> bool {
@@ -365,6 +386,9 @@ impl DrawState {
         self.editor.append_preview_geometry(&mut self.previews);
         self.editor
             .append_selection_geometry(self.property_feedback_anchor.is_none(), &mut self.previews);
+        if let Some((point, cursor)) = self.tool_cursor {
+            self.previews.push(tool_cursor_geometry(point, cursor));
+        }
         self.picker = self.editor.picker_geometry();
         if wgpu.render(&self.previews, self.picker.as_ref()) {
             self.damage = Damage::None;
@@ -382,6 +406,47 @@ impl DrawState {
         self.caret_until = Some(Instant::now() + CARET_BLINK_INTERVAL);
         changed
     }
+}
+
+fn tool_cursor_geometry(point: Point, cursor: ToolCursor) -> Geometry {
+    use kurbo::Shape;
+
+    let radius = f64::from(match cursor.tool {
+        Tool::Pen => cursor.width * 0.5,
+        Tool::Eraser => eraser_radius(cursor.width),
+        _ => unreachable!("only pen and eraser have tool cursors"),
+    })
+    .max(1.0);
+    let center = kurbo::Point::new(f64::from(point.x), f64::from(point.y));
+    if cursor.tool == Tool::Eraser {
+        let mut geometry = Geometry::fill(
+            kurbo::Circle::new(center, radius).to_path(0.1),
+            FillRule::NonZero,
+            [0.0, 0.0, 0.0, 1.0],
+        );
+        geometry.append(Geometry::fill(
+            kurbo::Circle::new(center, (radius - 0.75).max(0.0)).to_path(0.1),
+            FillRule::NonZero,
+            [1.0, 1.0, 1.0, 1.0],
+        ));
+        return geometry;
+    }
+
+    let mut color = cursor.color;
+    color[3] = color[3].sqrt();
+    let corner_radius = radius * f64::from(cursor.roundness.clamp(0.0, 1.0));
+    Geometry::fill(
+        kurbo::RoundedRect::new(
+            center.x - radius,
+            center.y - radius,
+            center.x + radius,
+            center.y + radius,
+            corner_radius,
+        )
+        .to_path(0.1),
+        FillRule::NonZero,
+        color,
+    )
 }
 
 fn text_caret(left: f32, top: f32, font_size: f32) -> Geometry {
