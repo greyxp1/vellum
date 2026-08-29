@@ -294,7 +294,7 @@ fn stroke_path(points: &[Point], style: Style, complete: bool) -> Option<kurbo::
     }
 
     Some(centerline_path(
-        &centerline_points(&points, style.width, true, complete),
+        &centerline_points(points, style.width, true, complete),
         style,
         false,
         false,
