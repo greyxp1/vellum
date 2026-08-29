@@ -1,15 +1,13 @@
 use kurbo::{BezPath, ParamCurveNearest, Shape};
 
 use super::scene::{Point, Style};
-use super::{STABILIZER_FOLLOW, stabilizer_delay};
+use super::{CIRCLE_KAPPA, STABILIZER_FOLLOW, stabilizer_delay};
 use crate::render::{FillRule, Geometry};
 
 const MIN_SAMPLE_DISTANCE_SQUARED: f32 = 1.0;
 const STAMP_DIRECTION_LENGTH: f32 = 0.01;
 const SNAP_ANGLE: f32 = std::f32::consts::PI / 12.0;
 const CHUNK_POINTS: usize = 2048;
-const CIRCLE_KAPPA: f64 = 0.552_284_749_830_793_6;
-
 // Keeping the centerline point and raw index lets the rolling tail resume
 // perfect_freehand exactly.
 #[derive(Debug)]
@@ -549,30 +547,4 @@ fn push_distinct(points: &mut Vec<Point>, point: Point) {
     if points.last() != Some(&point) {
         points.push(point);
     }
-}
-
-pub(super) fn rounded_cap(
-    center: Point,
-    outward: Point,
-    radius: f32,
-    roundness: f32,
-    color: [f32; 4],
-) -> Geometry {
-    let length = outward.x.hypot(outward.y);
-    if roundness <= 0.0 || radius <= 0.0 || length <= f32::EPSILON {
-        return Geometry::empty();
-    }
-    let outward = Point::new(outward.x / length, outward.y / length);
-    let normal = Point::new(-outward.y, outward.x);
-    let mut path = kurbo::BezPath::new();
-    let first = center + normal * radius;
-    path.move_to(kurbo_point(first));
-    for step in 1..=12 {
-        let angle = std::f32::consts::FRAC_PI_2 - std::f32::consts::PI * step as f32 / 12.0;
-        let point =
-            center + outward * (angle.cos() * radius * roundness) + normal * (angle.sin() * radius);
-        path.line_to(kurbo_point(point));
-    }
-    path.close_path();
-    Geometry::fill(path, FillRule::NonZero, color)
 }

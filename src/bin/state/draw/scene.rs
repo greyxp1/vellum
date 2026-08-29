@@ -1,4 +1,4 @@
-use super::freehand;
+use super::{CIRCLE_KAPPA, freehand};
 use crate::render::{FillRule, Geometry, StrokeStyle};
 
 pub(super) const HIT_SLOP: f32 = 5.0;
@@ -351,98 +351,63 @@ pub(super) fn bounds_for(kind: &ElementKind, style: Style) -> Bounds {
 pub(super) fn geometry(kind: &ElementKind, style: Style) -> Geometry {
     use kurbo::Shape;
 
-    if let ElementKind::Path {
-        points,
-        smooth: true,
-        ..
-    } = kind
-    {
-        return freehand::geometry(points, style);
-    }
-    if let ElementKind::Rectangle { min, max } = kind {
-        return rectangle_geometry(*min, *max, style);
-    }
-    if let ElementKind::Triangle { vertices } = kind {
-        return super::triangle::geometry(vertices, style);
-    }
-    if let ElementKind::Ellipse { center, radii } = kind
-        && style.filled
-    {
-        let half = style.width * 0.5;
-        let path = kurbo::Ellipse::new(
-            (f64::from(center.x), f64::from(center.y)),
-            (
-                f64::from((radii.x + half).max(0.0)),
-                f64::from((radii.y + half).max(0.0)),
-            ),
-            0.0,
-        )
-        .to_path(0.1);
-        return Geometry::fill(path, FillRule::NonZero, style.color);
-    }
-    let marker = match kind {
+    match kind {
         ElementKind::Path {
             points,
             end_marker: Some(EndMarker::Arrow),
             ..
-        } => path_endpoints(points).map(|(start, end)| arrow_head(start, end, style.width)),
-        _ => None,
-    };
-    if let Some(head) = marker {
-        return Geometry::fill(
-            arrow_path(head, style.roundness),
-            FillRule::NonZero,
-            style.color,
-        );
-    }
-    let mut path = kurbo::BezPath::new();
-    let mut caps = Vec::new();
-    match kind {
+        } => path_endpoints(points).map_or_else(Geometry::empty, |(start, end)| {
+            Geometry::fill(
+                arrow_path(arrow_head(start, end, style.width), style.roundness),
+                FillRule::NonZero,
+                style.color,
+            )
+        }),
+        ElementKind::Path {
+            points,
+            smooth: true,
+            end_marker: None,
+        } => freehand::geometry(points, style),
         ElementKind::Path {
             points,
             smooth: false,
-            ..
+            end_marker: None,
         } => {
-            if let [start, end] = points.as_slice() {
-                let radius = style.width * 0.5;
-                let start_roundness = style
-                    .roundness
-                    .min((*end - *start).length() / style.width.max(f32::EPSILON));
-                let start_center = inset_endpoint(*start, *end, radius * start_roundness);
-                let end_center = inset_endpoint(*end, *start, radius * start_roundness);
-
-                path.move_to((f64::from(start_center.x), f64::from(start_center.y)));
-                path.line_to((f64::from(end_center.x), f64::from(end_center.y)));
-                caps.push((start_center, *start - *end, start_roundness));
-                caps.push((end_center, *end - *start, start_roundness));
-            }
+            let [start, end] = points.as_slice() else {
+                return Geometry::empty();
+            };
+            Geometry::fill(
+                line_path(*start, *end, style.width, style.roundness),
+                FillRule::NonZero,
+                style.color,
+            )
         }
-        ElementKind::Path { smooth: true, .. } => unreachable!(),
-        ElementKind::Triangle { .. } => unreachable!(),
-        ElementKind::Rectangle { .. } => unreachable!(),
+        ElementKind::Triangle { vertices } => super::triangle::geometry(vertices, style),
+        ElementKind::Rectangle { min, max } => rectangle_geometry(*min, *max, style),
+        ElementKind::Ellipse { center, radii } if style.filled => {
+            let half = style.width * 0.5;
+            let path = kurbo::Ellipse::new(
+                (f64::from(center.x), f64::from(center.y)),
+                (
+                    f64::from((radii.x + half).max(0.0)),
+                    f64::from((radii.y + half).max(0.0)),
+                ),
+                0.0,
+            )
+            .to_path(0.1);
+            Geometry::fill(path, FillRule::NonZero, style.color)
+        }
         ElementKind::Ellipse { center, radii } => {
-            path = kurbo::Ellipse::new(
+            let path = kurbo::Ellipse::new(
                 (f64::from(center.x), f64::from(center.y)),
                 (f64::from(radii.x), f64::from(radii.y)),
                 0.0,
             )
             .to_path(0.1);
+            Geometry::stroke(path, StrokeStyle::new(f64::from(style.width)), style.color)
         }
-        ElementKind::Text { .. } => return Geometry::empty(),
+        ElementKind::Text { .. } => Geometry::empty(),
     }
-
-    let mut geometry =
-        Geometry::stroke(path, StrokeStyle::new(f64::from(style.width)), style.color);
-    for (center, outward, roundness) in caps {
-        geometry.append(freehand::rounded_cap(
-            center,
-            outward,
-            style.width * 0.5,
-            roundness,
-            style.color,
-        ));
-    }
-    geometry
 }
 
 pub(super) fn rendered_path_endpoints(kind: &ElementKind, style: Style) -> Option<[Point; 2]> {
@@ -463,16 +428,6 @@ pub(super) fn rendered_path_endpoints(kind: &ElementKind, style: Style) -> Optio
         *last
     };
     Some([*first, end])
-}
-
-fn inset_endpoint(endpoint: Point, neighbor: Point, amount: f32) -> Point {
-    let inward = neighbor - endpoint;
-    let length = inward.length();
-    if length <= f32::EPSILON {
-        endpoint
-    } else {
-        endpoint + inward * (amount / length)
-    }
 }
 
 fn rectangle_radius(min: Point, max: Point, roundness: f32) -> f32 {
@@ -647,6 +602,47 @@ fn arrow_path(head: ArrowHead, roundness: f32) -> kurbo::BezPath {
         ],
         roundness,
     )
+}
+
+fn line_path(start: Point, end: Point, width: f32, roundness: f32) -> kurbo::BezPath {
+    let delta = end - start;
+    let length = f64::from(delta.length());
+    let radius = f64::from(width.max(0.0)) * 0.5;
+    let mut path = kurbo::BezPath::new();
+    if length <= f64::EPSILON || radius <= f64::EPSILON {
+        return path;
+    }
+
+    let cap = (radius * f64::from(roundness.clamp(0.0, 1.0))).min(length * 0.5);
+    let control_x = cap * CIRCLE_KAPPA;
+    let control_y = radius * CIRCLE_KAPPA;
+    let end_center = length - cap;
+
+    path.move_to((cap, -radius));
+    path.line_to((end_center, -radius));
+    path.curve_to(
+        (end_center + control_x, -radius),
+        (length, -control_y),
+        (length, 0.0),
+    );
+    path.curve_to(
+        (length, control_y),
+        (end_center + control_x, radius),
+        (end_center, radius),
+    );
+    path.line_to((cap, radius));
+    path.curve_to((cap - control_x, radius), (0.0, control_y), (0.0, 0.0));
+    path.curve_to(
+        (0.0, -control_y),
+        (cap - control_x, -radius),
+        (cap, -radius),
+    );
+    path.close_path();
+    path.apply_affine(
+        kurbo::Affine::rotate(f64::from(delta.y.atan2(delta.x)))
+            .then_translate(kurbo::Vec2::new(f64::from(start.x), f64::from(start.y))),
+    );
+    path
 }
 
 fn rounded_polygon_path(vertices: &[Point], roundness: f32) -> kurbo::BezPath {

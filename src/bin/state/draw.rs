@@ -48,6 +48,7 @@ pub(crate) struct ToolCursor {
 
 pub(crate) const MIN_ERASER_WIDTH: f32 = 4.0;
 pub(crate) const STABILIZER_FOLLOW: f32 = 0.35;
+const CIRCLE_KAPPA: f64 = 0.552_284_749_830_793_6;
 
 pub(crate) fn stabilizer_delay(width: f32) -> f32 {
     (width * 0.15).clamp(4.0, 16.0)
