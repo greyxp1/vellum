@@ -77,7 +77,7 @@ pub struct Editor {
     last_non_eraser_tool: Tool,
     tool_properties: ToolPropertySet,
     default_tool_properties: ToolPropertySet,
-    size_range: crate::config::SizeRange,
+    size_ranges: std::sync::Arc<std::collections::BTreeMap<Tool, crate::config::SizeRange>>,
     remember_last_tool: bool,
     palette: Vec<[f32; 3]>,
 }
@@ -88,7 +88,7 @@ impl Editor {
             settings.stroke_size,
             settings.default_fill_shapes,
             &settings.tool_defaults,
-            &settings.size_range,
+            &settings.size_ranges,
         );
         let tool_properties = default_tool_properties;
         let active = tool_properties.properties(settings.default_tool).copied();
@@ -124,7 +124,7 @@ impl Editor {
             },
             tool_properties,
             default_tool_properties,
-            size_range: settings.size_range,
+            size_ranges: settings.size_ranges,
             remember_last_tool: settings.remember_last_tool,
             palette: settings.palette,
         }

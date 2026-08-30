@@ -73,26 +73,20 @@ pub(super) struct ToolProperties {
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct ToolPropertySet {
-    pen: ToolProperties,
-    line: ToolProperties,
-    arrow: ToolProperties,
-    triangle: ToolProperties,
-    rectangle: ToolProperties,
-    ellipse: ToolProperties,
-    text: ToolProperties,
-    eraser: ToolProperties,
-}
+pub(super) struct ToolPropertySet([ToolProperties; Tool::SIZED.len()]);
 
 impl ToolPropertySet {
     pub(super) fn new(
         stroke_size: f32,
         default_fill_shapes: bool,
         defaults: &crate::config::ToolDefaults,
-        size_range: &SizeRange,
+        size_ranges: &std::collections::BTreeMap<Tool, SizeRange>,
     ) -> Self {
-        let properties = |tool: Tool, filled| {
-            let configured = defaults.get(&tool).copied().unwrap_or_default();
+        let properties = |tool: Tool| {
+            let configured = defaults.get(&tool).cloned().unwrap_or_default();
+            let size_range = size_ranges
+                .get(&tool)
+                .expect("adjustable tools have size ranges");
             let size = configured.size.unwrap_or_else(|| {
                 tool.initial_size(stroke_size)
                     .expect("adjustable tools have sizes")
@@ -103,47 +97,22 @@ impl ToolPropertySet {
                 roundness: configured
                     .roundness
                     .unwrap_or_else(|| tool.initial_roundness()),
-                filled: configured.filled.unwrap_or(filled),
+                filled: configured
+                    .filled
+                    .unwrap_or(default_fill_shapes && tool.supports_fill()),
             }
         };
-        Self {
-            pen: properties(Tool::Pen, false),
-            line: properties(Tool::Line, false),
-            arrow: properties(Tool::Arrow, false),
-            triangle: properties(Tool::Triangle, default_fill_shapes),
-            rectangle: properties(Tool::Rectangle, default_fill_shapes),
-            ellipse: properties(Tool::Ellipse, default_fill_shapes),
-            text: properties(Tool::Text, false),
-            eraser: properties(Tool::Eraser, false),
-        }
+        Self(Tool::SIZED.map(properties))
     }
 
     pub(super) fn properties(&self, tool: Tool) -> Option<&ToolProperties> {
-        Some(match tool {
-            Tool::Pen => &self.pen,
-            Tool::Line => &self.line,
-            Tool::Arrow => &self.arrow,
-            Tool::Triangle => &self.triangle,
-            Tool::Rectangle => &self.rectangle,
-            Tool::Ellipse => &self.ellipse,
-            Tool::Text => &self.text,
-            Tool::Eraser => &self.eraser,
-            Tool::Select => return None,
-        })
+        self.0
+            .get(Tool::SIZED.iter().position(|item| *item == tool)?)
     }
 
     fn properties_mut(&mut self, tool: Tool) -> Option<&mut ToolProperties> {
-        Some(match tool {
-            Tool::Pen => &mut self.pen,
-            Tool::Line => &mut self.line,
-            Tool::Arrow => &mut self.arrow,
-            Tool::Triangle => &mut self.triangle,
-            Tool::Rectangle => &mut self.rectangle,
-            Tool::Ellipse => &mut self.ellipse,
-            Tool::Text => &mut self.text,
-            Tool::Eraser => &mut self.eraser,
-            Tool::Select => return None,
-        })
+        self.0
+            .get_mut(Tool::SIZED.iter().position(|item| *item == tool)?)
     }
 }
 
@@ -184,12 +153,17 @@ impl Editor {
         if steps == 0.0 {
             return (Damage::None, String::new(), false);
         }
-        let size_range = self.size_range.clone();
         let default_text_size = self
             .default_size(Tool::Text)
             .expect("text must have an adjustable size");
+        let text_size_range = self
+            .size_ranges
+            .get(&Tool::Text)
+            .expect("text must have a size range")
+            .clone();
         if let Some(edit) = self.text_edit_mut() {
-            let adjustment = stepped_size(edit.style.size, default_text_size, steps, &size_range);
+            let adjustment =
+                stepped_size(edit.style.size, default_text_size, steps, &text_size_range);
             let label = size_label(adjustment.value, default_text_size);
             if adjustment.value == edit.style.size {
                 return (Damage::Preview, label, adjustment.hit_stop);
@@ -199,6 +173,7 @@ impl Editor {
         }
         if !self.selected.is_empty() {
             let defaults = self.default_tool_properties;
+            let size_ranges = self.size_ranges.clone();
             let mut hit_stop = false;
             let (damage, feedback) = self.adjust_selected(|kind, style| {
                 let tool = tool_for(kind);
@@ -206,7 +181,10 @@ impl Editor {
                     .properties(tool)
                     .expect("element tools have adjustable properties")
                     .size;
-                let adjustment = stepped_size(style.size, default, steps, &size_range);
+                let size_range = size_ranges
+                    .get(&tool)
+                    .expect("element tools have size ranges");
+                let adjustment = stepped_size(style.size, default, steps, size_range);
                 style.size = adjustment.value;
                 hit_stop |= adjustment.hit_stop;
                 Some(size_label(style.size, default))
@@ -217,6 +195,11 @@ impl Editor {
         let Some(default) = self.default_size(tool) else {
             return (Damage::None, String::new(), false);
         };
+        let size_range = self
+            .size_ranges
+            .get(&tool)
+            .expect("adjustable tools have size ranges")
+            .clone();
         let properties = self
             .properties_mut(tool)
             .expect("tools with a default size have adjustable properties");

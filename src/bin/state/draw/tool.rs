@@ -14,6 +14,17 @@ pub enum Tool {
 }
 
 impl Tool {
+    pub(crate) const SIZED: [Self; 8] = [
+        Self::Pen,
+        Self::Line,
+        Self::Arrow,
+        Self::Triangle,
+        Self::Rectangle,
+        Self::Ellipse,
+        Self::Text,
+        Self::Eraser,
+    ];
+
     pub(crate) fn name(self) -> &'static str {
         match self {
             Self::Pen => "pen",

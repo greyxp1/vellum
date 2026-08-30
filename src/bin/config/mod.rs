@@ -18,7 +18,7 @@ struct FileConfig {
     remember_last_tool: Option<bool>,
     stroke_size: Option<f32>,
     #[serde(default)]
-    size_range: SizeRange,
+    size_range: SizeRangeConfig,
     default_color: Option<String>,
     palette: Option<Vec<String>>,
     feedback_duration_ms: Option<u64>,
@@ -38,31 +38,32 @@ pub(crate) struct SizeRange {
     stops: Arc<[f32]>,
 }
 
-#[derive(serde::Deserialize)]
+#[derive(Clone, Debug, Default, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-struct SizeRangeFields {
+pub(crate) struct SizeRangeConfig {
     min: Option<f32>,
     max: Option<f32>,
     step: Option<f32>,
     stops: Option<Vec<f32>>,
 }
 
-impl<'de> serde::Deserialize<'de> for SizeRange {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let fields = <SizeRangeFields as serde::Deserialize>::deserialize(deserializer)?;
-        let defaults = Self::default();
-        let mut stops = fields.stops.unwrap_or_default();
-        stops.sort_by(f32::total_cmp);
-        stops.dedup();
-        Ok(Self {
-            min: fields.min.unwrap_or(defaults.min),
-            max: fields.max.unwrap_or(defaults.max),
-            step: fields.step.unwrap_or(defaults.step),
-            stops: Arc::from(stops),
-        })
+impl SizeRangeConfig {
+    fn resolve(&self, fallback: &SizeRange) -> SizeRange {
+        let stops = self.stops.as_ref().map_or_else(
+            || fallback.stops.clone(),
+            |stops| {
+                let mut stops = stops.clone();
+                stops.sort_by(f32::total_cmp);
+                stops.dedup();
+                Arc::from(stops)
+            },
+        );
+        SizeRange {
+            min: self.min.unwrap_or(fallback.min),
+            max: self.max.unwrap_or(fallback.max),
+            step: self.step.unwrap_or(fallback.step),
+            stops,
+        }
     }
 }
 
@@ -78,19 +79,21 @@ impl Default for SizeRange {
 }
 
 impl SizeRange {
-    fn validate(self) -> Result<Self, String> {
+    fn validate(self, name: &str) -> Result<Self, String> {
         if !self.min.is_finite() || self.min <= 0.0 {
-            return Err("size_range.min must be greater than 0".into());
+            return Err(format!("{name}.min must be greater than 0"));
         }
         if !self.max.is_finite() || self.max < self.min {
-            return Err("size_range.max must be greater than or equal to size_range.min".into());
+            return Err(format!(
+                "{name}.max must be greater than or equal to {name}.min"
+            ));
         }
         if !self.step.is_finite() || self.step <= 0.0 {
-            return Err("size_range.step must be greater than 0".into());
+            return Err(format!("{name}.step must be greater than 0"));
         }
         if self.stops.iter().any(|stop| !self.contains(*stop)) {
             return Err(format!(
-                "size_range.stops values must be between {} and {}",
+                "{name}.stops values must be between {} and {}",
                 self.min, self.max,
             ));
         }
@@ -122,24 +125,56 @@ impl SizeRange {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, serde::Deserialize)]
+#[derive(Clone, Debug, Default, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PropertyDefaults {
     pub(crate) size: Option<f32>,
+    pub(crate) size_range: Option<SizeRangeConfig>,
     pub(crate) opacity: Option<f32>,
     pub(crate) roundness: Option<f32>,
     pub(crate) filled: Option<bool>,
 }
 
-fn validate_tool_defaults(tools: &ToolDefaults, size_range: &SizeRange) -> Result<(), String> {
+fn resolve_size_ranges(
+    tools: &ToolDefaults,
+    fallback: &SizeRange,
+) -> Result<BTreeMap<state::Tool, SizeRange>, String> {
+    state::Tool::SIZED
+        .into_iter()
+        .map(|tool| {
+            let name = format!("tools.{}.size_range", tool.name());
+            let range = tools
+                .get(&tool)
+                .and_then(|defaults| defaults.size_range.as_ref())
+                .map_or_else(|| fallback.clone(), |range| range.resolve(fallback))
+                .validate(&name)?;
+            Ok((tool, range))
+        })
+        .collect()
+}
+
+fn validate_tool_defaults(
+    tools: &ToolDefaults,
+    size_ranges: &BTreeMap<state::Tool, SizeRange>,
+) -> Result<(), String> {
     for (&tool, defaults) in tools {
         let prefix = format!("tools.{}", tool.name());
         let supports_size = tool != state::Tool::Select;
+        if defaults.size_range.is_some() && !supports_size {
+            return Err(format!("{prefix}.size_range is not supported"));
+        }
         match defaults.size {
             Some(_) if !supports_size => {
                 return Err(format!("{prefix}.size is not supported"));
             }
-            Some(size) if !size_range.contains(size) => {
+            Some(size)
+                if !size_ranges
+                    .get(&tool)
+                    .is_some_and(|range| range.contains(size)) =>
+            {
+                let size_range = size_ranges
+                    .get(&tool)
+                    .expect("tools with size defaults have size ranges");
                 return Err(format!(
                     "{prefix}.size must be between {} and {}",
                     size_range.min(),
@@ -174,7 +209,7 @@ fn validate_tool_defaults(tools: &ToolDefaults, size_range: &SizeRange) -> Resul
 
 pub(super) struct Settings {
     pub(super) stroke_size: f32,
-    pub(super) size_range: SizeRange,
+    pub(super) size_ranges: Arc<BTreeMap<state::Tool, SizeRange>>,
     pub(super) default_color: Rgb,
     pub(super) default_tool: state::Tool,
     pub(super) remember_last_tool: bool,
@@ -195,7 +230,10 @@ impl Settings {
             read_first_config(default_config_paths())?
         };
 
-        let size_range = file.size_range.validate()?;
+        let size_range = file
+            .size_range
+            .resolve(&SizeRange::default())
+            .validate("size_range")?;
         let stroke_size = match file.stroke_size {
             Some(size) if !size_range.contains(size) => {
                 return Err(format!(
@@ -241,11 +279,12 @@ impl Settings {
             return Err("feedback_duration_ms must not exceed 60000".into());
         }
 
-        validate_tool_defaults(&file.tools, &size_range)?;
+        let size_ranges = Arc::new(resolve_size_ranges(&file.tools, &size_range)?);
+        validate_tool_defaults(&file.tools, &size_ranges)?;
 
         Ok(Self {
             stroke_size,
-            size_range,
+            size_ranges,
             default_color,
             default_tool,
             remember_last_tool: file.remember_last_tool.unwrap_or(true),
