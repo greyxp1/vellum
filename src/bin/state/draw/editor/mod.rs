@@ -22,6 +22,9 @@ pub(crate) enum Action {
     ToggleEraser,
     ToggleFill,
     Delete,
+    DeleteWord,
+    DeleteToStart,
+    DeleteToEnd,
     Clear,
     Cancel,
     CommitText,
@@ -222,6 +225,21 @@ impl Editor {
                     effect.damage = self.delete_selection();
                 }
             }
+            Action::DeleteWord => {
+                if let Some(edit) = self.text_edit_mut() {
+                    effect.damage = Damage::from_preview(edit.delete_word());
+                }
+            }
+            Action::DeleteToStart => {
+                if let Some(edit) = self.text_edit_mut() {
+                    effect.damage = Damage::from_preview(edit.delete_to_start());
+                }
+            }
+            Action::DeleteToEnd => {
+                if let Some(edit) = self.text_edit_mut() {
+                    effect.damage = Damage::from_preview(edit.delete_to_end());
+                }
+            }
             Action::Clear => effect.damage = self.clear(),
             Action::Cancel => {
                 let cancelled = self.cancel_interaction();
@@ -253,7 +271,7 @@ impl Editor {
                     effect.damage = Damage::Preview;
                 }
             }
-            _ => {}
+            Action::Redo | Action::Undo => (),
         }
         effect.damage = effect.damage.max(Damage::from_preview(closed_picker));
         effect

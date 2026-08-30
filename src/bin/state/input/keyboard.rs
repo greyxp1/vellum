@@ -13,6 +13,15 @@ const SELECT_ALL_KEY: &str = "a";
 const UNDO_KEY: &str = "z";
 const REDO_KEY: &str = "y";
 const TOGGLE_FILL_KEY: &str = "f";
+const DELETE_TO_START_KEY: &str = "u";
+const DELETE_TO_END_KEY: &str = "k";
+const EMACS_BACKSPACE_KEY: &str = "h";
+const EMACS_BACKSPACE_WORD_KEY: &str = "w";
+const EMACS_DELETE_KEY: &str = "d";
+const EMACS_RIGHT_KEY: &str = "f";
+const EMACS_LEFT_KEY: &str = "b";
+const EMACS_START_KEY: &str = "a";
+const EMACS_END_KEY: &str = "e";
 
 enum LogicalKey {
     Character(String),
@@ -38,6 +47,7 @@ fn resolve_keybinding(chord: &KeyChord, editing_text: bool) -> Option<Action> {
     if editing_text {
         return match &chord.key {
             Escape => Some(Action::Cancel),
+            Delete if chord.modifiers.ctrl => Some(Action::DeleteWord),
             Delete => Some(Action::Delete),
             Backspace if chord.modifiers.ctrl => Some(Action::BackspaceWord),
             Backspace => Some(Action::Backspace),
@@ -48,7 +58,41 @@ fn resolve_keybinding(chord: &KeyChord, editing_text: bool) -> Option<Action> {
             ArrowRight => Some(Action::MoveCursor(CursorMove::Right)),
             Home => Some(Action::MoveCursor(CursorMove::Home)),
             End => Some(Action::MoveCursor(CursorMove::End)),
-            Character(text) if !chord.modifiers.ctrl && !text.chars().any(char::is_control) => {
+            Character(text) if chord.modifiers.ctrl => {
+                if text.eq_ignore_ascii_case(EMACS_DELETE_KEY) {
+                    Some(Action::Delete)
+                } else if text.eq_ignore_ascii_case(EMACS_BACKSPACE_KEY) {
+                    Some(Action::Backspace)
+                } else if text.eq_ignore_ascii_case(EMACS_BACKSPACE_WORD_KEY) {
+                    Some(Action::BackspaceWord)
+                } else if text.eq_ignore_ascii_case(EMACS_LEFT_KEY) {
+                    Some(Action::MoveCursor(CursorMove::Left))
+                } else if text.eq_ignore_ascii_case(EMACS_RIGHT_KEY) {
+                    Some(Action::MoveCursor(CursorMove::Right))
+                } else if text.eq_ignore_ascii_case(EMACS_START_KEY) {
+                    Some(Action::MoveCursor(CursorMove::Home))
+                } else if text.eq_ignore_ascii_case(EMACS_END_KEY) {
+                    Some(Action::MoveCursor(CursorMove::End))
+                } else if text.eq_ignore_ascii_case(DELETE_TO_START_KEY) {
+                    Some(Action::DeleteToStart)
+                } else if text.eq_ignore_ascii_case(DELETE_TO_END_KEY) {
+                    Some(Action::DeleteToEnd)
+                } else {
+                    None
+                }
+            }
+            Character(text) if chord.modifiers.alt => {
+                if text.eq_ignore_ascii_case(EMACS_DELETE_KEY) {
+                    Some(Action::DeleteWord)
+                } else if text.eq_ignore_ascii_case(EMACS_LEFT_KEY) {
+                    Some(Action::MoveCursor(CursorMove::WordLeft))
+                } else if text.eq_ignore_ascii_case(EMACS_RIGHT_KEY) {
+                    Some(Action::MoveCursor(CursorMove::WordRight))
+                } else {
+                    None
+                }
+            }
+            Character(text) if !text.chars().any(char::is_control) => {
                 Some(Action::InsertText(text.clone()))
             }
             _ => None,

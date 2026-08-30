@@ -55,6 +55,31 @@ impl TextEdit {
         true
     }
 
+    pub(super) fn delete_word(&mut self) -> bool {
+        if self.cursor == self.content.len() {
+            return false;
+        }
+        let next = next_word_boundary(&self.content, self.cursor);
+        self.content.drain(self.cursor..next);
+        true
+    }
+
+    pub(super) fn delete_to_start(&mut self) -> bool {
+        if self.cursor == 0 {
+            return false;
+        }
+        self.cursor -= self.content.drain(..self.cursor).count();
+        true
+    }
+
+    pub(super) fn delete_to_end(&mut self) -> bool {
+        if self.cursor == self.content.len() {
+            return false;
+        }
+        self.content.drain(self.cursor..);
+        true
+    }
+
     pub(super) fn move_cursor(&mut self, movement: CursorMove) -> bool {
         let cursor = match movement {
             CursorMove::Left => previous_boundary(&self.content, self.cursor),
