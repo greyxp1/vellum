@@ -1,5 +1,5 @@
 use super::{CIRCLE_KAPPA, freehand};
-use crate::render::{FillRule, Geometry, StrokeStyle};
+use crate::render::{FillRule, Geometry, StrokeStyle, text_line_height};
 use std::borrow::Cow;
 
 pub(super) const HIT_SLOP: f32 = 5.0;
@@ -408,7 +408,7 @@ pub(super) fn bounds_for(kind: &ElementKind, style: Style) -> Bounds {
             min: *origin,
             max: Point::new(
                 origin.x + content.chars().count().max(1) as f32 * style.size * 0.65,
-                origin.y + style.size * 1.25,
+                origin.y + text_line_height(style.size),
             ),
         },
     };

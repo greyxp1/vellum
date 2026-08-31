@@ -8,7 +8,7 @@ mod text_edit;
 mod tool;
 mod triangle;
 
-use crate::render::{FillRule, Geometry, LocalGeometry, TextSpec, WgpuState};
+use crate::render::{FillRule, Geometry, LocalGeometry, TextSpec, WgpuState, text_line_height};
 use std::time::{Duration, Instant};
 
 pub(crate) use self::editor::{Action, CursorMove};
@@ -331,7 +331,7 @@ impl DrawState {
                     content,
                     left: origin.x + offset.x,
                     top: origin.y + offset.y,
-                    size: element.style.size,
+                    font_size: element.style.size,
                     color: element.style.color,
                 });
             }
@@ -342,7 +342,7 @@ impl DrawState {
                     content: &edit.content,
                     left: edit.origin.x,
                     top: edit.origin.y,
-                    size: edit.style.size,
+                    font_size: edit.style.size,
                     color: edit.style.color,
                 });
                 caret = Some((key, edit.cursor, edit.origin, edit.style.size));
@@ -357,7 +357,7 @@ impl DrawState {
                         content,
                         left: at.x + x,
                         top: at.y + y,
-                        size: 18.0,
+                        font_size: 18.0,
                         color: [0.0, 0.0, 0.0, 0.9],
                     });
                 }
@@ -366,7 +366,7 @@ impl DrawState {
                     content,
                     left: at.x + 16.0,
                     top: at.y + 16.0,
-                    size: 18.0,
+                    font_size: 18.0,
                     color: [1.0, 1.0, 1.0, 1.0],
                 });
             }
@@ -377,10 +377,11 @@ impl DrawState {
 
         self.previews.clear();
         if self.caret_visible
-            && let Some((key, cursor, origin, size)) = caret
+            && let Some((key, cursor, origin, font_size)) = caret
             && let Some(x) = wgpu.text_cursor_x(key, cursor)
         {
-            self.previews.push(text_caret(origin.x + x, origin.y, size));
+            self.previews
+                .push(text_caret(origin.x + x, origin.y, font_size));
         }
         self.editor.append_preview_geometry(&mut self.previews);
         self.editor
@@ -452,10 +453,10 @@ fn tool_cursor_geometry(point: Point, cursor: ToolCursor) -> Geometry {
     )
 }
 
-fn text_caret(left: f32, top: f32, size: f32) -> Geometry {
+fn text_caret(left: f32, top: f32, font_size: f32) -> Geometry {
     use kurbo::Shape;
 
-    let bottom = top + size * 1.25;
+    let bottom = top + text_line_height(font_size);
     let black = [0.0, 0.0, 0.0, 1.0];
     let white = [1.0, 1.0, 1.0, 1.0];
     let mut geometry = Geometry::fill(

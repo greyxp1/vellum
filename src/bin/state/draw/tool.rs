@@ -45,7 +45,7 @@ impl Tool {
 
     pub(crate) fn initial_size(self, stroke_size: f32) -> Option<f32> {
         match self {
-            Self::Text => Some(20.0),
+            Self::Text => Some(16.0),
             Self::Eraser => Some(10.0),
             Self::Select => None,
             _ => Some(stroke_size),

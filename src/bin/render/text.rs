@@ -7,18 +7,24 @@ use cosmic_text::{
 
 use super::vello_color;
 
+const LINE_HEIGHT_SCALE: f32 = 1.25;
+
+pub fn text_line_height(font_size: f32) -> f32 {
+    font_size * LINE_HEIGHT_SCALE
+}
+
 pub struct TextSpec<'a> {
     pub key: u64,
     pub content: &'a str,
     pub left: f32,
     pub top: f32,
-    pub size: f32,
+    pub font_size: f32,
     pub color: [f32; 4],
 }
 
 struct CachedText {
     content: String,
-    size: f32,
+    font_size: f32,
     layout_size: [f32; 2],
     buffer: Buffer,
 }
@@ -55,7 +61,7 @@ impl TextState {
         for spec in specs {
             spec.key.hash(&mut hasher);
             spec.content.hash(&mut hasher);
-            for value in [spec.left, spec.top, spec.size]
+            for value in [spec.left, spec.top, spec.font_size]
                 .into_iter()
                 .chain(spec.color)
             {
@@ -71,17 +77,17 @@ impl TextState {
             .retain(|key, _| specs.iter().any(|spec| spec.key == *key));
 
         for spec in specs {
-            let stale = self
-                .buffers
-                .get(&spec.key)
-                .is_none_or(|cached| cached.content != spec.content || cached.size != spec.size);
+            let stale = self.buffers.get(&spec.key).is_none_or(|cached| {
+                cached.content != spec.content || cached.font_size != spec.font_size
+            });
             if stale {
+                let line_height = text_line_height(spec.font_size);
                 let mut buffer = Buffer::new(
                     &mut self.font_system,
-                    Metrics::new(spec.size, spec.size * 1.25),
+                    Metrics::new(spec.font_size, line_height),
                 );
                 buffer.set_wrap(&mut self.font_system, Wrap::None);
-                buffer.set_size(&mut self.font_system, None, Some(spec.size * 1.25));
+                buffer.set_size(&mut self.font_system, None, Some(line_height));
                 buffer.set_text(
                     &mut self.font_system,
                     spec.content,
@@ -97,8 +103,8 @@ impl TextState {
                     spec.key,
                     CachedText {
                         content: spec.content.to_owned(),
-                        size: spec.size,
-                        layout_size: [layout_width, spec.size * 1.25],
+                        font_size: spec.font_size,
+                        layout_size: [layout_width, line_height],
                         buffer,
                     },
                 );

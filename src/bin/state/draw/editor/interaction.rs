@@ -4,6 +4,7 @@ use super::super::text_edit::TextEdit;
 use super::super::tool::Tool;
 use super::super::{Cursor, Modifiers, ToolCursor, ToolOverride, freehand};
 use super::{Damage, Editor, HistoryEntry, drawing_kind};
+use crate::render::text_line_height;
 
 #[derive(Debug)]
 pub(super) enum Interaction {
@@ -101,9 +102,10 @@ impl Editor {
                 previous.max(Damage::Preview)
             }
             Tool::Text => {
+                let origin = Point::new(point.x, point.y - text_line_height(self.style.size) * 0.5);
                 self.interaction = Some(Interaction::EditingText(TextEdit {
                     id: None,
-                    origin: point,
+                    origin,
                     content: String::new(),
                     cursor: 0,
                     style: self.style,

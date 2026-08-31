@@ -7,6 +7,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 const CONFIG_FILE: &str = "vellum/config.toml";
+const DEFAULT_TEXT_MIN_SIZE: f32 = 8.0;
+const DEFAULT_TEXT_MAX_SIZE: f32 = 500.0;
+const DEFAULT_TEXT_STEP: f32 = 0.5;
 const DEFAULT_PALETTE: [&str; 8] = [
     "#E84046", "#EC8948", "#EED049", "#3ED73C", "#0283FC", "#7C57EB", "#FFFFFF", "#000000",
 ];
@@ -138,15 +141,35 @@ pub(crate) struct PropertyDefaults {
 fn resolve_size_ranges(
     tools: &ToolDefaults,
     fallback: &SizeRange,
+    global: &SizeRangeConfig,
 ) -> Result<BTreeMap<state::Tool, SizeRange>, String> {
     state::Tool::SIZED
         .into_iter()
         .map(|tool| {
             let name = format!("tools.{}.size_range", tool.name());
+            let mut fallback = fallback.clone();
+            if tool == state::Tool::Text {
+                if global.min.is_none() {
+                    fallback.min = DEFAULT_TEXT_MIN_SIZE;
+                }
+                if global.max.is_none() {
+                    fallback.max = DEFAULT_TEXT_MAX_SIZE;
+                }
+                if global.step.is_none() {
+                    fallback.step = DEFAULT_TEXT_STEP;
+                }
+                let stops = fallback
+                    .stops
+                    .iter()
+                    .copied()
+                    .filter(|stop| fallback.contains(*stop))
+                    .collect::<Vec<_>>();
+                fallback.stops = Arc::from(stops);
+            }
             let range = tools
                 .get(&tool)
                 .and_then(|defaults| defaults.size_range.as_ref())
-                .map_or_else(|| fallback.clone(), |range| range.resolve(fallback))
+                .map_or_else(|| fallback.clone(), |range| range.resolve(&fallback))
                 .validate(&name)?;
             Ok((tool, range))
         })
@@ -279,7 +302,11 @@ impl Settings {
             return Err("feedback_duration_ms must not exceed 60000".into());
         }
 
-        let size_ranges = Arc::new(resolve_size_ranges(&file.tools, &size_range)?);
+        let size_ranges = Arc::new(resolve_size_ranges(
+            &file.tools,
+            &size_range,
+            &file.size_range,
+        )?);
         validate_tool_defaults(&file.tools, &size_ranges)?;
 
         Ok(Self {
