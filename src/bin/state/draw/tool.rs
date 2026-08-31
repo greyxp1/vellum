@@ -54,9 +54,12 @@ impl Tool {
 
     pub(crate) fn default_roundness(self) -> Option<f32> {
         match self {
-            Self::Pen | Self::Line | Self::Arrow | Self::Triangle | Self::Rectangle => {
-                Some(self.initial_roundness())
-            }
+            Self::Pen
+            | Self::Line
+            | Self::Arrow
+            | Self::Triangle
+            | Self::Rectangle
+            | Self::Text => Some(self.initial_roundness()),
             _ => None,
         }
     }
@@ -66,6 +69,7 @@ impl Tool {
             Self::Pen => 1.0,
             Self::Line | Self::Arrow => 0.5,
             Self::Rectangle => 0.05,
+            Self::Text => 0.1,
             _ => 0.0,
         }
     }

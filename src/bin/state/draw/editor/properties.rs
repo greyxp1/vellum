@@ -19,6 +19,15 @@ fn fill_label(filled: bool) -> String {
     format!("Fill · {}", if filled { "solid" } else { "outline" })
 }
 
+fn background_label(background: bool) -> String {
+    format!("Background · {}", if background { "on" } else { "off" })
+}
+
+fn adjust_percent(value: &mut f32, default: f32, steps: f32, min: f32) -> (Damage, String) {
+    *value = stepped_value(*value, default, steps, 0.01, min, 1.0);
+    (Damage::Preview, percent_label(*value, default))
+}
+
 fn stepped_value(value: f32, default: f32, steps: f32, increment: f32, min: f32, max: f32) -> f32 {
     let offset = (value - default) / increment;
     let aligned = if steps.is_sign_positive() {
@@ -97,9 +106,13 @@ impl ToolPropertySet {
                 roundness: configured
                     .roundness
                     .unwrap_or_else(|| tool.initial_roundness()),
-                filled: configured
-                    .filled
-                    .unwrap_or(default_fill_shapes && tool.supports_fill()),
+                filled: if tool == Tool::Text {
+                    configured.background.unwrap_or(false)
+                } else {
+                    configured
+                        .filled
+                        .unwrap_or(default_fill_shapes && tool.supports_fill())
+                },
             }
         };
         Self(Tool::SIZED.map(properties))
@@ -118,19 +131,36 @@ impl ToolPropertySet {
 
 impl Editor {
     pub(super) fn toggle_fill(&mut self) -> (Damage, String) {
+        if let Some(edit) = self.text_edit_mut() {
+            edit.style.filled = !edit.style.filled;
+            return (Damage::Preview, background_label(edit.style.filled));
+        }
         if !self.selected.is_empty() {
-            let fill = self
+            let enable = self
                 .selected
                 .iter()
                 .filter_map(|id| self.element(*id))
-                .filter(|element| fillable(&element.kind))
+                .filter(|element| supports_fill(&element.kind))
                 .any(|element| !element.style.filled);
             return self.adjust_selected(|kind, style| {
-                fillable(kind).then(|| {
-                    style.filled = fill;
-                    fill_label(fill)
+                supports_fill(kind).then(|| {
+                    style.filled = enable;
+                    if matches!(kind, ElementKind::Text { .. }) {
+                        background_label(enable)
+                    } else {
+                        fill_label(enable)
+                    }
                 })
             });
+        }
+        if self.tool == Tool::Text {
+            let properties = self
+                .properties_mut(Tool::Text)
+                .expect("text has adjustable properties");
+            properties.filled = !properties.filled;
+            let background = properties.filled;
+            self.sync_active_style();
+            return (Damage::Preview, background_label(background));
         }
         if !self.tool.supports_fill() {
             return (Damage::None, String::new());
@@ -165,9 +195,6 @@ impl Editor {
             let adjustment =
                 stepped_size(edit.style.size, default_text_size, steps, &text_size_range);
             let label = size_label(adjustment.value, default_text_size);
-            if adjustment.value == edit.style.size {
-                return (Damage::Preview, label, adjustment.hit_stop);
-            }
             edit.style.size = adjustment.value;
             return (Damage::Preview, label, adjustment.hit_stop);
         }
@@ -220,20 +247,12 @@ impl Editor {
         }
         let default_text_opacity = self.default_properties(Tool::Text).opacity;
         if let Some(edit) = self.text_edit_mut() {
-            let opacity = stepped_value(
-                edit.style.color[3],
+            return adjust_percent(
+                &mut edit.style.color[3],
                 default_text_opacity,
                 steps,
-                0.01,
                 MIN_OPACITY,
-                1.0,
             );
-            let label = percent_label(opacity, default_text_opacity);
-            if opacity == edit.style.color[3] {
-                return (Damage::Preview, label);
-            }
-            edit.style.color[3] = opacity;
-            return (Damage::Preview, label);
         }
         if self.selected.is_empty() {
             if self.tool == Tool::Eraser {
@@ -263,6 +282,15 @@ impl Editor {
     pub(in crate::state::draw) fn adjust_roundness(&mut self, steps: f32) -> (Damage, String) {
         if steps == 0.0 {
             return (Damage::None, String::new());
+        }
+        let default_text_roundness = self.default_properties(Tool::Text).roundness;
+        if let Some(edit) = self.text_edit_mut() {
+            return adjust_percent(
+                &mut edit.style.roundness,
+                default_text_roundness,
+                steps,
+                0.0,
+            );
         }
         if self.selected.is_empty() {
             let tool = self.tool;
@@ -411,4 +439,8 @@ fn fillable(kind: &ElementKind) -> bool {
         kind,
         ElementKind::Triangle { .. } | ElementKind::Rectangle { .. } | ElementKind::Ellipse { .. }
     )
+}
+
+fn supports_fill(kind: &ElementKind) -> bool {
+    fillable(kind) || matches!(kind, ElementKind::Text { .. })
 }

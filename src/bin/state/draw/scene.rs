@@ -261,10 +261,7 @@ impl Element {
         let ElementKind::Text { origin, .. } = self.kind else {
             return;
         };
-        self.bounds = Bounds {
-            min: origin,
-            max: Point::new(origin.x + width, origin.y + height),
-        };
+        self.bounds = text_bounds(origin, [width, height], self.style);
     }
 
     pub(super) fn preview_bounds(&self, kind: &ElementKind) -> Bounds {
@@ -404,13 +401,14 @@ pub(super) fn bounds_for(kind: &ElementKind, style: Style) -> Bounds {
             min: Point::new(center.x - radii.x, center.y - radii.y),
             max: Point::new(center.x + radii.x, center.y + radii.y),
         },
-        ElementKind::Text { origin, content } => Bounds {
-            min: *origin,
-            max: Point::new(
-                origin.x + content.chars().count().max(1) as f32 * style.size * 0.65,
-                origin.y + text_line_height(style.size),
-            ),
-        },
+        ElementKind::Text { origin, content } => text_bounds(
+            *origin,
+            [
+                content.chars().count().max(1) as f32 * style.size * 0.65,
+                text_line_height(style.size),
+            ],
+            style,
+        ),
     };
     let radius = width * 0.5;
     let expansion = match kind {
@@ -422,6 +420,19 @@ pub(super) fn bounds_for(kind: &ElementKind, style: Style) -> Bounds {
         _ => radius,
     };
     bounds.expanded(expansion)
+}
+
+fn text_bounds(origin: Point, [width, height]: [f32; 2], style: Style) -> Bounds {
+    let [[min_x, min_y], [max_x, max_y]] = crate::render::text_bounds(
+        [origin.x, origin.y],
+        [width, height],
+        style.size,
+        style.filled,
+    );
+    Bounds {
+        min: Point::new(min_x, min_y),
+        max: Point::new(max_x, max_y),
+    }
 }
 
 pub(super) fn geometry(kind: &ElementKind, style: Style) -> Geometry {

@@ -136,6 +136,7 @@ pub(crate) struct PropertyDefaults {
     pub(crate) opacity: Option<f32>,
     pub(crate) roundness: Option<f32>,
     pub(crate) filled: Option<bool>,
+    pub(crate) background: Option<bool>,
 }
 
 fn resolve_size_ranges(
@@ -225,6 +226,9 @@ fn validate_tool_defaults(
         }
         if defaults.filled.is_some() && !tool.supports_fill() {
             return Err(format!("{prefix}.filled is not supported"));
+        }
+        if defaults.background.is_some() && tool != state::Tool::Text {
+            return Err(format!("{prefix}.background is not supported"));
         }
     }
     Ok(())

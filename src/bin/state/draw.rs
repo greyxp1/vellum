@@ -333,6 +333,7 @@ impl DrawState {
                     top: origin.y + offset.y,
                     font_size: element.style.size,
                     color: element.style.color,
+                    background_roundness: element.style.filled.then_some(element.style.roundness),
                 });
             }
             if let Some(edit) = active_text {
@@ -344,6 +345,7 @@ impl DrawState {
                     top: edit.origin.y,
                     font_size: edit.style.size,
                     color: edit.style.color,
+                    background_roundness: edit.style.filled.then_some(edit.style.roundness),
                 });
                 caret = Some((key, edit.cursor, edit.origin, edit.style.size));
             }
@@ -359,6 +361,7 @@ impl DrawState {
                         top: at.y + y,
                         font_size: 18.0,
                         color: [0.0, 0.0, 0.0, 0.9],
+                        background_roundness: None,
                     });
                 }
                 text_specs.push(TextSpec {
@@ -368,6 +371,7 @@ impl DrawState {
                     top: at.y + 16.0,
                     font_size: 18.0,
                     color: [1.0, 1.0, 1.0, 1.0],
+                    background_roundness: None,
                 });
             }
             wgpu.prepare_text(&text_specs);

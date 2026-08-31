@@ -2,7 +2,7 @@ mod geometry;
 mod text;
 
 pub use geometry::{DrawCommand, FillRule, Geometry, LocalGeometry, StrokeStyle};
-pub use text::{TextSpec, text_line_height};
+pub use text::{TextSpec, text_bounds, text_line_height};
 
 use kurbo::Affine;
 use text::TextState;
@@ -354,15 +354,15 @@ impl WgpuState {
         self.main_scene.set_transform(Affine::IDENTITY);
         let target_is_srgb = self.surface_config.format.is_srgb();
         replay_geometry(&mut self.main_scene, &self.committed, target_is_srgb);
-        for geometry in previews {
-            replay_geometry(&mut self.main_scene, geometry, target_is_srgb);
-        }
         if let Some(text) = &mut self.text {
             text.append_to_scene(
                 &mut self.main_scene,
                 &mut self.main_resources,
                 target_is_srgb,
             );
+        }
+        for geometry in previews {
+            replay_geometry(&mut self.main_scene, geometry, target_is_srgb);
         }
 
         let picker_size = if let Some(picker) = picker {
@@ -539,15 +539,15 @@ fn replay_geometry(scene: &mut vello_hybrid::Scene, geometry: &Geometry, target_
     }
 }
 
-fn vello_color([red, green, blue, alpha]: [f32; 4], target_is_srgb: bool) -> peniko::Color {
-    fn srgb_to_linear(component: f32) -> f32 {
-        if component <= 0.04045 {
-            component / 12.92
-        } else {
-            ((component + 0.055) / 1.055).powf(2.4)
-        }
+fn srgb_to_linear(component: f32) -> f32 {
+    if component <= 0.04045 {
+        component / 12.92
+    } else {
+        ((component + 0.055) / 1.055).powf(2.4)
     }
+}
 
+fn vello_color([red, green, blue, alpha]: [f32; 4], target_is_srgb: bool) -> peniko::Color {
     let convert = |component| {
         if target_is_srgb {
             srgb_to_linear(component)

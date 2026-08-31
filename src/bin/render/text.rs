@@ -5,12 +5,47 @@ use cosmic_text::{
     Attrs, Buffer, Cursor, Edit, Editor, Family, FontSystem, Metrics, Shaping, Wrap, fontdb,
 };
 
-use super::vello_color;
+use super::{srgb_to_linear, vello_color};
 
+const DARK_TEXT_EMBOLDENING: f64 = 0.2;
 const LINE_HEIGHT_SCALE: f32 = 1.25;
 
 pub fn text_line_height(font_size: f32) -> f32 {
     font_size * LINE_HEIGHT_SCALE
+}
+
+pub fn text_padding(font_size: f32) -> [f32; 2] {
+    [font_size * 0.25, font_size * 0.125]
+}
+
+pub fn text_bounds(
+    [left, top]: [f32; 2],
+    [width, height]: [f32; 2],
+    font_size: f32,
+    background: bool,
+) -> [[f32; 2]; 2] {
+    let [padding_x, padding_y] = if background {
+        text_padding(font_size)
+    } else {
+        [0.0; 2]
+    };
+    [
+        [left - padding_x, top - padding_y],
+        [left + width + padding_x, top + height + padding_y],
+    ]
+}
+
+fn background_color([red, green, blue, alpha]: [f32; 4]) -> [f32; 4] {
+    let luminance = 0.2126 * srgb_to_linear(red)
+        + 0.7152 * srgb_to_linear(green)
+        + 0.0722 * srgb_to_linear(blue);
+    let contrast_with_black = (luminance + 0.05) / 0.05;
+    let contrast_with_white = 1.05 / (luminance + 0.05);
+    if contrast_with_black >= contrast_with_white {
+        [0.0, 0.0, 0.0, alpha]
+    } else {
+        [1.0, 1.0, 1.0, alpha]
+    }
 }
 
 pub struct TextSpec<'a> {
@@ -20,6 +55,7 @@ pub struct TextSpec<'a> {
     pub top: f32,
     pub font_size: f32,
     pub color: [f32; 4],
+    pub background_roundness: Option<f32>,
 }
 
 struct CachedText {
@@ -34,6 +70,7 @@ struct PreparedText {
     left: f32,
     top: f32,
     color: [f32; 4],
+    background_roundness: Option<f32>,
 }
 
 pub(super) struct TextState {
@@ -63,6 +100,7 @@ impl TextState {
             spec.content.hash(&mut hasher);
             for value in [spec.left, spec.top, spec.font_size]
                 .into_iter()
+                .chain(spec.background_roundness)
                 .chain(spec.color)
             {
                 value.to_bits().hash(&mut hasher);
@@ -118,6 +156,7 @@ impl TextState {
                 left: spec.left,
                 top: spec.top,
                 color: spec.color,
+                background_roundness: spec.background_roundness,
             }));
         self.prepared = prepared;
     }
@@ -140,6 +179,37 @@ impl TextState {
             let Some(cached) = buffers.get(&prepared.key) else {
                 continue;
             };
+            let automatic_background = prepared
+                .background_roundness
+                .map(|roundness| (background_color(prepared.color), roundness));
+            let emboldening = if automatic_background.is_some_and(|(color, _)| color[0] > 0.5) {
+                DARK_TEXT_EMBOLDENING
+            } else {
+                0.0
+            };
+            if let Some((background_color, roundness)) = automatic_background {
+                use kurbo::Shape;
+
+                let [[min_x, min_y], [max_x, max_y]] = text_bounds(
+                    [prepared.left, prepared.top],
+                    cached.layout_size,
+                    cached.font_size,
+                    true,
+                );
+                let width = max_x - min_x;
+                let height = max_y - min_y;
+                let radius = width.min(height) * 0.5 * roundness;
+                let background = kurbo::RoundedRect::new(
+                    f64::from(min_x),
+                    f64::from(min_y),
+                    f64::from(max_x),
+                    f64::from(max_y),
+                    f64::from(radius),
+                )
+                .to_path(0.1);
+                scene.set_paint(vello_color(background_color, target_is_srgb));
+                scene.fill_path(&background);
+            }
             for run in cached.buffer.layout_runs() {
                 for glyphs in run.glyphs.chunk_by(|left, right| {
                     left.font_id == right.font_id
@@ -153,7 +223,6 @@ impl TextState {
                     let color = first.color_opt.map_or(prepared.color, |color| {
                         color.as_rgba().map(|channel| f32::from(channel) / 255.0)
                     });
-                    scene.set_paint(vello_color(color, target_is_srgb));
                     let font_data = font_cache.entry(first.font_id).or_insert_with(|| {
                         font_system
                             .db()
@@ -164,11 +233,15 @@ impl TextState {
                     });
                     let left = prepared.left;
                     let baseline = prepared.top + run.line_y;
+                    scene.set_paint(vello_color(color, target_is_srgb));
                     scene
                         .glyph_run(resources, font_data)
                         .font_size(first.font_size)
                         .hint(true)
-                        .atlas_cache(true)
+                        .font_embolden(glifo::FontEmbolden::new(kurbo::Diagonal2::new(
+                            emboldening,
+                            emboldening,
+                        )))
                         .fill_glyphs(glyphs.iter().map(move |glyph| glifo::Glyph {
                             id: u32::from(glyph.glyph_id),
                             x: left + glyph.x + glyph.font_size * glyph.x_offset,
