@@ -345,28 +345,16 @@ impl Editor {
             return self.tool_cursor(effective_tool);
         }
         match &self.interaction {
-            Some(Interaction::Drawing {
-                tool: Tool::Triangle | Tool::Rectangle | Tool::Ellipse,
-                ..
-            }) => {
+            Some(Interaction::Resizing { handle, .. }) => {
+                return Cursor::Shape(selection::cursor(*handle));
+            }
+            Some(Interaction::Freehand(_)) => return Cursor::Hidden,
+            Some(Interaction::Drawing { .. }) => {
                 return Cursor::Shape(selection::CursorHint::Crosshair);
             }
-            Some(Interaction::Resizing { original, .. })
-                if matches!(
-                    original.kind,
-                    ElementKind::Triangle { .. }
-                        | ElementKind::Rectangle { .. }
-                        | ElementKind::Ellipse { .. }
-                ) =>
-            {
-                return Cursor::Shape(selection::CursorHint::Crosshair);
+            Some(Interaction::Moving { .. }) => {
+                return Cursor::Shape(selection::CursorHint::Move);
             }
-            Some(
-                Interaction::Freehand(_)
-                | Interaction::Drawing { .. }
-                | Interaction::Moving { .. }
-                | Interaction::Resizing { .. },
-            ) => return Cursor::Hidden,
             Some(Interaction::EditingText(_)) => {
                 return Cursor::Shape(selection::CursorHint::Text);
             }
