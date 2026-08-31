@@ -25,7 +25,7 @@ Then import the module in your Home Manager configuration:
 }
 ```
 
-### Building from source
+### Building and installing from source
 
 Install the dependencies for your distribution:
 
@@ -64,18 +64,49 @@ sudo dnf install cargo gcc git pkgconf-pkg-config wayland-devel libxkbcommon-dev
 
 </details>
 
-Then build Vellum with Cargo:
+Then build and install Vellum with Cargo:
 
 ```sh
 git clone https://github.com/greyxp1/vellum
 cd vellum
-cargo build --release --locked
+cargo install --locked --path .
 ```
+
+By default, this installs `vellum` to `~/.cargo/bin`, which must be in your `PATH`.
 
 ## Usage
 
-Run Vellum as a service or start it manually with `vellum &`,
-then bind `vellum toggle` to a compositor shortcut. For example, in niri:
+Start Vellum manually with `vellum &` or run it as a service:
+
+<details>
+<summary>systemd</summary>
+
+Save this as `~/.config/systemd/user/vellum.service`:
+
+```ini
+[Unit]
+Description=Vellum screen annotation overlay
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=exec
+ExecStart=%h/.cargo/bin/vellum
+Restart=on-failure
+
+[Install]
+WantedBy=graphical-session.target
+```
+
+Enable the service and start it now:
+
+```sh
+systemctl --user enable --now vellum.service
+```
+
+</details>
+
+Then bind `vellum toggle` to a compositor shortcut. For example, in niri:
 
 ```kdl
 Mod+A { spawn "vellum" "toggle"; }

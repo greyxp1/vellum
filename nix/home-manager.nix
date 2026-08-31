@@ -50,6 +50,7 @@ in {
         PartOf = ["graphical-session.target"];
       };
       Service = {
+        Type = "exec";
         ExecStart = "${cfg.package}/bin/vellum";
         Restart = "on-failure";
       };
