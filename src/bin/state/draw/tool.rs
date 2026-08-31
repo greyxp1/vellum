@@ -67,8 +67,9 @@ impl Tool {
     pub(super) fn initial_roundness(self) -> f32 {
         match self {
             Self::Pen => 1.0,
-            Self::Line | Self::Arrow => 0.5,
-            Self::Rectangle => 0.05,
+            Self::Line => 0.5,
+            Self::Arrow => 0.25,
+            Self::Rectangle => 0.01,
             Self::Text => 0.1,
             _ => 0.0,
         }
