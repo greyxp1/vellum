@@ -1,101 +1,36 @@
 # Vellum
 
-`vellum` is a small native Wayland overlay for drawing directly over the live desktop,
-tested on niri.
+Vellum is a small native Wayland overlay for drawing directly over the live desktop, tested on niri.
 
 https://github.com/user-attachments/assets/f8171063-16a8-497f-ba20-9e11bc50727e
 
 Vellum began as a fork of [Chameleos](https://github.com/Treeniks/chameleos) by Thomas Lindae.
 
-## Usage
+## Installation
 
-Start the overlay once, then toggle drawing from a compositor shortcut:
+### Home Manager
 
-```sh
-vellum &
-vellum toggle
-```
-
-For example, in niri:
-
-```kdl
-Mod+A { spawn "vellum" "toggle"; }
-```
-
-## Controls
-
-### Mouse
-
-| Input | Action |
-| --- | --- |
-| Left drag | Draw or manipulate the selection |
-| Right-click | Open the radial picker |
-| Hold right click, move, then release | Choose a tool or color |
-| Middle-click | Toggle eraser mode |
-| Middle drag | Erase annotations |
-| Mouse back button | Undo |
-| Mouse forward button | Redo |
-| Mouse wheel | Change stroke width or text size |
-
-### Trackpad
-
-| Input | Action |
-| --- | --- |
-| One-finger drag | Draw or manipulate the selection |
-| Right click (two-finger click) | Open the radial picker |
-| Three-finger tap | Toggle eraser mode |
-| Two-finger scroll | Change stroke width or text size |
-
-### Pen
-
-| Input | Action |
-| --- | --- |
-| Drag with the pen tip | Draw or manipulate the selection |
-| Briefly press the barrel button while hovering | Open the radial picker |
-| Hold the barrel button while hovering, move, then release | Choose a tool or color |
-| Hold the barrel button while drawing | Temporarily erase until released |
-| Drag with the eraser tip | Erase annotations |
-
-### Shortcuts and modifiers
-
-| Input | Action |
-| --- | --- |
-| `Ctrl+Z` | Undo |
-| `Ctrl+Shift+Z` or `Ctrl+Y` | Redo |
-| `Ctrl+A` | Select all annotations |
-| `Backspace` or `Delete` | Delete selected annotations |
-| `Escape` | Cancel, clear the selection, or leave drawing mode |
-| `Ctrl` + click in selection mode | Add or remove an annotation from the selection |
-| Double-click selected text | Edit it |
-| `Shift` while drawing | Constrain the shape |
-| `Alt` while drawing | Draw triangles, rectangles, and ellipses from their center |
-| `F` | Toggle between outlined and filled shapes |
-| `Ctrl` + scroll | Change opacity |
-| `Shift` + scroll | Change roundness |
-
-Drag selection handles to reshape supported elements.
-
-Run `vellum --help` or `man vellum` for startup options and commands.
-
-## Configuration
-
-See [Configuration](docs/configuration.md) for the available options, defaults, and file lookup
-order.
-
-## Home Manager
+Add Vellum to your flake inputs:
 
 ```nix
-{
+inputs.vellum.url = "github:greyxp1/vellum";
+```
+
+Then import the module in your Home Manager configuration:
+
+```nix
+{inputs, ...}: {
   imports = [inputs.vellum.homeModules.default];
   services.vellum.enable = true;
 }
 ```
 
-## Building from source
+### Building from source
 
-### Arch
+Install the dependencies for your distribution:
 
-For a manual build:
+<details>
+<summary>Arch dependencies</summary>
 
 ```sh
 sudo pacman -S --needed base-devel git rust wayland libxkbcommon vulkan-icd-loader
@@ -108,20 +43,28 @@ depends=('wayland' 'libxkbcommon' 'vulkan-icd-loader')
 makedepends=('cargo')
 ```
 
-### Debian 13+
+</details>
+
+<details>
+<summary>Debian 13+ dependencies</summary>
 
 ```sh
 sudo apt install build-essential git pkg-config rustup libwayland-dev libxkbcommon-dev libvulkan1
 rustup default stable
 ```
 
-### Fedora
+</details>
+
+<details>
+<summary>Fedora dependencies</summary>
 
 ```sh
 sudo dnf install cargo gcc git pkgconf-pkg-config wayland-devel libxkbcommon-devel vulkan-loader
 ```
 
-Then build:
+</details>
+
+Then build Vellum with Cargo:
 
 ```sh
 git clone https://github.com/greyxp1/vellum
@@ -129,5 +72,154 @@ cd vellum
 cargo build --release --locked
 ```
 
-With Nix, skip the system dependencies and run `nix build`, or use `nix develop` for a
-development shell.
+## Usage
+
+Run Vellum as a service or start it manually with `vellum &`,
+then bind `vellum toggle` to a compositor shortcut. For example, in niri:
+
+```kdl
+Mod+A { spawn "vellum" "toggle"; }
+```
+
+## Controls
+
+### Mouse, trackpad, and pen
+
+| Action | Mouse | Trackpad | Pen |
+| --- | --- | --- | --- |
+| Draw or manipulate the selection | Left drag | One-finger drag | Drag with the pen tip |
+| Open the radial picker | Right-click | Two-finger click | Briefly press the barrel button while hovering |
+| Choose a tool or color | Hold the right mouse button, move, then release | Open the picker, move, then one-finger click | Hold the barrel button while hovering, move, then release |
+| Erase | Middle drag, or middle-click then left drag | Three-finger tap, then one-finger drag | Hold the barrel button while drawing or drag with the eraser tip |
+| Change size | Mouse wheel | Two-finger scroll | Mouse wheel or trackpad scroll |
+
+### Shortcuts and modifiers
+
+| Input | Action |
+| --- | --- |
+| `Ctrl+Z` | Undo |
+| `Ctrl+Shift+Z` or `Ctrl+Y` | Redo |
+| Mouse back button | Undo |
+| Mouse forward button | Redo |
+| `Ctrl+A` | Select all annotations |
+| `Backspace` or `Delete` | Delete selected annotations |
+| `Escape` | Cancel, clear the selection, or leave drawing mode |
+| `Ctrl` + click in selection mode | Add or remove an annotation from the selection |
+| Double-click selected text | Edit it |
+| `Shift` while drawing | Constrain the shape |
+| `Alt` while drawing | Draw triangles, rectangles, and ellipses from their center |
+| `F` | Toggle shape fill or text background |
+| `Ctrl` + scroll | Change opacity |
+| `Shift` + scroll | Change roundness or text size while editing text |
+| Drag a selection handle | Reshape the selection or stretch text |
+| `Shift` + drag a text handle | Resize text without stretching |
+
+Run `vellum --help` or `man vellum` for startup options and commands.
+
+## Configuration
+
+Vellum looks for `vellum/config.toml` in `$XDG_CONFIG_HOME` (default `~/.config`), then
+`$XDG_CONFIG_DIRS` (default `/etc/xdg`). Use `--config PATH` to load a specific file or
+`--no-config` to skip configuration.
+
+### Options
+
+#### Global
+
+| Option | Type | Description |
+| --- | --- | --- |
+| `default_tool` | string | Startup tool: `pen`, `line`, `arrow`, `triangle`, `rectangle`, `ellipse`, `text`, `eraser`, or `select` |
+| `remember_last_tool` | boolean | Keep the selected tool when drawing mode is reopened |
+| `stroke_size` | float | Initial size shared by pen, line, arrow, and shape tools |
+| `size_range` | table | Optional `min`, `max`, `step`, and `stops` for scrolling through sizes |
+| `default_color` | string | Initial `#RRGGBB` color. It must be present in `palette` |
+| `palette` | array of strings | Between 2 and 12 `#RRGGBB` colors |
+| `feedback_duration_ms` | integer | How long property feedback remains visible, from `0` to `60000` milliseconds |
+| `clear_on_escape` | boolean | Clear annotations when Escape deactivates drawing mode |
+| `default_fill_shapes` | boolean | Initially fill triangles, rectangles, and ellipses |
+
+#### Per-tool
+
+Set these properties under `[tools.<tool>]`.
+
+| Property | Type | Supported tools | Description |
+| --- | --- | --- | --- |
+| `size` | float | All except `select` | Initial logical-pixel size. Pen, line, arrow, and shapes inherit `stroke_size`. Text defaults to `16.0` and eraser to `10.0` |
+| `size_range` | table | All except `select` | Overrides the matching global fields. `stops = []` removes inherited stops |
+| `opacity` | float | All except `eraser` and `select` | Initial opacity from `0.05` to `1.0` |
+| `roundness` | float | `pen`, `line`, `arrow`, `triangle`, `rectangle`, `text` | Initial roundness from `0.0` to `1.0` |
+| `filled` | boolean | `triangle`, `rectangle`, `ellipse` | Initial fill state. Inherits `default_fill_shapes` when omitted |
+| `background` | boolean | `text` | Whether text starts with an automatic black or white background |
+
+### Defaults
+
+<details>
+<summary>Show the complete default configuration</summary>
+
+```toml
+default_tool = "pen"
+remember_last_tool = true
+stroke_size = 5.0
+default_color = "#E84046"
+feedback_duration_ms = 500
+clear_on_escape = false
+default_fill_shapes = false
+
+size_range = {
+  min = 1.0,
+  max = 100.0,
+  step = 1.0,
+  stops = []
+}
+
+palette = [
+  "#E84046",
+  "#EC8948",
+  "#EED049",
+  "#3ED73C",
+  "#0283FC",
+  "#7C57EB",
+  "#FFFFFF",
+  "#000000",
+]
+
+[tools.pen]
+opacity = 1.0
+roundness = 1.0
+
+[tools.line]
+opacity = 1.0
+roundness = 0.5
+
+[tools.arrow]
+opacity = 1.0
+roundness = 0.25
+
+[tools.triangle]
+opacity = 1.0
+roundness = 0.0
+filled = false
+
+[tools.rectangle]
+opacity = 1.0
+roundness = 0.01
+filled = false
+
+[tools.ellipse]
+opacity = 1.0
+filled = false
+
+[tools.text]
+size = 16.0
+size_range.min = 8.0
+size_range.max = 500.0
+size_range.step = 0.5
+opacity = 1.0
+roundness = 0.1
+background = false
+
+[tools.eraser]
+size = 10.0
+```
+
+</details>
