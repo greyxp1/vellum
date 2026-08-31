@@ -17,6 +17,8 @@ struct FileConfig {
     default_tool: Option<String>,
     remember_last_tool: Option<bool>,
     stroke_size: Option<f32>,
+    #[serde(default)]
+    size_range: SizeRange,
     default_color: Option<String>,
     palette: Option<Vec<String>>,
     feedback_duration_ms: Option<u64>,
@@ -36,6 +38,34 @@ pub(crate) struct SizeRange {
     stops: Arc<[f32]>,
 }
 
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SizeRangeFields {
+    min: Option<f32>,
+    max: Option<f32>,
+    step: Option<f32>,
+    stops: Option<Vec<f32>>,
+}
+
+impl<'de> serde::Deserialize<'de> for SizeRange {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let fields = <SizeRangeFields as serde::Deserialize>::deserialize(deserializer)?;
+        let defaults = Self::default();
+        let mut stops = fields.stops.unwrap_or_default();
+        stops.sort_by(f32::total_cmp);
+        stops.dedup();
+        Ok(Self {
+            min: fields.min.unwrap_or(defaults.min),
+            max: fields.max.unwrap_or(defaults.max),
+            step: fields.step.unwrap_or(defaults.step),
+            stops: Arc::from(stops),
+        })
+    }
+}
+
 impl Default for SizeRange {
     fn default() -> Self {
         Self {
@@ -48,6 +78,25 @@ impl Default for SizeRange {
 }
 
 impl SizeRange {
+    fn validate(self) -> Result<Self, String> {
+        if !self.min.is_finite() || self.min <= 0.0 {
+            return Err("size_range.min must be greater than 0".into());
+        }
+        if !self.max.is_finite() || self.max < self.min {
+            return Err("size_range.max must be greater than or equal to size_range.min".into());
+        }
+        if !self.step.is_finite() || self.step <= 0.0 {
+            return Err("size_range.step must be greater than 0".into());
+        }
+        if self.stops.iter().any(|stop| !self.contains(*stop)) {
+            return Err(format!(
+                "size_range.stops values must be between {} and {}",
+                self.min, self.max,
+            ));
+        }
+        Ok(self)
+    }
+
     pub(crate) fn contains(&self, size: f32) -> bool {
         size.is_finite() && (self.min..=self.max).contains(&size)
     }
@@ -146,7 +195,7 @@ impl Settings {
             read_first_config(default_config_paths())?
         };
 
-        let size_range = SizeRange::default();
+        let size_range = file.size_range.validate()?;
         let stroke_size = match file.stroke_size {
             Some(size) if !size_range.contains(size) => {
                 return Err(format!(
