@@ -1,7 +1,7 @@
 mod draw;
 mod input;
 
-pub(crate) use draw::{MAX_TOOL_SIZE, MIN_FONT_SIZE, MIN_STROKE_WIDTH, Tool};
+pub(crate) use draw::Tool;
 
 use wayland_client::delegate_dispatch;
 
@@ -441,13 +441,14 @@ impl State {
         changed
     }
 
-    fn adjust(&mut self, steps: f32, (x, y): (f64, f64), modifiers: Modifiers) {
-        if self
+    fn adjust(&mut self, steps: f32, (x, y): (f64, f64), modifiers: Modifiers) -> bool {
+        let adjustment = self
             .draw
-            .adjust(steps, Point::new(x as f32, y as f32), modifiers)
-        {
+            .adjust(steps, Point::new(x as f32, y as f32), modifiers);
+        if adjustment.changed {
             self.request_render();
         }
+        adjustment.hit_stop
     }
 
     fn refresh_pointer_cursor(&mut self) {

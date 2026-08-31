@@ -31,7 +31,7 @@ pub(super) struct LiveStroke {
 
 impl LiveStroke {
     pub fn new(point: Point, style: Style) -> Self {
-        let aligned = pixel_aligned_point(point, style.width);
+        let aligned = pixel_aligned_point(point, style.size);
         Self {
             points: vec![aligned],
             sample_anchor: aligned,
@@ -57,7 +57,7 @@ impl LiveStroke {
 
         let offset = point - self.stabilized_point;
         let distance = offset.x.hypot(offset.y);
-        let delay = stabilizer_delay(self.style.width);
+        let delay = stabilizer_delay(self.style.size);
         if distance <= delay {
             return false;
         }
@@ -88,9 +88,9 @@ impl LiveStroke {
         if self.style == style {
             return;
         }
-        if self.style.width != style.width {
+        if self.style.size != style.size {
             let raw_start = self.points[0] - self.alignment_offset;
-            let offset = pixel_aligned_point(raw_start, style.width) - self.points[0];
+            let offset = pixel_aligned_point(raw_start, style.size) - self.points[0];
             self.points
                 .iter_mut()
                 .for_each(|point| *point = point.translated(offset));
@@ -144,7 +144,7 @@ impl LiveStroke {
         if self.style.roundness >= 1.0 - f32::EPSILON {
             return point != self.points[0];
         }
-        let setup_distance = stabilizer_delay(self.style.width).max(12.0);
+        let setup_distance = stabilizer_delay(self.style.size).max(12.0);
         self.points[0].distance_squared(point) >= setup_distance.powi(2)
     }
 
@@ -213,7 +213,7 @@ impl LiveStroke {
 
     fn tail_centerline(&self, complete: bool) -> Vec<[f64; 2]> {
         let Some(anchor) = &self.cache_anchor else {
-            return centerline_points(&self.points, self.style.width, true, complete);
+            return centerline_points(&self.points, self.style.size, true, complete);
         };
         let mut input = Vec::with_capacity(self.points.len() - anchor.raw_index);
         input.push(perfect_freehand::InputPoint::Array(anchor.centerline, None));
@@ -285,7 +285,7 @@ pub(super) fn hit_test(points: &[Point], style: Style, point: Point, slop: f32) 
 }
 
 fn stroke_path(points: &[Point], style: Style, complete: bool) -> Option<kurbo::BezPath> {
-    let points = pixel_aligned_points(points, style.width);
+    let points = pixel_aligned_points(points, style.size);
     let points = points.as_ref();
     let distinct = points
         .windows(2)
@@ -293,7 +293,7 @@ fn stroke_path(points: &[Point], style: Style, complete: bool) -> Option<kurbo::
         .then(|| distinct_points(points));
     let points = distinct.as_deref().unwrap_or(points);
     let &first = points.first()?;
-    let radius = style.width.max(0.0) * 0.5;
+    let radius = style.size.max(0.0) * 0.5;
     if radius <= f32::EPSILON {
         return None;
     }
@@ -312,7 +312,7 @@ fn stroke_path(points: &[Point], style: Style, complete: bool) -> Option<kurbo::
     }
 
     Some(centerline_path(
-        &centerline_points(points, style.width, true, complete),
+        &centerline_points(points, style.size, true, complete),
         style,
         false,
         false,
@@ -359,7 +359,7 @@ fn centerline_path(
     end_cut: bool,
 ) -> kurbo::BezPath {
     let centerline = deposited_centerline(centerline_points, start_cut, end_cut);
-    let radius = style.width.max(0.0) * 0.5;
+    let radius = style.size.max(0.0) * 0.5;
     let roundness = style.roundness.clamp(0.0, 1.0);
     let mut path = joined_swept_path(&centerline, radius);
     append_endpoint_caps(

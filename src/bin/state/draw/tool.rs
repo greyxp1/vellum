@@ -32,6 +32,15 @@ impl Tool {
         matches!(self, Self::Triangle | Self::Rectangle | Self::Ellipse)
     }
 
+    pub(crate) fn initial_size(self, stroke_size: f32) -> Option<f32> {
+        match self {
+            Self::Text => Some(20.0),
+            Self::Eraser => Some(10.0),
+            Self::Select => None,
+            _ => Some(stroke_size),
+        }
+    }
+
     pub(crate) fn default_roundness(self) -> Option<f32> {
         match self {
             Self::Pen | Self::Line | Self::Arrow | Self::Triangle | Self::Rectangle => {

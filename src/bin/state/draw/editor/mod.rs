@@ -4,6 +4,7 @@ mod properties;
 
 use self::interaction::Interaction;
 use self::properties::ToolPropertySet;
+use super::Modifiers;
 use super::history::{Entry as HistoryEntry, History};
 use super::picker::{Choice, Picker, ShapeFills, choice, picker_geometry};
 use super::scene::{Element, geometry};
@@ -12,7 +13,6 @@ use super::selection;
 pub(crate) use super::text_edit::CursorMove;
 use super::text_edit::TextEdit;
 use super::tool::Tool;
-use super::{MAX_TOOL_SIZE, MIN_STROKE_WIDTH, Modifiers};
 use crate::render::Geometry;
 
 pub(crate) enum Action {
@@ -73,43 +73,42 @@ pub struct Editor {
     history: History,
     next_id: ElementId,
     picker: Option<Picker>,
-    default_width: f32,
-    default_text_size: f32,
     default_tool: Tool,
     last_non_eraser_tool: Tool,
     tool_properties: ToolPropertySet,
     default_tool_properties: ToolPropertySet,
+    size_range: crate::config::SizeRange,
     remember_last_tool: bool,
     palette: Vec<[f32; 3]>,
 }
 
 impl Editor {
-    pub fn new(
-        width: f32,
-        rgb: crate::Rgb,
-        default_tool: Tool,
-        remember_last_tool: bool,
-        default_fill_shapes: bool,
-        tool_defaults: &crate::config::ToolDefaults,
-        palette: Vec<crate::Rgb>,
-    ) -> Self {
-        let width = width.clamp(MIN_STROKE_WIDTH, MAX_TOOL_SIZE);
-        let default_tool_properties =
-            ToolPropertySet::new(width, default_fill_shapes, tool_defaults);
-        let tool_properties = default_tool_properties.clone();
-        let active = tool_properties.properties(default_tool).copied();
+    pub fn new(settings: crate::Settings) -> Self {
+        let default_tool_properties = ToolPropertySet::new(
+            settings.stroke_size,
+            settings.default_fill_shapes,
+            &settings.tool_defaults,
+            &settings.size_range,
+        );
+        let tool_properties = default_tool_properties;
+        let active = tool_properties.properties(settings.default_tool).copied();
+        let fallback = tool_properties
+            .properties(Tool::Pen)
+            .copied()
+            .expect("pen has adjustable properties");
+        let active = active.unwrap_or(fallback);
         Self {
-            tool: default_tool,
+            tool: settings.default_tool,
             style: Style {
-                width: active.map_or(width, |properties| properties.size),
+                size: active.size,
                 color: [
-                    rgb[0],
-                    rgb[1],
-                    rgb[2],
-                    active.map_or(1.0, |properties| properties.opacity),
+                    settings.default_color[0],
+                    settings.default_color[1],
+                    settings.default_color[2],
+                    active.opacity,
                 ],
-                roundness: active.map_or(0.5, |properties| properties.roundness),
-                filled: active.is_some_and(|properties| properties.filled),
+                roundness: active.roundness,
+                filled: active.filled,
             },
             elements: Vec::new(),
             selected: Vec::new(),
@@ -117,21 +116,17 @@ impl Editor {
             history: History::default(),
             next_id: 1,
             picker: None,
-            default_width: width,
-            default_text_size: default_tool_properties
-                .properties(Tool::Text)
-                .expect("text must have adjustable properties")
-                .size,
-            default_tool,
-            last_non_eraser_tool: if default_tool == Tool::Eraser {
+            default_tool: settings.default_tool,
+            last_non_eraser_tool: if settings.default_tool == Tool::Eraser {
                 Tool::Pen
             } else {
-                default_tool
+                settings.default_tool
             },
             tool_properties,
             default_tool_properties,
-            remember_last_tool,
-            palette,
+            size_range: settings.size_range,
+            remember_last_tool: settings.remember_last_tool,
+            palette: settings.palette,
         }
     }
 

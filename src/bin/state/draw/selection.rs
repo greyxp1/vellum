@@ -102,7 +102,7 @@ pub(super) fn outline(min: Point, max: Point) -> Geometry {
             max: Point::new(max.x + GAP, max.y + GAP),
         },
         Style {
-            width: SELECTION_WIDTH,
+            size: SELECTION_WIDTH,
             color: COLOR,
             roundness: 0.0,
             filled: false,
@@ -187,7 +187,7 @@ fn endpoint_geometry(center: Point) -> Geometry {
             radii: Point::new(radius, radius),
         },
         Style {
-            width: SELECTION_WIDTH,
+            size: SELECTION_WIDTH,
             color: COLOR,
             roundness: 0.0,
             filled: false,

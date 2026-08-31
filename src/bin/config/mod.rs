@@ -3,6 +3,7 @@ use super::{Rgb, state};
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 const CONFIG_FILE: &str = "vellum/config.toml";
@@ -15,7 +16,7 @@ const DEFAULT_PALETTE: [&str; 8] = [
 struct FileConfig {
     default_tool: Option<String>,
     remember_last_tool: Option<bool>,
-    stroke_width: Option<f32>,
+    stroke_size: Option<f32>,
     default_color: Option<String>,
     palette: Option<Vec<String>>,
     feedback_duration_ms: Option<u64>,
@@ -27,6 +28,51 @@ struct FileConfig {
 
 pub(crate) type ToolDefaults = BTreeMap<state::Tool, PropertyDefaults>;
 
+#[derive(Clone, Debug)]
+pub(crate) struct SizeRange {
+    min: f32,
+    max: f32,
+    step: f32,
+    stops: Arc<[f32]>,
+}
+
+impl Default for SizeRange {
+    fn default() -> Self {
+        Self {
+            min: 1.0,
+            max: 100.0,
+            step: 1.0,
+            stops: Arc::from([]),
+        }
+    }
+}
+
+impl SizeRange {
+    pub(crate) fn contains(&self, size: f32) -> bool {
+        size.is_finite() && (self.min..=self.max).contains(&size)
+    }
+
+    pub(crate) fn clamp(&self, size: f32) -> f32 {
+        size.clamp(self.min, self.max)
+    }
+
+    pub(crate) fn min(&self) -> f32 {
+        self.min
+    }
+
+    pub(crate) fn max(&self) -> f32 {
+        self.max
+    }
+
+    pub(crate) fn step(&self) -> f32 {
+        self.step
+    }
+
+    pub(crate) fn stops(&self) -> &[f32] {
+        &self.stops
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PropertyDefaults {
@@ -36,24 +82,20 @@ pub(crate) struct PropertyDefaults {
     pub(crate) filled: Option<bool>,
 }
 
-fn validate_tool_defaults(tools: &ToolDefaults) -> Result<(), String> {
+fn validate_tool_defaults(tools: &ToolDefaults, size_range: &SizeRange) -> Result<(), String> {
     for (&tool, defaults) in tools {
         let prefix = format!("tools.{}", tool.name());
-        let size_range = match tool {
-            state::Tool::Text => Some((state::MIN_FONT_SIZE, state::MAX_TOOL_SIZE)),
-            state::Tool::Select => None,
-            _ => Some((state::MIN_STROKE_WIDTH, state::MAX_TOOL_SIZE)),
-        };
+        let supports_size = tool != state::Tool::Select;
         match defaults.size {
-            Some(_) if size_range.is_none() => {
+            Some(_) if !supports_size => {
                 return Err(format!("{prefix}.size is not supported"));
             }
-            Some(size)
-                if !size.is_finite()
-                    || !size_range.is_some_and(|(min, max)| (min..=max).contains(&size)) =>
-            {
-                let (min, max) = size_range.expect("tools with size defaults have a range");
-                return Err(format!("{prefix}.size must be between {min} and {max}"));
+            Some(size) if !size_range.contains(size) => {
+                return Err(format!(
+                    "{prefix}.size must be between {} and {}",
+                    size_range.min(),
+                    size_range.max(),
+                ));
             }
             _ => {}
         }
@@ -82,8 +124,9 @@ fn validate_tool_defaults(tools: &ToolDefaults) -> Result<(), String> {
 }
 
 pub(super) struct Settings {
-    pub(super) stroke_width: f32,
-    pub(super) stroke_color: Rgb,
+    pub(super) stroke_size: f32,
+    pub(super) size_range: SizeRange,
+    pub(super) default_color: Rgb,
     pub(super) default_tool: state::Tool,
     pub(super) remember_last_tool: bool,
     pub(super) palette: Vec<Rgb>,
@@ -103,16 +146,18 @@ impl Settings {
             read_first_config(default_config_paths())?
         };
 
-        let stroke_width = file.stroke_width.unwrap_or(5.0);
-        if !stroke_width.is_finite()
-            || !(state::MIN_STROKE_WIDTH..=state::MAX_TOOL_SIZE).contains(&stroke_width)
-        {
-            return Err(format!(
-                "stroke_width must be between {} and {}",
-                state::MIN_STROKE_WIDTH,
-                state::MAX_TOOL_SIZE,
-            ));
-        }
+        let size_range = SizeRange::default();
+        let stroke_size = match file.stroke_size {
+            Some(size) if !size_range.contains(size) => {
+                return Err(format!(
+                    "stroke_size must be between {} and {}",
+                    size_range.min(),
+                    size_range.max(),
+                ));
+            }
+            Some(size) => size,
+            None => size_range.clamp(5.0),
+        };
 
         let default_tool = file
             .default_tool
@@ -131,7 +176,7 @@ impl Settings {
             .enumerate()
             .map(|(index, color)| parse_named_color(&format!("palette[{index}]"), color))
             .collect::<Result<Vec<_>, _>>()?;
-        let stroke_color = match file.default_color {
+        let default_color = match file.default_color {
             Some(color) => {
                 let color = parse_named_color("default_color", &color)?;
                 if !palette.contains(&color) {
@@ -147,11 +192,12 @@ impl Settings {
             return Err("feedback_duration_ms must not exceed 60000".into());
         }
 
-        validate_tool_defaults(&file.tools)?;
+        validate_tool_defaults(&file.tools, &size_range)?;
 
         Ok(Self {
-            stroke_width,
-            stroke_color,
+            stroke_size,
+            size_range,
+            default_color,
             default_tool,
             remember_last_tool: file.remember_last_tool.unwrap_or(true),
             palette,

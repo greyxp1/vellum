@@ -41,19 +41,16 @@ impl ToolOverride {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct ToolCursor {
     pub tool: Tool,
-    pub width: f32,
+    pub size: f32,
     pub roundness: f32,
     pub color: [f32; 4],
 }
 
-pub(crate) const MIN_STROKE_WIDTH: f32 = 1.0;
-pub(crate) const MIN_FONT_SIZE: f32 = 2.0;
-pub(crate) const MAX_TOOL_SIZE: f32 = 500.0;
 pub(crate) const STABILIZER_FOLLOW: f32 = 0.35;
 const CIRCLE_KAPPA: f64 = 0.552_284_749_830_793_6;
 
-pub(crate) fn stabilizer_delay(width: f32) -> f32 {
-    (width * 0.15).clamp(4.0, 16.0)
+pub(crate) fn stabilizer_delay(size: f32) -> f32 {
+    (size * 0.15).clamp(4.0, 16.0)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -80,6 +77,11 @@ pub(crate) struct Modifiers {
     pub alt: bool,
 }
 
+pub(super) struct Adjustment {
+    pub(super) changed: bool,
+    pub(super) hit_stop: bool,
+}
+
 pub struct DrawState {
     editor: Editor,
     damage: Damage,
@@ -96,21 +98,15 @@ pub struct DrawState {
 
 impl DrawState {
     pub(super) fn new(settings: crate::Settings) -> Self {
+        let feedback_duration = settings.feedback_duration;
+        let editor = Editor::new(settings);
         Self {
-            editor: Editor::new(
-                settings.stroke_width,
-                settings.stroke_color,
-                settings.default_tool,
-                settings.remember_last_tool,
-                settings.default_fill_shapes,
-                &settings.tool_defaults,
-                settings.palette,
-            ),
+            editor,
             damage: Damage::Scene,
             feedback: None,
             property_feedback_anchor: None,
             feedback_until: None,
-            feedback_duration: settings.feedback_duration,
+            feedback_duration,
             caret_visible: true,
             caret_until: None,
             tool_cursor: None,
@@ -238,11 +234,13 @@ impl DrawState {
         self.record(damage)
     }
 
-    pub fn adjust(&mut self, steps: f32, at: Point, modifiers: Modifiers) -> bool {
-        let (damage, feedback) = if modifiers.shift && !self.editor.is_editing_text() {
-            self.editor.adjust_roundness(steps)
+    pub fn adjust(&mut self, steps: f32, at: Point, modifiers: Modifiers) -> Adjustment {
+        let (damage, feedback, hit_stop) = if modifiers.shift && !self.editor.is_editing_text() {
+            let (damage, feedback) = self.editor.adjust_roundness(steps);
+            (damage, feedback, false)
         } else if modifiers.ctrl {
-            self.editor.adjust_opacity(steps)
+            let (damage, feedback) = self.editor.adjust_opacity(steps);
+            (damage, feedback, false)
         } else {
             self.editor.adjust_size(steps)
         };
@@ -252,7 +250,10 @@ impl DrawState {
             self.feedback_until = Some(Instant::now() + self.feedback_duration);
             self.damage.merge(damage);
         }
-        damage.changed()
+        Adjustment {
+            changed: damage.changed(),
+            hit_stop,
+        }
     }
 
     pub fn needs_render(&self) -> bool {
@@ -321,12 +322,7 @@ impl DrawState {
                 if Some(element.id) == editing_id {
                     continue;
                 }
-                let ElementKind::Text {
-                    origin,
-                    content,
-                    font_size,
-                } = &element.kind
-                else {
+                let ElementKind::Text { origin, content } = &element.kind else {
                     continue;
                 };
                 let offset = self.editor.moving_offset(element.id).unwrap_or_default();
@@ -335,7 +331,7 @@ impl DrawState {
                     content,
                     left: origin.x + offset.x,
                     top: origin.y + offset.y,
-                    size: *font_size,
+                    size: element.style.size,
                     color: element.style.color,
                 });
             }
@@ -346,10 +342,10 @@ impl DrawState {
                     content: &edit.content,
                     left: edit.origin.x,
                     top: edit.origin.y,
-                    size: edit.font_size,
+                    size: edit.style.size,
                     color: edit.style.color,
                 });
-                caret = Some((key, edit.cursor, edit.origin, edit.font_size));
+                caret = Some((key, edit.cursor, edit.origin, edit.style.size));
             }
             if let Some((content, at)) = &self.feedback {
                 for (index, [x, y]) in [[15.0, 16.0], [17.0, 16.0], [16.0, 15.0], [16.0, 17.0]]
@@ -381,11 +377,10 @@ impl DrawState {
 
         self.previews.clear();
         if self.caret_visible
-            && let Some((key, cursor, origin, font_size)) = caret
+            && let Some((key, cursor, origin, size)) = caret
             && let Some(x) = wgpu.text_cursor_x(key, cursor)
         {
-            self.previews
-                .push(text_caret(origin.x + x, origin.y, font_size));
+            self.previews.push(text_caret(origin.x + x, origin.y, size));
         }
         self.editor.append_preview_geometry(&mut self.previews);
         self.editor
@@ -416,11 +411,11 @@ fn tool_cursor_geometry(point: Point, cursor: ToolCursor) -> Geometry {
     use kurbo::Shape;
 
     let radius = f64::from(match cursor.tool {
-        Tool::Pen | Tool::Eraser => cursor.width * 0.5,
+        Tool::Pen | Tool::Eraser => cursor.size * 0.5,
         _ => unreachable!("only pen and eraser have tool cursors"),
     });
     let point = if cursor.tool == Tool::Pen {
-        scene::pixel_aligned_point(point, cursor.width)
+        scene::pixel_aligned_point(point, cursor.size)
     } else {
         point
     };
@@ -457,10 +452,10 @@ fn tool_cursor_geometry(point: Point, cursor: ToolCursor) -> Geometry {
     )
 }
 
-fn text_caret(left: f32, top: f32, font_size: f32) -> Geometry {
+fn text_caret(left: f32, top: f32, size: f32) -> Geometry {
     use kurbo::Shape;
 
-    let bottom = top + font_size * 1.25;
+    let bottom = top + size * 1.25;
     let black = [0.0, 0.0, 0.0, 1.0];
     let white = [1.0, 1.0, 1.0, 1.0];
     let mut geometry = Geometry::fill(

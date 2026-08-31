@@ -5,18 +5,18 @@ use kurbo::{BezPath, ParamCurveNearest, Shape};
 const CORNER_INSET: f64 = 0.3;
 
 pub(super) fn geometry(vertices: &[Point; 3], style: Style) -> Geometry {
-    if style.width <= f32::EPSILON {
+    if style.size <= f32::EPSILON {
         return Geometry::empty();
     }
     Geometry::fill(
-        outline(vertices, style.width, style.roundness, style.filled),
+        outline(vertices, style.size, style.roundness, style.filled),
         FillRule::EvenOdd,
         style.color,
     )
 }
 
 pub(super) fn bounds(vertices: &[Point; 3], style: Style) -> Bounds {
-    let bounds = outline(vertices, style.width, style.roundness, style.filled).bounding_box();
+    let bounds = outline(vertices, style.size, style.roundness, style.filled).bounding_box();
     Bounds {
         min: Point::new(bounds.x0 as f32, bounds.y0 as f32),
         max: Point::new(bounds.x1 as f32, bounds.y1 as f32),
@@ -24,7 +24,7 @@ pub(super) fn bounds(vertices: &[Point; 3], style: Style) -> Bounds {
 }
 
 pub(super) fn hit_test(vertices: &[Point; 3], style: Style, point: Point, slop: f32) -> bool {
-    let outline = outline(vertices, style.width, style.roundness, style.filled);
+    let outline = outline(vertices, style.size, style.roundness, style.filled);
     let point = kurbo::Point::new(point.x as f64, point.y as f64);
     if outline.winding(point).unsigned_abs() % 2 == 1 {
         return true;

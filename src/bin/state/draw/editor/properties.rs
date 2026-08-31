@@ -1,20 +1,13 @@
-use super::super::scene::{ElementKind, Style, default_roundness};
+use super::super::scene::{ElementKind, Style, default_roundness, tool_for};
 use super::super::tool::Tool;
-use super::super::{MAX_TOOL_SIZE, MIN_FONT_SIZE, MIN_STROKE_WIDTH};
 use super::{Damage, Editor, HistoryEntry, Interaction};
+use crate::config::SizeRange;
 
 const MIN_OPACITY: f32 = 0.05;
-pub(super) const DEFAULT_ERASER_WIDTH: f32 = 10.0;
-pub(super) const DEFAULT_TEXT_SIZE: f32 = 20.0;
 
-fn stroke_size_label(value: f32, default: f32) -> String {
+fn size_label(value: f32, default: f32) -> String {
     let suffix = if value == default { " · default" } else { "" };
-    format!("{value:.1} px{suffix}")
-}
-
-fn text_size_label(value: f32, default: f32) -> String {
-    let suffix = if value == default { " · default" } else { "" };
-    format!("{value:.0} px{suffix}")
+    format!("{value} px{suffix}")
 }
 
 fn percent_label(value: f32, default: f32) -> String {
@@ -26,7 +19,7 @@ fn fill_label(filled: bool) -> String {
     format!("Fill · {}", if filled { "solid" } else { "outline" })
 }
 
-fn stepped_size(value: f32, default: f32, steps: f32, increment: f32, min: f32, max: f32) -> f32 {
+fn stepped_value(value: f32, default: f32, steps: f32, increment: f32, min: f32, max: f32) -> f32 {
     let offset = (value - default) / increment;
     let aligned = if steps.is_sign_positive() {
         (offset + 1e-4).floor()
@@ -34,6 +27,41 @@ fn stepped_size(value: f32, default: f32, steps: f32, increment: f32, min: f32, 
         (offset - 1e-4).ceil()
     };
     (default + (aligned + steps) * increment).clamp(min, max)
+}
+
+struct SizeAdjustment {
+    value: f32,
+    hit_stop: bool,
+}
+
+fn stepped_size(value: f32, default: f32, steps: f32, range: &SizeRange) -> SizeAdjustment {
+    let at_stop = value == default || range.stops().contains(&value);
+    let target = if at_stop {
+        range.clamp(value + steps * range.step())
+    } else {
+        stepped_value(
+            value,
+            default,
+            steps,
+            range.step(),
+            range.min(),
+            range.max(),
+        )
+    };
+    let stops = std::iter::once(default).chain(range.stops().iter().copied());
+    let stop = if target > value {
+        stops
+            .filter(|stop| *stop > value && *stop <= target)
+            .min_by(f32::total_cmp)
+    } else {
+        stops
+            .filter(|stop| *stop < value && *stop >= target)
+            .max_by(f32::total_cmp)
+    };
+    SizeAdjustment {
+        value: stop.unwrap_or(target),
+        hit_stop: stop.is_some(),
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -44,7 +72,7 @@ pub(super) struct ToolProperties {
     pub filled: bool,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub(super) struct ToolPropertySet {
     pen: ToolProperties,
     line: ToolProperties,
@@ -58,14 +86,19 @@ pub(super) struct ToolPropertySet {
 
 impl ToolPropertySet {
     pub(super) fn new(
-        stroke_width: f32,
+        stroke_size: f32,
         default_fill_shapes: bool,
         defaults: &crate::config::ToolDefaults,
+        size_range: &SizeRange,
     ) -> Self {
-        let properties = |tool: Tool, size, filled| {
+        let properties = |tool: Tool, filled| {
             let configured = defaults.get(&tool).copied().unwrap_or_default();
+            let size = configured.size.unwrap_or_else(|| {
+                tool.initial_size(stroke_size)
+                    .expect("adjustable tools have sizes")
+            });
             ToolProperties {
-                size: configured.size.unwrap_or(size),
+                size: size_range.clamp(size),
                 opacity: configured.opacity.unwrap_or(1.0),
                 roundness: configured
                     .roundness
@@ -74,14 +107,14 @@ impl ToolPropertySet {
             }
         };
         Self {
-            pen: properties(Tool::Pen, stroke_width, false),
-            line: properties(Tool::Line, stroke_width, false),
-            arrow: properties(Tool::Arrow, stroke_width, false),
-            triangle: properties(Tool::Triangle, stroke_width, default_fill_shapes),
-            rectangle: properties(Tool::Rectangle, stroke_width, default_fill_shapes),
-            ellipse: properties(Tool::Ellipse, stroke_width, default_fill_shapes),
-            text: properties(Tool::Text, DEFAULT_TEXT_SIZE, false),
-            eraser: properties(Tool::Eraser, DEFAULT_ERASER_WIDTH, false),
+            pen: properties(Tool::Pen, false),
+            line: properties(Tool::Line, false),
+            arrow: properties(Tool::Arrow, false),
+            triangle: properties(Tool::Triangle, default_fill_shapes),
+            rectangle: properties(Tool::Rectangle, default_fill_shapes),
+            ellipse: properties(Tool::Ellipse, default_fill_shapes),
+            text: properties(Tool::Text, false),
+            eraser: properties(Tool::Eraser, false),
         }
     }
 
@@ -147,99 +180,55 @@ impl Editor {
             .is_some_and(|properties| properties.filled)
     }
 
-    pub(in crate::state::draw) fn adjust_size(&mut self, steps: f32) -> (Damage, String) {
+    pub(in crate::state::draw) fn adjust_size(&mut self, steps: f32) -> (Damage, String, bool) {
         if steps == 0.0 {
-            return (Damage::None, String::new());
+            return (Damage::None, String::new(), false);
         }
-        let default_text_size = self.default_text_size;
+        let size_range = self.size_range.clone();
+        let default_text_size = self
+            .default_size(Tool::Text)
+            .expect("text must have an adjustable size");
         if let Some(edit) = self.text_edit_mut() {
-            let font_size = stepped_size(
-                edit.font_size,
-                default_text_size,
-                steps,
-                1.0,
-                MIN_FONT_SIZE,
-                MAX_TOOL_SIZE,
-            );
-            let label = text_size_label(font_size, default_text_size);
-            if font_size == edit.font_size {
-                return (Damage::Preview, label);
+            let adjustment = stepped_size(edit.style.size, default_text_size, steps, &size_range);
+            let label = size_label(adjustment.value, default_text_size);
+            if adjustment.value == edit.style.size {
+                return (Damage::Preview, label, adjustment.hit_stop);
             }
-            edit.font_size = font_size;
-            return (Damage::Preview, label);
+            edit.style.size = adjustment.value;
+            return (Damage::Preview, label, adjustment.hit_stop);
         }
         if !self.selected.is_empty() {
-            let default_width = self.default_width;
-            return self.adjust_selected(|kind, style| {
-                Some(match kind {
-                    ElementKind::Text { font_size, .. } => {
-                        *font_size = stepped_size(
-                            *font_size,
-                            default_text_size,
-                            steps,
-                            1.0,
-                            MIN_FONT_SIZE,
-                            MAX_TOOL_SIZE,
-                        );
-                        text_size_label(*font_size, default_text_size)
-                    }
-                    _ => {
-                        style.width = stepped_size(
-                            style.width,
-                            default_width,
-                            steps,
-                            1.0,
-                            MIN_STROKE_WIDTH,
-                            MAX_TOOL_SIZE,
-                        );
-                        stroke_size_label(style.width, default_width)
-                    }
-                })
+            let defaults = self.default_tool_properties;
+            let mut hit_stop = false;
+            let (damage, feedback) = self.adjust_selected(|kind, style| {
+                let tool = tool_for(kind);
+                let default = defaults
+                    .properties(tool)
+                    .expect("element tools have adjustable properties")
+                    .size;
+                let adjustment = stepped_size(style.size, default, steps, &size_range);
+                style.size = adjustment.value;
+                hit_stop |= adjustment.hit_stop;
+                Some(size_label(style.size, default))
             });
+            return (damage, feedback, hit_stop);
         }
-        if self.tool == Tool::Text {
-            let properties = self
-                .properties_mut(Tool::Text)
-                .expect("text must have adjustable properties");
-            let size = stepped_size(
-                properties.size,
-                default_text_size,
-                steps,
-                1.0,
-                MIN_FONT_SIZE,
-                MAX_TOOL_SIZE,
-            );
-            let label = text_size_label(size, default_text_size);
-            if size == properties.size {
-                return (Damage::Preview, label);
-            }
-            properties.size = size;
-            (Damage::Preview, label)
-        } else {
-            let tool = self.tool;
-            let Some(default) = self.default_size(tool) else {
-                return (Damage::None, String::new());
-            };
-            let properties = self
-                .properties_mut(tool)
-                .expect("tools with a default size have adjustable properties");
-            let width = stepped_size(
-                properties.size,
-                default,
-                steps,
-                1.0,
-                MIN_STROKE_WIDTH,
-                MAX_TOOL_SIZE,
-            );
-            let label = stroke_size_label(width, default);
-            if width == properties.size {
-                return (Damage::Preview, label);
-            }
-            properties.size = width;
-            self.sync_active_style();
-            let damage = self.update_live_stroke_style();
-            (damage.max(Damage::Preview), label)
+        let tool = self.tool;
+        let Some(default) = self.default_size(tool) else {
+            return (Damage::None, String::new(), false);
+        };
+        let properties = self
+            .properties_mut(tool)
+            .expect("tools with a default size have adjustable properties");
+        let adjustment = stepped_size(properties.size, default, steps, &size_range);
+        let label = size_label(adjustment.value, default);
+        if adjustment.value == properties.size {
+            return (Damage::Preview, label, adjustment.hit_stop);
         }
+        properties.size = adjustment.value;
+        self.sync_active_style();
+        let damage = self.update_live_stroke_style();
+        (damage.max(Damage::Preview), label, adjustment.hit_stop)
     }
 
     pub(in crate::state::draw) fn adjust_opacity(&mut self, steps: f32) -> (Damage, String) {
@@ -248,7 +237,7 @@ impl Editor {
         }
         let default_text_opacity = self.default_properties(Tool::Text).opacity;
         if let Some(edit) = self.text_edit_mut() {
-            let opacity = stepped_size(
+            let opacity = stepped_value(
                 edit.style.color[3],
                 default_text_opacity,
                 steps,
@@ -272,7 +261,7 @@ impl Editor {
             let Some(properties) = self.properties_mut(tool) else {
                 return (Damage::None, String::new());
             };
-            let opacity = stepped_size(properties.opacity, default, steps, 0.01, MIN_OPACITY, 1.0);
+            let opacity = stepped_value(properties.opacity, default, steps, 0.01, MIN_OPACITY, 1.0);
             let label = percent_label(opacity, default);
             if opacity == properties.opacity {
                 return (Damage::Preview, label);
@@ -283,7 +272,7 @@ impl Editor {
             return (damage.max(Damage::Preview), label);
         }
         self.adjust_selected(|_, style| {
-            style.color[3] = stepped_size(style.color[3], 1.0, steps, 0.01, MIN_OPACITY, 1.0);
+            style.color[3] = stepped_value(style.color[3], 1.0, steps, 0.01, MIN_OPACITY, 1.0);
             Some(percent_label(style.color[3], 1.0))
         })
     }
@@ -301,7 +290,7 @@ impl Editor {
             let properties = self
                 .properties_mut(tool)
                 .expect("tools with roundness have adjustable properties");
-            let roundness = stepped_size(properties.roundness, default, steps, 0.01, 0.0, 1.0);
+            let roundness = stepped_value(properties.roundness, default, steps, 0.01, 0.0, 1.0);
             let label = percent_label(roundness, default);
             if roundness == properties.roundness {
                 return (Damage::Preview, label);
@@ -313,7 +302,7 @@ impl Editor {
         }
         self.adjust_selected(|kind, style| {
             let default = default_roundness(kind)?;
-            style.roundness = stepped_size(style.roundness, default, steps, 0.01, 0.0, 1.0);
+            style.roundness = stepped_value(style.roundness, default, steps, 0.01, 0.0, 1.0);
             Some(percent_label(style.roundness, default))
         })
     }
@@ -417,18 +406,16 @@ impl Editor {
             return self.style;
         };
         let mut style = self.style;
-        if tool != Tool::Text {
-            style.width = properties.size;
-        }
+        style.size = properties.size;
         style.color[3] = properties.opacity;
         style.roundness = properties.roundness;
         style.filled = properties.filled;
         style
     }
 
-    pub(super) fn width_for(&self, tool: Tool) -> f32 {
+    pub(super) fn size_for(&self, tool: Tool) -> f32 {
         self.properties(tool)
-            .map_or(self.style.width, |properties| properties.size)
+            .map_or(self.style.size, |properties| properties.size)
     }
 
     pub(super) fn sync_active_style(&mut self) {

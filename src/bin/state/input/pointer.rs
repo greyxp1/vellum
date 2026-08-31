@@ -1,3 +1,4 @@
+use std::time::{Duration, Instant};
 use wayland_client::Connection;
 use wayland_client::Dispatch;
 use wayland_client::Proxy;
@@ -26,7 +27,7 @@ const MIDDLE: u8 = 4;
 const UNDO: u8 = 8;
 const REDO: u8 = 16;
 const CLICK_SLOP_SQUARED: f64 = 36.0;
-const WHEEL_ACCEL_TIMEOUT_MS: u32 = 100;
+const SCROLL_BURST_TIMEOUT_MS: u32 = 100;
 const WHEEL_ACCEL_SAMPLE_COUNT: usize = 3;
 const WHEEL_ACCEL_MAX_GAIN: f64 = 8.0;
 const WHEEL_ACCEL_CURVE_GAIN: f64 = 11.5;
@@ -51,6 +52,7 @@ pub(in crate::state) struct PointerState {
     last_left_click: Option<(u32, (f64, f64))>,
     scroll_remainder: f64,
     wheel_acceleration: WheelAcceleration,
+    scroll_stop: Option<ScrollStop>,
 }
 
 impl PointerState {
@@ -143,6 +145,12 @@ impl PointerState {
 
     fn scroll_steps(&mut self, sequence: EventSequence, modifiers: Modifiers) -> f32 {
         let scroll_steps = sequence.scroll_steps();
+        if scroll_steps != 0.0 && self.scroll_stop_blocks(-scroll_steps, modifiers) {
+            if sequence.vertical_axis_stopped {
+                self.reset_scroll();
+            }
+            return 0.0;
+        }
         if scroll_steps != 0.0 && !sequence.is_wheel() {
             self.wheel_acceleration.reset();
         }
@@ -161,10 +169,46 @@ impl PointerState {
         steps as f32
     }
 
+    fn scroll_stop_blocks(&mut self, direction: f64, modifiers: Modifiers) -> bool {
+        let Some(stop) = &mut self.scroll_stop else {
+            return false;
+        };
+        let modifier_state = (modifiers.ctrl, modifiers.shift);
+        let within_burst =
+            stop.last_event.elapsed() <= Duration::from_millis(u64::from(SCROLL_BURST_TIMEOUT_MS));
+        if stop.positive == direction.is_sign_positive()
+            && stop.modifiers == modifier_state
+            && within_burst
+        {
+            stop.last_event = Instant::now();
+            true
+        } else {
+            self.scroll_stop = None;
+            false
+        }
+    }
+
+    fn stop_scroll(&mut self, direction: f32, modifiers: Modifiers) {
+        self.scroll_remainder = 0.0;
+        self.wheel_acceleration.reset();
+        self.scroll_stop = Some(ScrollStop {
+            positive: direction.is_sign_positive(),
+            last_event: Instant::now(),
+            modifiers: (modifiers.ctrl, modifiers.shift),
+        });
+    }
+
     fn reset_scroll(&mut self) {
         self.scroll_remainder = 0.0;
         self.wheel_acceleration.reset();
+        self.scroll_stop = None;
     }
+}
+
+struct ScrollStop {
+    positive: bool,
+    last_event: Instant,
+    modifiers: (bool, bool),
 }
 
 #[derive(Default)]
@@ -185,7 +229,7 @@ impl WheelAcceleration {
         let continues = self.sample_count > 0
             && self.modifiers == Some(modifier_state)
             && self.samples[self.sample_count - 1].1.is_sign_positive() == steps.is_sign_positive()
-            && time.wrapping_sub(self.samples[self.sample_count - 1].0) <= WHEEL_ACCEL_TIMEOUT_MS;
+            && time.wrapping_sub(self.samples[self.sample_count - 1].0) <= SCROLL_BURST_TIMEOUT_MS;
         if !continues {
             self.reset();
             self.modifiers = Some(modifier_state);
@@ -209,7 +253,7 @@ impl WheelAcceleration {
                 .map(|(_, steps)| steps.abs())
                 .sum::<f64>();
         let average_interval_ms = f64::from(time.wrapping_sub(self.samples[0].0)) / distance;
-        if average_interval_ms >= f64::from(WHEEL_ACCEL_TIMEOUT_MS) {
+        if average_interval_ms >= f64::from(SCROLL_BURST_TIMEOUT_MS) {
             return 1.0;
         }
         let interval_seconds = average_interval_ms / 1_000.0;
@@ -360,8 +404,8 @@ impl Dispatch<WlPointer, (), State> for PointerState {
                     }
                 } else {
                     let steps = state.pointer.scroll_steps(sequence, modifiers);
-                    if steps != 0.0 {
-                        state.adjust(steps, pos, modifiers);
+                    if steps != 0.0 && state.adjust(steps, pos, modifiers) {
+                        state.pointer.stop_scroll(steps, modifiers);
                     }
                 }
             }

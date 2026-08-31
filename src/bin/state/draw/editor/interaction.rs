@@ -106,10 +106,6 @@ impl Editor {
                     origin: point,
                     content: String::new(),
                     cursor: 0,
-                    font_size: self
-                        .properties(Tool::Text)
-                        .expect("text must have adjustable properties")
-                        .size,
                     style: self.style,
                 }));
                 previous.max(Damage::Preview)
@@ -383,14 +379,14 @@ impl Editor {
     fn tool_cursor(&self, tool: Tool) -> Cursor {
         Cursor::Tool(ToolCursor {
             tool,
-            width: self.width_for(tool),
+            size: self.size_for(tool),
             roundness: self.style.roundness,
             color: self.style.color,
         })
     }
 
-    pub(super) fn eraser_width(&self) -> f32 {
-        self.width_for(Tool::Eraser)
+    pub(super) fn eraser_size(&self) -> f32 {
+        self.size_for(Tool::Eraser)
     }
 
     pub(super) fn cancel_interaction(&mut self) -> Damage {

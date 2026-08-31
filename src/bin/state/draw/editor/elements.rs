@@ -148,7 +148,7 @@ impl Editor {
     }
 
     pub(super) fn erase_at(&mut self, point: Point) -> bool {
-        let radius = self.eraser_width() * 0.5;
+        let radius = self.eraser_size() * 0.5;
         let hit = self
             .elements
             .iter()
@@ -163,7 +163,6 @@ impl Editor {
             id,
             origin,
             content,
-            font_size,
             style,
             ..
         })) = self.interaction.take()
@@ -173,11 +172,7 @@ impl Editor {
         if content.is_empty() {
             return id.map_or(Damage::Preview, |id| Damage::from_scene(self.remove_id(id)));
         }
-        let kind = ElementKind::Text {
-            origin,
-            content,
-            font_size,
-        };
+        let kind = ElementKind::Text { origin, content };
         if let Some(id) = id {
             let element = self.element_mut(id).expect("editing text exists");
             if element.kind == kind && element.style == style {
@@ -196,12 +191,7 @@ impl Editor {
         let Some(element) = self.element(id) else {
             return Damage::None;
         };
-        let ElementKind::Text {
-            origin,
-            content,
-            font_size,
-        } = &element.kind
-        else {
+        let ElementKind::Text { origin, content } = &element.kind else {
             return Damage::None;
         };
         self.interaction = Some(Interaction::EditingText(TextEdit {
@@ -209,7 +199,6 @@ impl Editor {
             origin: *origin,
             content: content.clone(),
             cursor: content.len(),
-            font_size: *font_size,
             style: element.style,
         }));
         Damage::Scene

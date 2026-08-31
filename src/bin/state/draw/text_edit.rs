@@ -16,7 +16,6 @@ pub(super) struct TextEdit {
     pub(super) origin: Point,
     pub(super) content: String,
     pub(super) cursor: usize,
-    pub(super) font_size: f32,
     pub(super) style: Style,
 }
 

@@ -160,7 +160,7 @@ impl Bounds {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Style {
-    pub width: f32,
+    pub size: f32,
     pub color: [f32; 4],
     pub roundness: f32,
     pub filled: bool,
@@ -192,7 +192,6 @@ pub enum ElementKind {
     Text {
         origin: Point,
         content: String,
-        font_size: f32,
     },
 }
 
@@ -262,12 +261,10 @@ impl Element {
         let ElementKind::Text { origin, .. } = self.kind else {
             return;
         };
-        let half_width = self.style.width * 0.5;
         self.bounds = Bounds {
             min: origin,
             max: Point::new(origin.x + width, origin.y + height),
-        }
-        .expanded(half_width);
+        };
     }
 
     pub(super) fn preview_bounds(&self, kind: &ElementKind) -> Bounds {
@@ -300,7 +297,7 @@ impl Element {
         if !self.bounds.expanded(slop).contains(point) {
             return false;
         }
-        let tolerance = self.style.width * 0.5 + slop;
+        let tolerance = self.style.size * 0.5 + slop;
         match &self.kind {
             ElementKind::Path {
                 points,
@@ -310,9 +307,9 @@ impl Element {
                 if matches!(end_marker, Some(EndMarker::Arrow))
                     && let Some((start, end)) = path_endpoints(points)
                 {
-                    let (start, end) = pixel_aligned_segment(start, end, self.style.width);
+                    let (start, end) = pixel_aligned_segment(start, end, self.style.size);
                     arrow_hit_test(
-                        arrow_head(start, end, self.style.width),
+                        arrow_head(start, end, self.style.size),
                         self.style,
                         point,
                         slop,
@@ -320,7 +317,7 @@ impl Element {
                 } else if *smooth {
                     freehand::hit_test(points, self.style, point, slop)
                 } else if let Some((start, end)) = path_endpoints(points) {
-                    let (start, end) = pixel_aligned_segment(start, end, self.style.width);
+                    let (start, end) = pixel_aligned_segment(start, end, self.style.size);
                     polyline_hit(&[start, end], point, tolerance)
                 } else {
                     polyline_hit(points, point, tolerance)
@@ -330,7 +327,7 @@ impl Element {
                 super::triangle::hit_test(vertices, self.style, point, slop)
             }
             ElementKind::Rectangle { min, max } => {
-                let (min, max) = pixel_aligned_rectangle(*min, *max, self.style.width);
+                let (min, max) = pixel_aligned_rectangle(*min, *max, self.style.size);
                 rounded_rectangle_hit(
                     min,
                     max,
@@ -368,7 +365,7 @@ pub(super) fn bounds_for(kind: &ElementKind, style: Style) -> Bounds {
     if let ElementKind::Triangle { vertices } = kind {
         return super::triangle::bounds(vertices, style);
     }
-    let width = style.width;
+    let width = style.size;
     let bounds = match kind {
         ElementKind::Path {
             points,
@@ -407,24 +404,22 @@ pub(super) fn bounds_for(kind: &ElementKind, style: Style) -> Bounds {
             min: Point::new(center.x - radii.x, center.y - radii.y),
             max: Point::new(center.x + radii.x, center.y + radii.y),
         },
-        ElementKind::Text {
-            origin,
-            content,
-            font_size,
-        } => Bounds {
+        ElementKind::Text { origin, content } => Bounds {
             min: *origin,
             max: Point::new(
-                origin.x + content.chars().count().max(1) as f32 * font_size * 0.65,
-                origin.y + font_size * 1.25,
+                origin.x + content.chars().count().max(1) as f32 * style.size * 0.65,
+                origin.y + style.size * 1.25,
             ),
         },
     };
     let radius = width * 0.5;
-    let expansion = if matches!(kind, ElementKind::Path { smooth: true, .. }) {
-        let roundness = style.roundness.clamp(0.0, 1.0);
-        radius * (std::f32::consts::SQRT_2 - (std::f32::consts::SQRT_2 - 1.0) * roundness)
-    } else {
-        radius
+    let expansion = match kind {
+        ElementKind::Text { .. } => 0.0,
+        ElementKind::Path { smooth: true, .. } => {
+            let roundness = style.roundness.clamp(0.0, 1.0);
+            radius * (std::f32::consts::SQRT_2 - (std::f32::consts::SQRT_2 - 1.0) * roundness)
+        }
+        _ => radius,
     };
     bounds.expanded(expansion)
 }
@@ -438,9 +433,9 @@ pub(super) fn geometry(kind: &ElementKind, style: Style) -> Geometry {
             end_marker: Some(EndMarker::Arrow),
             ..
         } => path_endpoints(points).map_or_else(Geometry::empty, |(start, end)| {
-            let (start, end) = pixel_aligned_segment(start, end, style.width);
+            let (start, end) = pixel_aligned_segment(start, end, style.size);
             Geometry::fill(
-                arrow_path(arrow_head(start, end, style.width), style.roundness),
+                arrow_path(arrow_head(start, end, style.size), style.roundness),
                 FillRule::NonZero,
                 style.color,
             )
@@ -459,18 +454,18 @@ pub(super) fn geometry(kind: &ElementKind, style: Style) -> Geometry {
                 return Geometry::empty();
             };
             Geometry::fill(
-                line_path(*start, *end, style.width, style.roundness),
+                line_path(*start, *end, style.size, style.roundness),
                 FillRule::NonZero,
                 style.color,
             )
         }
         ElementKind::Triangle { vertices } => super::triangle::geometry(vertices, style),
         ElementKind::Rectangle { min, max } => {
-            let (min, max) = pixel_aligned_rectangle(*min, *max, style.width);
+            let (min, max) = pixel_aligned_rectangle(*min, *max, style.size);
             rectangle_geometry(min, max, style)
         }
         ElementKind::Ellipse { center, radii } if style.filled => {
-            let half = style.width * 0.5;
+            let half = style.size * 0.5;
             let path = kurbo::Ellipse::new(
                 (f64::from(center.x), f64::from(center.y)),
                 (
@@ -489,7 +484,7 @@ pub(super) fn geometry(kind: &ElementKind, style: Style) -> Geometry {
                 0.0,
             )
             .to_path(0.1);
-            Geometry::stroke(path, StrokeStyle::new(f64::from(style.width)), style.color)
+            Geometry::stroke(path, StrokeStyle::new(f64::from(style.size)), style.color)
         }
         ElementKind::Text { .. } => Geometry::empty(),
     }
@@ -507,9 +502,9 @@ pub(super) fn rendered_path_endpoints(kind: &ElementKind, style: Style) -> Optio
     let [first, last] = points.as_slice() else {
         return None;
     };
-    let (start, end) = pixel_aligned_segment(*first, *last, style.width);
+    let (start, end) = pixel_aligned_segment(*first, *last, style.size);
     let end = if matches!(end_marker, Some(EndMarker::Arrow)) {
-        arrow_head(start, end, style.width).rendered_tip(style.roundness)
+        arrow_head(start, end, style.size).rendered_tip(style.roundness)
     } else {
         end
     };
@@ -523,7 +518,7 @@ fn rectangle_radius(min: Point, max: Point, roundness: f32) -> f32 {
 fn rectangle_geometry(min: Point, max: Point, style: Style) -> Geometry {
     use kurbo::Shape;
 
-    let half = style.width * 0.5;
+    let half = style.size * 0.5;
     let maximum = (max.x - min.x).abs().min((max.y - min.y).abs()) * 0.5;
     let outer_radius = if style.roundness <= f32::EPSILON {
         0.0
@@ -595,18 +590,23 @@ fn rounded_rectangle_hit(
 }
 
 pub(super) fn default_roundness(kind: &ElementKind) -> Option<f32> {
+    tool_for(kind).default_roundness()
+}
+
+pub(super) fn tool_for(kind: &ElementKind) -> super::tool::Tool {
     use super::tool::Tool;
 
     match kind {
-        ElementKind::Path { smooth: true, .. } => Tool::Pen.default_roundness(),
+        ElementKind::Path { smooth: true, .. } => Tool::Pen,
         ElementKind::Path {
             end_marker: Some(EndMarker::Arrow),
             ..
-        } => Tool::Arrow.default_roundness(),
-        ElementKind::Path { .. } => Tool::Line.default_roundness(),
-        ElementKind::Triangle { .. } => Tool::Triangle.default_roundness(),
-        ElementKind::Rectangle { .. } => Tool::Rectangle.default_roundness(),
-        _ => None,
+        } => Tool::Arrow,
+        ElementKind::Path { .. } => Tool::Line,
+        ElementKind::Triangle { .. } => Tool::Triangle,
+        ElementKind::Rectangle { .. } => Tool::Rectangle,
+        ElementKind::Ellipse { .. } => Tool::Ellipse,
+        ElementKind::Text { .. } => Tool::Text,
     }
 }
 
