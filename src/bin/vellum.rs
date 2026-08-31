@@ -50,7 +50,7 @@ fn run() -> Result<ExitCode, String> {
         });
     }
     let settings = Settings::load(arguments)?;
-    run_overlay(settings);
+    run_overlay(settings)?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -121,40 +121,26 @@ fn query(request: &[u8]) -> Result<bool, String> {
     Ok(active)
 }
 
-fn run_overlay(settings: Settings) {
-    // setup socket for messages
-    let socket_addr = SocketAddr::from_abstract_name(CONTROL_SOCKET).unwrap();
-    let socket = match UnixDatagram::bind_addr(&socket_addr) {
-        Ok(socket) => socket,
-        Err(error) => {
-            eprintln!("vellum: could not bind control socket: {error}");
-            std::process::exit(1);
-        }
-    };
-    socket.set_nonblocking(true).unwrap_or_else(|error| {
-        eprintln!("vellum: could not configure control socket: {error}");
-        std::process::exit(1);
-    });
+fn run_overlay(settings: Settings) -> Result<(), String> {
+    let socket_addr = SocketAddr::from_abstract_name(CONTROL_SOCKET)
+        .map_err(|error| format!("invalid control socket name: {error}"))?;
+    let socket = UnixDatagram::bind_addr(&socket_addr)
+        .map_err(|error| format!("could not bind control socket: {error}"))?;
+    socket
+        .set_nonblocking(true)
+        .map_err(|error| format!("could not configure control socket: {error}"))?;
 
-    let (mut state, mut event_queue) =
-        state::State::setup_wayland(settings).unwrap_or_else(|error| {
-            eprintln!("vellum: {error}");
-            std::process::exit(1);
-        });
+    let (mut state, mut event_queue) = state::State::setup_wayland(settings)?;
     state.deactivate();
 
-    'running: loop {
-        if let Err(error) = event_queue.dispatch_pending(&mut state) {
-            eprintln!("vellum: Wayland dispatch failed: {error}");
-            break;
-        }
+    loop {
+        event_queue
+            .dispatch_pending(&mut state)
+            .map_err(|error| format!("Wayland dispatch failed: {error}"))?;
         let flush_blocked = match event_queue.flush() {
             Ok(()) => false,
             Err(WaylandError::Io(error)) if error.kind() == std::io::ErrorKind::WouldBlock => true,
-            Err(error) => {
-                eprintln!("vellum: Wayland flush failed: {error}");
-                break;
-            }
+            Err(error) => return Err(format!("Wayland flush failed: {error}")),
         };
 
         let Some(read_guard) = event_queue.prepare_read() else {
@@ -184,8 +170,7 @@ fn run_overlay(settings: Settings) {
                 if error == rustix::io::Errno::INTR {
                     continue;
                 }
-                eprintln!("vellum: event polling failed: {error}");
-                break 'running;
+                return Err(format!("event polling failed: {error}"));
             }
             (
                 fds[0].revents().contains(PollFlags::IN),
@@ -193,10 +178,9 @@ fn run_overlay(settings: Settings) {
             )
         };
         if wayland_ready {
-            if let Err(error) = read_guard.read() {
-                eprintln!("vellum: Wayland read failed: {error}");
-                break;
-            }
+            read_guard
+                .read()
+                .map_err(|error| format!("Wayland read failed: {error}"))?;
         } else {
             drop(read_guard);
         }
@@ -207,10 +191,7 @@ fn run_overlay(settings: Settings) {
                 let (size, sender) = match socket.recv_from(&mut message) {
                     Ok(message) => message,
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
-                    Err(error) => {
-                        eprintln!("vellum: socket read failed: {error}");
-                        break 'running;
-                    }
+                    Err(error) => return Err(format!("socket read failed: {error}")),
                 };
                 if size > MAX_SOCKET_MESSAGE {
                     eprintln!("vellum: socket message exceeded {MAX_SOCKET_MESSAGE} bytes");
@@ -248,7 +229,7 @@ fn run_overlay(settings: Settings) {
                             eprintln!("vellum: could not send status: {error}");
                         }
                     }
-                    Command::Exit => break 'running,
+                    Command::Exit => return Ok(()),
                 }
             }
         }
