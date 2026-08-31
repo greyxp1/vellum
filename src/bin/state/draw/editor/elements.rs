@@ -12,8 +12,12 @@ impl Editor {
         &mut self,
         mut layout_size: impl FnMut(ElementId) -> Option<[f32; 2]>,
     ) {
+        let resizing = match &self.interaction {
+            Some(Interaction::Resizing { id, .. }) => Some(*id),
+            _ => None,
+        };
         for element in &mut self.elements {
-            if !matches!(element.kind, ElementKind::Text { .. }) {
+            if !matches!(element.kind, ElementKind::Text { .. }) || Some(element.id) == resizing {
                 continue;
             }
             if let Some(size) = layout_size(element.id) {
@@ -164,6 +168,7 @@ impl Editor {
             origin,
             content,
             style,
+            scale,
             ..
         })) = self.interaction.take()
         else {
@@ -172,7 +177,11 @@ impl Editor {
         if content.is_empty() {
             return id.map_or(Damage::Preview, |id| Damage::from_scene(self.remove_id(id)));
         }
-        let kind = ElementKind::Text { origin, content };
+        let kind = ElementKind::Text {
+            origin,
+            content,
+            scale,
+        };
         if let Some(id) = id {
             let element = self.element_mut(id).expect("editing text exists");
             if element.kind == kind && element.style == style {
@@ -191,7 +200,12 @@ impl Editor {
         let Some(element) = self.element(id) else {
             return Damage::None;
         };
-        let ElementKind::Text { origin, content } = &element.kind else {
+        let ElementKind::Text {
+            origin,
+            content,
+            scale,
+        } = &element.kind
+        else {
             return Damage::None;
         };
         self.interaction = Some(Interaction::EditingText(TextEdit {
@@ -200,6 +214,7 @@ impl Editor {
             content: content.clone(),
             cursor: content.len(),
             style: element.style,
+            scale: *scale,
         }));
         Damage::Scene
     }

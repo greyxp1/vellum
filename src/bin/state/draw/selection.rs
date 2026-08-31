@@ -10,7 +10,6 @@ const SELECTION_WIDTH: f32 = 1.5;
 const GAP: f32 = 4.0;
 const COLOR: [f32; 4] = [0.1, 0.75, 1.0, 0.8];
 const HANDLE_FILL: [f32; 4] = [0.04, 0.04, 0.04, 1.0];
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Handle {
     Start,
@@ -129,7 +128,7 @@ pub(super) fn append_handles(kind: &ElementKind, style: Style, output: &mut Vec<
 fn outline_handle(kind: &ElementKind, bounds: Bounds, point: Point) -> Option<Handle> {
     if !matches!(
         kind,
-        ElementKind::Rectangle { .. } | ElementKind::Ellipse { .. }
+        ElementKind::Rectangle { .. } | ElementKind::Ellipse { .. } | ElementKind::Text { .. }
     ) {
         return None;
     }
@@ -260,6 +259,198 @@ pub(super) fn resize(
             }
         }
         _ => original.clone(),
+    }
+}
+
+pub(super) fn resize_text(
+    original: &ElementKind,
+    original_style: Style,
+    original_bounds: Bounds,
+    handle: Handle,
+    delta: Point,
+    modifiers: Modifiers,
+    font_size_range: [f32; 2],
+) -> (ElementKind, Style, Bounds) {
+    let ElementKind::Text {
+        origin: _,
+        content,
+        scale,
+    } = original
+    else {
+        return (original.clone(), original_style, original_bounds);
+    };
+    let Some(direction) = resize_direction(handle) else {
+        return (original.clone(), original_style, original_bounds);
+    };
+    let original_size = Point::new(
+        (original_bounds.max.x - original_bounds.min.x).max(f32::EPSILON),
+        (original_bounds.max.y - original_bounds.min.y).max(f32::EPSILON),
+    );
+    let multiplier = if modifiers.alt { 2.0 } else { 1.0 };
+    let dragged_size = Point::new(
+        original_size.x + delta.x * direction.x * multiplier,
+        original_size.y + delta.y * direction.y * multiplier,
+    );
+    let (scale, mut size, factor) = if modifiers.shift {
+        let intrinsic = Point::new(
+            original_size.x / scale[0].abs().max(f32::EPSILON),
+            original_size.y / scale[1].abs().max(f32::EPSILON),
+        );
+        let uniform_start = if scale[0].abs() == scale[1].abs() {
+            scale[0].abs()
+        } else {
+            1.0
+        };
+        let start = intrinsic * uniform_start;
+        let factor = Point::new(
+            1.0 + (dragged_size.x - original_size.x) / start.x,
+            1.0 + (dragged_size.y - original_size.y) / start.y,
+        );
+        let requested_factor = match (direction.x != 0.0, direction.y != 0.0) {
+            (true, true) if factor.x.abs() >= factor.y.abs() => factor.x,
+            (_, true) => factor.y,
+            (true, false) => factor.x,
+            (false, false) => unreachable!(),
+        };
+        let uniform = nonzero_scale(uniform_start * requested_factor.abs(), 1.0);
+        (
+            [
+                scale[0].signum() * factor.x.signum() * uniform,
+                scale[1].signum() * factor.y.signum() * uniform,
+            ],
+            intrinsic * uniform,
+            factor,
+        )
+    } else {
+        let factor = Point::new(
+            dragged_size.x / original_size.x,
+            dragged_size.y / original_size.y,
+        );
+        let resized_scale = [
+            nonzero_scale(scale[0] * factor.x, scale[0]),
+            nonzero_scale(scale[1] * factor.y, scale[1]),
+        ];
+        let size = Point::new(
+            original_size.x * (resized_scale[0] / scale[0]).abs(),
+            original_size.y * (resized_scale[1] / scale[1]).abs(),
+        );
+        (resized_scale, size, factor)
+    };
+    let (style, scale) = bake_vertical_scale(
+        original_style,
+        scale,
+        &mut size,
+        modifiers.shift,
+        font_size_range,
+    );
+    let bounds = proportional_text_bounds(original_bounds, direction, size, factor, modifiers.alt);
+    let padding = if style.filled {
+        crate::render::text_padding(style.size)
+    } else {
+        [0.0, 0.0]
+    };
+    let origin = text_origin(bounds, scale, padding);
+    (
+        ElementKind::Text {
+            origin,
+            content: content.clone(),
+            scale,
+        },
+        style,
+        bounds,
+    )
+}
+
+fn resize_direction(handle: Handle) -> Option<Point> {
+    Some(match handle {
+        Handle::Corner(Corner::TopLeft) => Point::new(-1.0, -1.0),
+        Handle::Corner(Corner::TopRight) => Point::new(1.0, -1.0),
+        Handle::Corner(Corner::BottomRight) => Point::new(1.0, 1.0),
+        Handle::Corner(Corner::BottomLeft) => Point::new(-1.0, 1.0),
+        Handle::Edge(Edge::Top) => Point::new(0.0, -1.0),
+        Handle::Edge(Edge::Right) => Point::new(1.0, 0.0),
+        Handle::Edge(Edge::Bottom) => Point::new(0.0, 1.0),
+        Handle::Edge(Edge::Left) => Point::new(-1.0, 0.0),
+        Handle::Start | Handle::End | Handle::Vertex(_) => return None,
+    })
+}
+
+fn bake_vertical_scale(
+    mut style: Style,
+    scale: [f32; 2],
+    bounds_size: &mut Point,
+    uniform: bool,
+    [min, max]: [f32; 2],
+) -> (Style, [f32; 2]) {
+    let original_font_size = style.size;
+    let requested_font_size = original_font_size * scale[1].abs();
+    let font_size = requested_font_size.clamp(min, max);
+    let clamp_ratio = font_size / requested_font_size;
+    style.size = font_size;
+
+    if uniform {
+        *bounds_size = *bounds_size * clamp_ratio;
+        (style, [scale[0].signum(), scale[1].signum()])
+    } else {
+        bounds_size.y *= clamp_ratio;
+        (
+            style,
+            [original_font_size * scale[0] / font_size, scale[1].signum()],
+        )
+    }
+}
+
+fn nonzero_scale(value: f32, sign: f32) -> f32 {
+    let sign = if value.abs() < f32::EPSILON {
+        sign
+    } else {
+        value
+    };
+    value.abs().max(f32::EPSILON).copysign(sign)
+}
+
+fn text_origin(bounds: Bounds, scale: [f32; 2], [padding_x, padding_y]: [f32; 2]) -> Point {
+    let start = |min, max, scale: f32, padding| {
+        (if scale.is_sign_negative() { max } else { min }) + padding * scale
+    };
+    Point::new(
+        start(bounds.min.x, bounds.max.x, scale[0], padding_x),
+        start(bounds.min.y, bounds.max.y, scale[1], padding_y),
+    )
+}
+
+fn proportional_text_bounds(
+    original: Bounds,
+    direction: Point,
+    size: Point,
+    factor: Point,
+    from_center: bool,
+) -> Bounds {
+    let resize_axis = |min, max, direction: f32, size, factor: f32| {
+        if from_center || direction == 0.0 {
+            let center = (min + max) * 0.5;
+            return (center - size * 0.5, center + size * 0.5);
+        }
+        let anchor = if direction < 0.0 { max } else { min };
+        ordered(anchor, anchor + direction * factor.signum() * size)
+    };
+    let (min_x, max_x) = resize_axis(
+        original.min.x,
+        original.max.x,
+        direction.x,
+        size.x,
+        factor.x,
+    );
+    let (min_y, max_y) = resize_axis(
+        original.min.y,
+        original.max.y,
+        direction.y,
+        size.y,
+        factor.y,
+    );
+    Bounds {
+        min: Point::new(min_x, min_y),
+        max: Point::new(max_x, max_y),
     }
 }
 

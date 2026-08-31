@@ -192,6 +192,7 @@ pub enum ElementKind {
     Text {
         origin: Point,
         content: String,
+        scale: [f32; 2],
     },
 }
 
@@ -258,10 +259,10 @@ impl Element {
     }
 
     pub(super) fn update_text_bounds(&mut self, [width, height]: [f32; 2]) {
-        let ElementKind::Text { origin, .. } = self.kind else {
+        let ElementKind::Text { origin, scale, .. } = self.kind else {
             return;
         };
-        self.bounds = text_bounds(origin, [width, height], self.style);
+        self.bounds = text_bounds(origin, [width, height], self.style, scale);
     }
 
     pub(super) fn preview_bounds(&self, kind: &ElementKind) -> Bounds {
@@ -401,13 +402,18 @@ pub(super) fn bounds_for(kind: &ElementKind, style: Style) -> Bounds {
             min: Point::new(center.x - radii.x, center.y - radii.y),
             max: Point::new(center.x + radii.x, center.y + radii.y),
         },
-        ElementKind::Text { origin, content } => text_bounds(
+        ElementKind::Text {
+            origin,
+            content,
+            scale,
+        } => text_bounds(
             *origin,
             [
                 content.chars().count().max(1) as f32 * style.size * 0.65,
                 text_line_height(style.size),
             ],
             style,
+            *scale,
         ),
     };
     let radius = width * 0.5;
@@ -422,12 +428,13 @@ pub(super) fn bounds_for(kind: &ElementKind, style: Style) -> Bounds {
     bounds.expanded(expansion)
 }
 
-fn text_bounds(origin: Point, [width, height]: [f32; 2], style: Style) -> Bounds {
+fn text_bounds(origin: Point, [width, height]: [f32; 2], style: Style, scale: [f32; 2]) -> Bounds {
     let [[min_x, min_y], [max_x, max_y]] = crate::render::text_bounds(
         [origin.x, origin.y],
         [width, height],
         style.size,
         style.filled,
+        scale,
     );
     Bounds {
         min: Point::new(min_x, min_y),

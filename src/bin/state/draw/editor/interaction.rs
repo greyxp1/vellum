@@ -1,10 +1,27 @@
-use super::super::scene::{ElementId, ElementKind, Point};
+use super::super::scene::{Bounds, Element, ElementId, ElementKind, Point, Style, bounds_for};
 use super::super::selection::{self, Handle};
 use super::super::text_edit::TextEdit;
 use super::super::tool::Tool;
 use super::super::{Cursor, Modifiers, ToolCursor, ToolOverride, freehand};
 use super::{Damage, Editor, HistoryEntry, drawing_kind};
 use crate::render::text_line_height;
+
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct ResizeSnapshot {
+    pub(super) kind: ElementKind,
+    pub(super) style: Style,
+    pub(super) bounds: Bounds,
+}
+
+impl From<&Element> for ResizeSnapshot {
+    fn from(element: &Element) -> Self {
+        Self {
+            kind: element.kind.clone(),
+            style: element.style,
+            bounds: element.bounds,
+        }
+    }
+}
 
 #[derive(Debug)]
 pub(super) enum Interaction {
@@ -25,9 +42,8 @@ pub(super) enum Interaction {
         handle: Handle,
         start: Point,
         point: Point,
-        roundness: f32,
-        original: ElementKind,
-        current: ElementKind,
+        original: ResizeSnapshot,
+        current: ResizeSnapshot,
         equal_side_anchor: Option<usize>,
     },
     EditingText(TextEdit),
@@ -36,6 +52,7 @@ pub(super) enum Interaction {
 
 impl Editor {
     pub fn modifiers_changed(&mut self, modifiers: Modifiers) -> Damage {
+        let text_size_range = self.text_size_range();
         match &mut self.interaction {
             Some(Interaction::Drawing {
                 modifiers: current, ..
@@ -47,19 +64,18 @@ impl Editor {
                 handle,
                 start,
                 point,
-                roundness,
                 original,
                 current,
                 equal_side_anchor,
                 ..
             }) => {
-                let resized = selection::resize(
+                let resized = resize_element(
                     original,
                     *handle,
                     *point - *start,
-                    *roundness,
                     modifiers,
                     equal_side_anchor,
+                    text_size_range,
                 );
                 if resized == *current {
                     Damage::None
@@ -109,6 +125,7 @@ impl Editor {
                     content: String::new(),
                     cursor: 0,
                     style: self.style,
+                    scale: [1.0; 2],
                 }));
                 previous.max(Damage::Preview)
             }
@@ -119,13 +136,12 @@ impl Editor {
                     && let Some(handle) = self.hit_handle(id, point)
                     && let Some(element) = self.element(id)
                 {
-                    let original = element.kind.clone();
+                    let original = ResizeSnapshot::from(element);
                     self.interaction = Some(Interaction::Resizing {
                         id,
                         handle,
                         start: point,
                         point,
-                        roundness: element.style.roundness,
                         current: original.clone(),
                         original,
                         equal_side_anchor: None,
@@ -171,6 +187,7 @@ impl Editor {
     }
 
     pub fn pointer_motion(&mut self, point: Point, modifiers: Modifiers) -> Damage {
+        let text_size_range = self.text_size_range();
         match self.interaction.take() {
             Some(Interaction::Freehand(mut stroke)) => {
                 let changed = stroke.push(point, modifiers.shift);
@@ -198,25 +215,23 @@ impl Editor {
                 id,
                 handle,
                 start,
-                roundness,
                 original,
                 mut equal_side_anchor,
                 ..
             }) => {
-                let current = selection::resize(
+                let current = resize_element(
                     &original,
                     handle,
                     point - start,
-                    roundness,
                     modifiers,
                     &mut equal_side_anchor,
+                    text_size_range,
                 );
                 self.interaction = Some(Interaction::Resizing {
                     id,
                     handle,
                     start,
                     point,
-                    roundness,
                     original,
                     current,
                     equal_side_anchor,
@@ -235,6 +250,7 @@ impl Editor {
     }
 
     pub fn pointer_up(&mut self, point: Point, modifiers: Modifiers) -> Damage {
+        let text_size_range = self.text_size_range();
         match self.interaction.take() {
             Some(Interaction::Freehand(stroke)) => {
                 let (points, style, geometry) = stroke.finish(point, modifiers.shift);
@@ -278,26 +294,27 @@ impl Editor {
                 id,
                 handle,
                 start,
-                roundness,
                 original,
                 mut equal_side_anchor,
                 ..
             }) => {
-                let current = selection::resize(
+                let current = resize_element(
                     &original,
                     handle,
                     point - start,
-                    roundness,
                     modifiers,
                     &mut equal_side_anchor,
+                    text_size_range,
                 );
                 if current != original
                     && let Some(element) = self.element_mut(id)
                 {
-                    let style = element.style;
-                    element.replace(current, style);
-                    self.history
-                        .record(HistoryEntry::Update(vec![(id, original, style)]));
+                    element.replace(current.kind, current.style);
+                    self.history.record(HistoryEntry::Update(vec![(
+                        id,
+                        original.kind,
+                        original.style,
+                    )]));
                 }
                 Damage::Scene
             }
@@ -314,6 +331,14 @@ impl Editor {
         selection::hit_handle(&element.kind, element.style, element.bounds, point)
     }
 
+    fn text_size_range(&self) -> [f32; 2] {
+        let range = self
+            .size_ranges
+            .get(&Tool::Text)
+            .expect("text has a size range");
+        [range.min(), range.max()]
+    }
+
     pub fn cursor(&self, point: Point, tool_override: ToolOverride) -> Cursor {
         let effective_tool = tool_override.effective_tool(self.tool);
         if tool_override == ToolOverride::Eraser {
@@ -326,13 +351,14 @@ impl Editor {
             }) => {
                 return Cursor::Shape(selection::CursorHint::Crosshair);
             }
-            Some(Interaction::Resizing {
-                original:
+            Some(Interaction::Resizing { original, .. })
+                if matches!(
+                    original.kind,
                     ElementKind::Triangle { .. }
-                    | ElementKind::Rectangle { .. }
-                    | ElementKind::Ellipse { .. },
-                ..
-            }) => {
+                        | ElementKind::Rectangle { .. }
+                        | ElementKind::Ellipse { .. }
+                ) =>
+            {
                 return Cursor::Shape(selection::CursorHint::Crosshair);
             }
             Some(
@@ -405,5 +431,44 @@ impl Editor {
         } else {
             self.cancel_interaction()
         }
+    }
+}
+
+fn resize_element(
+    original: &ResizeSnapshot,
+    handle: Handle,
+    delta: Point,
+    modifiers: Modifiers,
+    equal_side_anchor: &mut Option<usize>,
+    text_size_range: [f32; 2],
+) -> ResizeSnapshot {
+    if matches!(original.kind, ElementKind::Text { .. }) {
+        let (kind, style, bounds) = selection::resize_text(
+            &original.kind,
+            original.style,
+            original.bounds,
+            handle,
+            delta,
+            modifiers,
+            text_size_range,
+        );
+        return ResizeSnapshot {
+            kind,
+            style,
+            bounds,
+        };
+    }
+    let kind = selection::resize(
+        &original.kind,
+        handle,
+        delta,
+        original.style.roundness,
+        modifiers,
+        equal_side_anchor,
+    );
+    ResizeSnapshot {
+        bounds: bounds_for(&kind, original.style),
+        kind,
+        style: original.style,
     }
 }

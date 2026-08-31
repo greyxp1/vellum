@@ -17,6 +17,7 @@ pub(super) struct TextEdit {
     pub(super) content: String,
     pub(super) cursor: usize,
     pub(super) style: Style,
+    pub(super) scale: [f32; 2],
 }
 
 impl TextEdit {

@@ -23,15 +23,20 @@ pub fn text_bounds(
     [width, height]: [f32; 2],
     font_size: f32,
     background: bool,
+    [scale_x, scale_y]: [f32; 2],
 ) -> [[f32; 2]; 2] {
     let [padding_x, padding_y] = if background {
         text_padding(font_size)
     } else {
         [0.0; 2]
     };
+    let end_x = left + (width + padding_x) * scale_x;
+    let end_y = top + (height + padding_y) * scale_y;
+    let start_x = left - padding_x * scale_x;
+    let start_y = top - padding_y * scale_y;
     [
-        [left - padding_x, top - padding_y],
-        [left + width + padding_x, top + height + padding_y],
+        [start_x.min(end_x), start_y.min(end_y)],
+        [start_x.max(end_x), start_y.max(end_y)],
     ]
 }
 
@@ -56,6 +61,7 @@ pub struct TextSpec<'a> {
     pub font_size: f32,
     pub color: [f32; 4],
     pub background_roundness: Option<f32>,
+    pub scale: [f32; 2],
 }
 
 struct CachedText {
@@ -71,6 +77,7 @@ struct PreparedText {
     top: f32,
     color: [f32; 4],
     background_roundness: Option<f32>,
+    scale: [f32; 2],
 }
 
 pub(super) struct TextState {
@@ -101,6 +108,7 @@ impl TextState {
             for value in [spec.left, spec.top, spec.font_size]
                 .into_iter()
                 .chain(spec.background_roundness)
+                .chain(spec.scale)
                 .chain(spec.color)
             {
                 value.to_bits().hash(&mut hasher);
@@ -157,6 +165,7 @@ impl TextState {
                 top: spec.top,
                 color: spec.color,
                 background_roundness: spec.background_roundness,
+                scale: spec.scale,
             }));
         self.prepared = prepared;
     }
@@ -195,6 +204,7 @@ impl TextState {
                     cached.layout_size,
                     cached.font_size,
                     true,
+                    prepared.scale,
                 );
                 let width = max_x - min_x;
                 let height = max_y - min_y;
@@ -232,21 +242,26 @@ impl TextState {
                             .expect("load shaped annotation font")
                     });
                     let left = prepared.left;
-                    let baseline = prepared.top + run.line_y;
+                    let [scale_x, scale_y] = prepared.scale;
+                    let baseline = prepared.top + run.line_y * scale_y;
+                    let transform =
+                        kurbo::Affine::scale_non_uniform(f64::from(scale_x), f64::from(scale_y));
+                    let glyphs = glyphs.iter().map(move |glyph| glifo::Glyph {
+                        id: u32::from(glyph.glyph_id),
+                        x: left + scale_x * (glyph.x + glyph.font_size * glyph.x_offset),
+                        y: baseline - scale_y * glyph.font_size * glyph.y_offset,
+                    });
                     scene.set_paint(vello_color(color, target_is_srgb));
                     scene
                         .glyph_run(resources, font_data)
                         .font_size(first.font_size)
+                        .glyph_transform(transform)
                         .hint(true)
                         .font_embolden(glifo::FontEmbolden::new(kurbo::Diagonal2::new(
                             emboldening,
                             emboldening,
                         )))
-                        .fill_glyphs(glyphs.iter().map(move |glyph| glifo::Glyph {
-                            id: u32::from(glyph.glyph_id),
-                            x: left + glyph.x + glyph.font_size * glyph.x_offset,
-                            y: baseline - glyph.font_size * glyph.y_offset,
-                        }));
+                        .fill_glyphs(glyphs);
                 }
             }
         }

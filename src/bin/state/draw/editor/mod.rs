@@ -330,10 +330,8 @@ impl Editor {
                 self.element(*id)
                     .map(|element| element.geometry.translated([delta.x, delta.y]))
             })),
-            Some(Interaction::Resizing { id, current, .. }) => {
-                if let Some(element) = self.element(*id) {
-                    output.push(geometry(current, element.style));
-                }
+            Some(Interaction::Resizing { current, .. }) => {
+                output.push(geometry(&current.kind, current.style));
             }
             _ => {}
         }
@@ -400,7 +398,13 @@ impl Editor {
                 id: resizing_id,
                 current,
                 ..
-            }) if *resizing_id == id => Some(current.clone()),
+            }) if *resizing_id == id => {
+                if matches!(current.kind, ElementKind::Text { .. }) {
+                    output.push(selection::outline(current.bounds.min, current.bounds.max));
+                    return;
+                }
+                Some(current.kind.clone())
+            }
             _ => None,
         };
         let kind = preview.as_ref().unwrap_or(&element.kind);
@@ -456,6 +460,19 @@ impl Editor {
             return None;
         };
         ids.contains(&id).then_some(*current - *start)
+    }
+
+    pub fn text_resize_preview(&self, id: ElementId) -> Option<(&ElementKind, Style)> {
+        let Some(Interaction::Resizing {
+            id: resized,
+            current,
+            ..
+        }) = &self.interaction
+        else {
+            return None;
+        };
+        (*resized == id && matches!(current.kind, ElementKind::Text { .. }))
+            .then_some((&current.kind, current.style))
     }
 
     fn switch_tool(&mut self, tool: Tool) -> Damage {

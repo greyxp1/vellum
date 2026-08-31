@@ -2,7 +2,7 @@ mod geometry;
 mod text;
 
 pub use geometry::{DrawCommand, FillRule, Geometry, LocalGeometry, StrokeStyle};
-pub use text::{TextSpec, text_bounds, text_line_height};
+pub use text::{TextSpec, text_bounds, text_line_height, text_padding};
 
 use kurbo::Affine;
 use text::TextState;

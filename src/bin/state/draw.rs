@@ -322,7 +322,16 @@ impl DrawState {
                 if Some(element.id) == editing_id {
                     continue;
                 }
-                let ElementKind::Text { origin, content } = &element.kind else {
+                let (kind, style) = self
+                    .editor
+                    .text_resize_preview(element.id)
+                    .unwrap_or((&element.kind, element.style));
+                let ElementKind::Text {
+                    origin,
+                    content,
+                    scale,
+                } = kind
+                else {
                     continue;
                 };
                 let offset = self.editor.moving_offset(element.id).unwrap_or_default();
@@ -331,9 +340,10 @@ impl DrawState {
                     content,
                     left: origin.x + offset.x,
                     top: origin.y + offset.y,
-                    font_size: element.style.size,
-                    color: element.style.color,
-                    background_roundness: element.style.filled.then_some(element.style.roundness),
+                    font_size: style.size,
+                    color: style.color,
+                    background_roundness: style.filled.then_some(style.roundness),
+                    scale: *scale,
                 });
             }
             if let Some(edit) = active_text {
@@ -346,8 +356,9 @@ impl DrawState {
                     font_size: edit.style.size,
                     color: edit.style.color,
                     background_roundness: edit.style.filled.then_some(edit.style.roundness),
+                    scale: edit.scale,
                 });
-                caret = Some((key, edit.cursor, edit.origin, edit.style.size));
+                caret = Some((key, edit.cursor, edit.origin, edit.style.size, edit.scale));
             }
             if let Some((content, at)) = &self.feedback {
                 for (index, [x, y]) in [[15.0, 16.0], [17.0, 16.0], [16.0, 15.0], [16.0, 17.0]]
@@ -362,6 +373,7 @@ impl DrawState {
                         font_size: 18.0,
                         color: [0.0, 0.0, 0.0, 0.9],
                         background_roundness: None,
+                        scale: [1.0; 2],
                     });
                 }
                 text_specs.push(TextSpec {
@@ -372,6 +384,7 @@ impl DrawState {
                     font_size: 18.0,
                     color: [1.0, 1.0, 1.0, 1.0],
                     background_roundness: None,
+                    scale: [1.0; 2],
                 });
             }
             wgpu.prepare_text(&text_specs);
@@ -381,11 +394,14 @@ impl DrawState {
 
         self.previews.clear();
         if self.caret_visible
-            && let Some((key, cursor, origin, font_size)) = caret
+            && let Some((key, cursor, origin, font_size, [scale_x, scale_y])) = caret
             && let Some(x) = wgpu.text_cursor_x(key, cursor)
         {
-            self.previews
-                .push(text_caret(origin.x + x, origin.y, font_size));
+            self.previews.push(text_caret(
+                origin.x + x * scale_x,
+                origin.y,
+                font_size * scale_y,
+            ));
         }
         self.editor.append_preview_geometry(&mut self.previews);
         self.editor
@@ -457,10 +473,11 @@ fn tool_cursor_geometry(point: Point, cursor: ToolCursor) -> Geometry {
     )
 }
 
-fn text_caret(left: f32, top: f32, font_size: f32) -> Geometry {
+fn text_caret(left: f32, top: f32, scaled_font_size: f32) -> Geometry {
     use kurbo::Shape;
 
-    let bottom = top + text_line_height(font_size);
+    let bottom = top + text_line_height(scaled_font_size);
+    let (top, bottom) = (top.min(bottom), top.max(bottom));
     let black = [0.0, 0.0, 0.0, 1.0];
     let white = [1.0, 1.0, 1.0, 1.0];
     let mut geometry = Geometry::fill(
