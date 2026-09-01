@@ -1,10 +1,17 @@
 # Vellum
 
-Vellum is a small native Wayland overlay for drawing directly over the live desktop, tested on niri.
+Vellum is a small native Wayland overlay for drawing directly over the live desktop.
 
 https://github.com/user-attachments/assets/f8171063-16a8-497f-ba20-9e11bc50727e
 
 Vellum began as a fork of [Chameleos](https://github.com/Treeniks/chameleos) by Thomas Lindae.
+
+## Compatibility
+
+Vellum requires a Wayland compositor that implements
+[`wlr-layer-shell`](https://wayland.app/protocols/wlr-layer-shell-unstable-v1). This
+includes niri, Sway, Hyprland, river, Wayfire, labwc, KDE Plasma, and COSMIC, though
+niri is the only compositor currently tested.
 
 ## Installation
 
