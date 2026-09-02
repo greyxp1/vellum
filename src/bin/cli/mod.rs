@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+use color::DynamicColor;
+
 #[derive(clap::Parser)]
 #[command(version, about, long_about = None)]
 #[command(args_conflicts_with_subcommands = true)]
@@ -28,6 +30,13 @@ pub(crate) enum Command {
     Clear,
     /// Clear annotations and deactivate drawing mode
     ClearAndDeactivate,
+    /// Set the current drawing color
+    SetColor {
+        /// CSS color, such as `turquoise`, `#0ff8`, or `oklab(0.5 0.2 0)`
+        ///
+        /// Quote values containing `#`, spaces, or parentheses in the shell.
+        color: DynamicColor,
+    },
     /// Report whether drawing mode is active
     IsActive,
     /// Report whether you are currently in a text edit

@@ -3,6 +3,7 @@ mod input;
 
 pub(crate) use draw::Tool;
 
+use color::{ColorSpaceTag, DynamicColor};
 use wayland_client::delegate_dispatch;
 
 use wayland_client::Connection;
@@ -333,6 +334,14 @@ impl State {
 
     pub fn clear(&mut self) {
         self.apply_action(Action::Clear);
+    }
+
+    pub fn set_current_color(&mut self, color: DynamicColor) {
+        let rgba = color.convert(ColorSpaceTag::Srgb).clip().components;
+        let render = self.draw.set_current_color(rgba);
+        if render {
+            self.request_render();
+        }
     }
 
     fn modifiers(&self) -> Modifiers {

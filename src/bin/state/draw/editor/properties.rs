@@ -362,9 +362,20 @@ impl Editor {
     }
 
     pub(super) fn apply_rgb(&mut self, rgb: [f32; 3]) -> Damage {
-        self.style.color[..3].copy_from_slice(&rgb);
+        self.apply_color(move |color| color[..3].copy_from_slice(&rgb))
+    }
+
+    pub(in crate::state::draw) fn apply_rgba(&mut self, rgba: [f32; 4]) -> Damage {
+        if let Some(properties) = self.properties_mut(self.tool) {
+            properties.opacity = rgba[3];
+        }
+        self.apply_color(move |color| *color = rgba)
+    }
+
+    fn apply_color(&mut self, apply: impl Fn(&mut [f32; 4])) -> Damage {
+        apply(&mut self.style.color);
         if let Some(edit) = self.text_edit_mut() {
-            edit.style.color[..3].copy_from_slice(&rgb);
+            apply(&mut edit.style.color);
             return Damage::Preview;
         }
         if self.selected.is_empty() {
@@ -377,10 +388,11 @@ impl Editor {
                 continue;
             };
             let mut style = element.style;
-            if style.color[..3] == rgb {
+            let previous = style.color;
+            apply(&mut style.color);
+            if style.color == previous {
                 continue;
             }
-            style.color[..3].copy_from_slice(&rgb);
             let kind = element.kind.clone();
             let (kind, style) = element.replace(kind, style);
             elements.push((id, kind, style));

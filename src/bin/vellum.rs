@@ -61,21 +61,23 @@ fn send_command(command: &Command) -> Result<(), String> {
     socket
         .connect_addr(&socket_addr)
         .map_err(|error| format!("could not connect to the overlay: {error}"))?;
+
+    let message = command.serialize();
     socket
-        .send(command.serialize())
+        .send(message.as_bytes())
         .map_err(|error| format!("could not send command: {error}"))?;
     Ok(())
 }
 
 fn query_active() -> Result<bool, String> {
-    query(Command::IsActive.serialize())
+    query(Command::IsActive)
 }
 
 fn query_text_editing() -> Result<bool, String> {
-    query(Command::IsTextEditing.serialize())
+    query(Command::IsTextEditing)
 }
 
-fn query(request: &[u8]) -> Result<bool, String> {
+fn query(request: Command) -> Result<bool, String> {
     let socket_addr =
         SocketAddr::from_abstract_name(CONTROL_SOCKET).map_err(|error| error.to_string())?;
     let reply_name = format!(
@@ -98,7 +100,8 @@ fn query(request: &[u8]) -> Result<bool, String> {
     socket
         .set_read_timeout(Some(Duration::from_secs(1)))
         .map_err(|error| format!("could not configure control socket: {error}"))?;
-    if let Err(error) = socket.send(request) {
+    let request = request.serialize();
+    if let Err(error) = socket.send(request.as_bytes()) {
         if error.kind() == std::io::ErrorKind::ConnectionRefused {
             return Ok(false);
         }
@@ -213,6 +216,7 @@ fn run_overlay(settings: Settings) -> Result<(), String> {
                         state.clear();
                         state.set_input_active(false);
                     }
+                    Command::SetColor { color } => state.set_current_color(color),
                     Command::IsActive => {
                         let response: &[u8] = if state.is_active() { b"true" } else { b"false" };
                         if let Err(error) = socket.send_to_addr(response, &sender) {

@@ -1,18 +1,23 @@
+use std::borrow::Cow;
+
+use color::DynamicColor;
+
 use crate::cli::Command;
 
 pub const CONTROL_SOCKET: &str = "vellum.sock";
 
 impl Command {
-    pub fn serialize(&self) -> &'static [u8] {
+    pub fn serialize(&self) -> Cow<'static, str> {
         match self {
-            Self::Toggle => b"toggle",
-            Self::Activate => b"activate",
-            Self::Deactivate => b"deactivate",
-            Self::Clear => b"clear",
-            Self::ClearAndDeactivate => b"clear_and_deactivate",
-            Self::IsActive => b"is_active",
-            Self::IsTextEditing => b"is_text_editing",
-            Self::Exit => b"exit",
+            Self::Toggle => "toggle".into(),
+            Self::Activate => "activate".into(),
+            Self::Deactivate => "deactivate".into(),
+            Self::Clear => "clear".into(),
+            Self::ClearAndDeactivate => "clear_and_deactivate".into(),
+            Self::IsActive => "is_active".into(),
+            Self::SetColor { color } => format!("set_color={color}").into(),
+            Self::IsTextEditing => "is_text_editing".into(),
+            Self::Exit => "exit".into(),
         }
     }
 
@@ -26,7 +31,17 @@ impl Command {
             b"is_active" => Ok(Self::IsActive),
             b"is_text_editing" => Ok(Self::IsTextEditing),
             b"exit" => Ok(Self::Exit),
+            _ if let Some(color) = message.strip_prefix(b"set_color=") => Ok(Self::SetColor {
+                color: color_from_utf8(color)?,
+            }),
             _ => Err("invalid command"),
         }
     }
+}
+
+fn color_from_utf8(msg: &[u8]) -> Result<DynamicColor, &'static str> {
+    std::str::from_utf8(msg)
+        .map_err(|_| "expected color to be valid utf8")?
+        .parse()
+        .map_err(|_| "invalid color")
 }
