@@ -187,6 +187,11 @@ impl DrawState {
         self.record(damage)
     }
 
+    pub fn pen_motion(&mut self, points: &[Point], modifiers: Modifiers) -> bool {
+        let damage = self.editor.pen_motion(points, modifiers);
+        self.record(damage)
+    }
+
     pub fn modifiers_changed(&mut self, modifiers: Modifiers) -> bool {
         let damage = self.editor.modifiers_changed(modifiers);
         self.record(damage)

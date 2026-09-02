@@ -1,4 +1,4 @@
-use kurbo::{BezPath, ParamCurveNearest, Shape};
+use kurbo::{BezPath, Cap, ParamCurveNearest, Shape, Stroke, StrokeOpts};
 
 use super::scene::{Point, Style, pixel_aligned_point, pixel_aligned_points};
 use super::{CIRCLE_KAPPA, STABILIZER_FOLLOW, stabilizer_delay};
@@ -7,7 +7,7 @@ use crate::render::{FillRule, Geometry};
 const MIN_SAMPLE_DISTANCE_SQUARED: f32 = 1.0;
 const STAMP_DIRECTION_LENGTH: f32 = 0.01;
 const SNAP_ANGLE: f32 = std::f32::consts::PI / 12.0;
-const CHUNK_POINTS: usize = 2048;
+const CHUNK_POINTS: usize = 256;
 // Keeping the centerline point and raw index lets the rolling tail resume
 // perfect_freehand exactly.
 #[derive(Debug)]
@@ -26,7 +26,7 @@ pub(super) struct LiveStroke {
     direction_locked: bool,
     style: Style,
     cache_anchor: Option<CacheAnchor>,
-    cached: Vec<BezPath>,
+    cached: BezPath,
 }
 
 impl LiveStroke {
@@ -41,11 +41,36 @@ impl LiveStroke {
             direction_locked: false,
             style,
             cache_anchor: None,
-            cached: Vec::new(),
+            cached: BezPath::new(),
         }
     }
 
     pub fn push(&mut self, point: Point, snap: bool) -> bool {
+        self.push_with_follow(point, snap, STABILIZER_FOLLOW)
+    }
+
+    pub fn push_batch(&mut self, points: &[Point], snap: bool) -> bool {
+        let [first, rest @ ..] = points else {
+            return false;
+        };
+        let Some(&last) = rest.last() else {
+            return self.push(*first, snap);
+        };
+        debug_assert_eq!(points.len(), 2);
+        let follow = 1.0 - (1.0 - STABILIZER_FOLLOW).sqrt();
+        let first_changed = self.push_with_follow(*first, snap, follow);
+        self.push_with_follow(
+            last,
+            snap,
+            if first_changed {
+                follow
+            } else {
+                STABILIZER_FOLLOW
+            },
+        ) | first_changed
+    }
+
+    fn push_with_follow(&mut self, point: Point, snap: bool, follow: f32) -> bool {
         let point = point + self.alignment_offset;
         if !self.direction_locked {
             if !self.direction_is_ready(point) {
@@ -62,8 +87,7 @@ impl LiveStroke {
             return false;
         }
         let target = point - offset * (delay / distance);
-        self.stabilized_point =
-            self.stabilized_point + (target - self.stabilized_point) * STABILIZER_FOLLOW;
+        self.stabilized_point = self.stabilized_point + (target - self.stabilized_point) * follow;
         let changed = push(
             &mut self.points,
             &mut self.sample_anchor,
@@ -88,7 +112,9 @@ impl LiveStroke {
         if self.style == style {
             return;
         }
-        if self.style.size != style.size {
+        let size_changed = self.style.size != style.size;
+        let outline_changed = size_changed || self.style.roundness != style.roundness;
+        if size_changed {
             let raw_start = self.points[0] - self.alignment_offset;
             let offset = pixel_aligned_point(raw_start, style.size) - self.points[0];
             self.points
@@ -99,9 +125,11 @@ impl LiveStroke {
             self.alignment_offset = self.alignment_offset + offset;
         }
         self.style = style;
-        self.cache_anchor = None;
-        self.cached.clear();
-        while self.cache_ready_chunk() {}
+        if outline_changed {
+            self.cache_anchor = None;
+            self.cached = BezPath::new();
+            while self.cache_ready_chunk() {}
+        }
     }
 
     pub fn finish(mut self, point: Point, snap: bool) -> (Vec<Point>, Style, Geometry) {
@@ -177,7 +205,7 @@ impl LiveStroke {
         }
 
         let split = CHUNK_POINTS;
-        self.cached.push(centerline_path(
+        self.cached.extend(centerline_path(
             &centerline[..=split + 1],
             self.style,
             self.cache_anchor.is_some(),
@@ -198,10 +226,7 @@ impl LiveStroke {
         if self.cache_anchor.is_none() {
             return render_geometry(&self.points, self.style, complete);
         }
-        let mut path = BezPath::new();
-        for cached in &self.cached {
-            path.extend(cached.elements().iter().copied());
-        }
+        let mut path = self.cached.clone();
         path.extend(centerline_path(
             &self.tail_centerline(complete),
             self.style,
@@ -344,7 +369,6 @@ fn stroke_options(width: f32, complete: bool) -> perfect_freehand::StrokeOptions
     perfect_freehand::StrokeOptions {
         size: Some(f64::from(width)),
         thinning: Some(0.0),
-        smoothing: Some(0.5),
         streamline: Some(0.5),
         simulate_pressure: Some(false),
         last: Some(complete),
@@ -358,10 +382,16 @@ fn centerline_path(
     start_cut: bool,
     end_cut: bool,
 ) -> kurbo::BezPath {
-    let centerline = deposited_centerline(centerline_points, start_cut, end_cut);
+    let centerline = centerline_points
+        .iter()
+        .copied()
+        .map(array_point)
+        .collect::<Vec<_>>();
     let radius = style.size.max(0.0) * 0.5;
     let roundness = style.roundness.clamp(0.0, 1.0);
-    let mut path = joined_swept_path(&centerline, radius);
+    let centerline_path = smoothed_centerline(&centerline, start_cut, end_cut);
+    let stroke = Stroke::new(f64::from(radius) * 2.0).with_caps(Cap::Butt);
+    let mut path = kurbo::stroke(centerline_path, &stroke, &StrokeOpts::default(), 0.1);
     append_endpoint_caps(
         &mut path,
         &centerline,
@@ -405,97 +435,32 @@ fn append_endpoint_caps(
     }
 }
 
-fn deposited_centerline(points: &[[f64; 2]], start_cut: bool, end_cut: bool) -> Vec<kurbo::Point> {
-    let Some(&first) = points.first() else {
-        return Vec::new();
+fn smoothed_centerline(points: &[kurbo::Point], start_cut: bool, end_cut: bool) -> kurbo::BezPath {
+    let mut path = kurbo::BezPath::new();
+    let Some((&first, rest)) = points.split_first() else {
+        return path;
     };
-    if points.len() == 1 {
-        return vec![array_point(first)];
-    }
+    let Some(&last) = rest.last() else {
+        path.move_to(first);
+        return path;
+    };
 
-    let mut deposited = Vec::with_capacity(points.len());
-    deposited.push(array_point(if start_cut {
-        midpoint(points[0], points[1])
+    path.move_to(if start_cut {
+        point_midpoint(first, rest[0])
     } else {
         first
-    }));
-    deposited.extend(points[1..points.len() - 1].iter().copied().map(array_point));
-    deposited.push(array_point(if end_cut {
-        midpoint(points[points.len() - 2], points[points.len() - 1])
-    } else {
-        *points.last().expect("freehand centerline is non-empty")
-    }));
-    deposited
-}
-
-fn joined_swept_path(points: &[kurbo::Point], radius: f32) -> kurbo::BezPath {
-    let mut path = kurbo::BezPath::new();
-    let radius = f64::from(radius);
-    for segment in points.windows(2) {
-        let [start, end] = [segment[0], segment[1]];
-        let offset = end - start;
-        let length = offset.hypot();
-        if length <= f64::EPSILON {
-            continue;
-        }
-        let normal = kurbo::Vec2::new(-offset.y, offset.x) * (radius / length);
-        path.move_to(start + normal);
-        path.line_to(start - normal);
-        path.line_to(end - normal);
-        path.line_to(end + normal);
-        path.close_path();
+    });
+    for pair in rest.windows(2) {
+        path.quad_to(pair[0], point_midpoint(pair[0], pair[1]));
     }
-    for corner in points.windows(3) {
-        append_round_join(&mut path, corner[0], corner[1], corner[2], radius);
+    if !end_cut {
+        path.line_to(last);
     }
     path
 }
 
-fn append_round_join(
-    path: &mut kurbo::BezPath,
-    previous: kurbo::Point,
-    center: kurbo::Point,
-    next: kurbo::Point,
-    radius: f64,
-) {
-    let incoming = center - previous;
-    let outgoing = next - center;
-    let incoming_length = incoming.hypot();
-    let outgoing_length = outgoing.hypot();
-    if incoming_length <= f64::EPSILON || outgoing_length <= f64::EPSILON {
-        return;
-    }
-    let incoming = incoming / incoming_length;
-    let outgoing = outgoing / outgoing_length;
-    let turn = incoming.cross(outgoing).atan2(incoming.dot(outgoing));
-    if turn.abs() <= f64::EPSILON || (std::f64::consts::PI - turn.abs()) <= f64::EPSILON {
-        return;
-    }
-
-    let incoming_normal = kurbo::Vec2::new(-incoming.y, incoming.x) * radius;
-    let outgoing_normal = kurbo::Vec2::new(-outgoing.y, outgoing.x) * radius;
-    let (start, sweep) = if turn > 0.0 {
-        (-incoming_normal, turn)
-    } else {
-        (outgoing_normal, -turn)
-    };
-    path.move_to(center);
-    path.line_to(center + start);
-    path.extend(
-        kurbo::Arc::new(
-            center,
-            kurbo::Vec2::new(radius, radius),
-            start.y.atan2(start.x),
-            sweep,
-            0.0,
-        )
-        .append_iter(0.1),
-    );
-    path.close_path();
-}
-
-fn midpoint(first: [f64; 2], second: [f64; 2]) -> [f64; 2] {
-    [(first[0] + second[0]) * 0.5, (first[1] + second[1]) * 0.5]
+fn point_midpoint(first: kurbo::Point, second: kurbo::Point) -> kurbo::Point {
+    first + (second - first) * 0.5
 }
 
 fn array_point([x, y]: [f64; 2]) -> kurbo::Point {

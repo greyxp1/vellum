@@ -249,6 +249,13 @@ impl Editor {
         }
     }
 
+    pub fn pen_motion(&mut self, points: &[Point], modifiers: Modifiers) -> Damage {
+        let Some(Interaction::Freehand(stroke)) = &mut self.interaction else {
+            return Damage::None;
+        };
+        Damage::from_preview(stroke.push_batch(points, modifiers.shift))
+    }
+
     pub fn pointer_up(&mut self, point: Point, modifiers: Modifiers) -> Damage {
         let text_size_range = self.text_size_range();
         match self.interaction.take() {

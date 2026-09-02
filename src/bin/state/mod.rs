@@ -39,6 +39,9 @@ use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::{
 use crate::render::WgpuState;
 use draw::{Action, Cursor, Modifiers, Point};
 
+const MAX_PENDING_PEN_SAMPLES: usize = 64;
+const PEN_BEND_DEVIATION_SQUARED: f32 = 0.5 * 0.5;
+
 macro_rules! delegate_noop {
     ($proxy:ty) => {
         impl Dispatch<$proxy, ()> for State {
@@ -175,11 +178,80 @@ impl Dispatch<WlRegistry, QueueHandle<State>> for SetupWaylandState {
     }
 }
 
+#[derive(Default)]
+struct PendingPenMotion {
+    anchor: Option<Point>,
+    samples: Vec<Point>,
+}
+
+impl PendingPenMotion {
+    fn reset(&mut self, anchor: Option<Point>) {
+        self.anchor = anchor;
+        self.samples.clear();
+    }
+
+    fn push(&mut self, point: Point) {
+        if self.samples.last() == Some(&point) {
+            return;
+        }
+        if self.samples.len() == MAX_PENDING_PEN_SAMPLES {
+            let mut write = 1;
+            for read in (2..self.samples.len()).step_by(2) {
+                self.samples[write] = self.samples[read];
+                write += 1;
+            }
+            self.samples.truncate(write);
+        }
+        self.samples.push(point);
+    }
+
+    fn take(&mut self) -> ([Point; 2], usize) {
+        let Some(&end) = self.samples.last() else {
+            return ([Point::default(); 2], 0);
+        };
+        let mut output = [end; 2];
+        let mut count = 1;
+        if let Some(anchor) = self.anchor {
+            let bend = self.samples[..self.samples.len() - 1]
+                .iter()
+                .copied()
+                .map(|point| (point, segment_distance_squared(point, anchor, end)))
+                .max_by(|(_, first), (_, second)| first.total_cmp(second));
+            if let Some((bend, deviation)) = bend
+                && deviation >= PEN_BEND_DEVIATION_SQUARED
+                && bend != anchor
+                && bend != end
+            {
+                output = [bend, end];
+                count = 2;
+            }
+        }
+        self.anchor = Some(end);
+        self.samples.clear();
+        (output, count)
+    }
+}
+
+fn segment_distance_squared(point: Point, start: Point, end: Point) -> f32 {
+    let segment_x = end.x - start.x;
+    let segment_y = end.y - start.y;
+    let length_squared = segment_x.powi(2) + segment_y.powi(2);
+    if length_squared <= f32::EPSILON {
+        return (point.x - start.x).powi(2) + (point.y - start.y).powi(2);
+    }
+    let projection = (((point.x - start.x) * segment_x + (point.y - start.y) * segment_y)
+        / length_squared)
+        .clamp(0.0, 1.0);
+    let nearest_x = start.x + segment_x * projection;
+    let nearest_y = start.y + segment_y * projection;
+    (point.x - nearest_x).powi(2) + (point.y - nearest_y).powi(2)
+}
+
 pub struct State {
     active: bool,
     clear_on_escape: bool,
     frame_pending: bool,
-    pending_pen_motion: Option<Point>,
+    pending_pen_motion: PendingPenMotion,
 
     wayland: WaylandState,
     draw: draw::DrawState,
@@ -217,7 +289,7 @@ impl State {
             active: false,
             clear_on_escape: settings.clear_on_escape,
             frame_pending: false,
-            pending_pen_motion: None,
+            pending_pen_motion: PendingPenMotion::default(),
             wayland: wayland_state,
             draw: draw::DrawState::new(settings),
             keyboard: input::KeyboardState::default(),
@@ -357,7 +429,7 @@ impl State {
 
     fn cancel_pointer_gesture(&mut self) {
         let interaction_active = self.pointer.cancel_gesture();
-        self.pending_pen_motion = None;
+        self.pending_pen_motion.reset(None);
         if self.active && (interaction_active || self.draw.picker_active()) {
             self.apply_action(Action::Cancel);
         }
@@ -369,8 +441,8 @@ impl State {
         modifiers: Modifiers,
         tool_override: draw::ToolOverride,
     ) {
-        self.pending_pen_motion = None;
         let point = Point::new(x as f32, y as f32);
+        self.pending_pen_motion.reset(None);
         if self.draw.picker_active() {
             let changed = if tool_override == draw::ToolOverride::Eraser {
                 self.draw.dismiss_picker()
@@ -382,7 +454,11 @@ impl State {
             }
             return;
         }
-        if self.draw.pointer_down(point, modifiers, tool_override) {
+        let changed = self.draw.pointer_down(point, modifiers, tool_override);
+        if self.draw.is_drawing_pen() {
+            self.pending_pen_motion.reset(Some(point));
+        }
+        if changed {
             self.request_render();
         }
     }
@@ -395,11 +471,10 @@ impl State {
             }
             return;
         }
-        // Keep freehand smoothing independent of the input device's polling rate.
-        // The first point is consumed immediately by request_render; while that
-        // presentation is pending, newer motion replaces the unrendered point.
+        // Preserve one real bend inside each display frame without letting a
+        // high-polling-rate device grow the stroke without bound.
         if self.draw.is_drawing_pen() {
-            self.pending_pen_motion = Some(point);
+            self.pending_pen_motion.push(point);
             self.request_render();
             return;
         }
@@ -420,6 +495,7 @@ impl State {
         if self.draw.pointer_up(point, modifiers) {
             self.request_render();
         }
+        self.pending_pen_motion.reset(None);
     }
 
     fn open_picker(&mut self, (x, y): (f64, f64)) {
@@ -509,9 +585,10 @@ impl State {
     }
 
     fn flush_pen_motion(&mut self) {
-        if let Some(point) = self.pending_pen_motion.take() {
+        let (points, count) = self.pending_pen_motion.take();
+        if count > 0 {
             let modifiers = self.modifiers();
-            self.draw.pointer_motion(point, modifiers);
+            self.draw.pen_motion(&points[..count], modifiers);
         }
     }
 
