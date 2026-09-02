@@ -40,9 +40,10 @@ jobs:
       - name: Package
         run: |
           mkdir -p "$PACKAGE/share/man/man1" "$PACKAGE/share/shell-completions"
-          cp README.md LICENSE "target/${{ matrix.target }}/release/vellum" "$PACKAGE"
+          cp README.md LICENSE default-config.toml "target/${{ matrix.target }}/release/vellum" "$PACKAGE"
 
-          output_dir=$(find "target/${{ matrix.target }}/release/build" -type d -path '*/vellum-*/out' -print -quit)
+          output_dir=$(find "target/${{ matrix.target }}/release/build" -type d -path '*/vellum-*/out' \
+            -exec test -f '{}/completions/vellum.bash' ';' -print -quit)
           cp "$output_dir/man"/*.1 "$PACKAGE/share/man/man1"
           cp "$output_dir/completions"/* "$PACKAGE/share/shell-completions"
 

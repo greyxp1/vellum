@@ -71,15 +71,13 @@ sudo dnf install cargo gcc git pkgconf-pkg-config wayland-devel libxkbcommon-dev
 
 </details>
 
-Then build and install Vellum with Cargo:
+Then build and install Vellum:
 
 ```sh
 git clone https://github.com/greyxp1/vellum
 cd vellum
-cargo install --locked --path .
+cargo xtask install
 ```
-
-By default, this installs `vellum` to `~/.cargo/bin`, which must be in your `PATH`.
 
 ## Usage
 
@@ -98,7 +96,7 @@ PartOf=graphical-session.target
 
 [Service]
 Type=exec
-ExecStart=%h/.cargo/bin/vellum
+ExecStart=%h/.local/bin/vellum
 Restart=on-failure
 
 [Install]
@@ -128,7 +126,7 @@ Mod+A { spawn "vellum" "toggle"; }
 | Draw or manipulate the selection | Left drag | One-finger drag | Drag with the pen tip |
 | Open the radial picker | Right-click | Two-finger click | Briefly press the barrel button while hovering |
 | Choose a tool or color | Hold the right mouse button, move, then release | Open the picker, move, then one-finger click | Hold the barrel button while hovering, move, then release |
-| Erase | Middle drag, or middle-click then left drag | Three-finger tap, then one-finger drag | Hold the barrel button while drawing or drag with the eraser tip |
+| Erase | Middle drag, or middle-click then left drag | Three-finger tap to toggle, then one-finger drag | Hold the barrel button while drawing or drag with the eraser tip |
 | Change size | Mouse wheel | Two-finger scroll | Mouse wheel or trackpad scroll |
 
 ### Shortcuts and modifiers
@@ -152,8 +150,6 @@ Mod+A { spawn "vellum" "toggle"; }
 | Drag a selection handle | Reshape the selection or stretch text |
 | `Shift` + drag a text handle | Resize text without stretching |
 
-Run `vellum --help` or `man vellum` for startup options and commands.
-
 ## Configuration
 
 Vellum looks for `vellum/config.toml` in `$XDG_CONFIG_HOME` (default `~/.config`), then
@@ -169,7 +165,7 @@ Vellum looks for `vellum/config.toml` in `$XDG_CONFIG_HOME` (default `~/.config`
 | `default_tool` | string | Startup tool: `pen`, `line`, `arrow`, `triangle`, `rectangle`, `ellipse`, `text`, `eraser`, or `select` |
 | `remember_last_tool` | boolean | Keep the selected tool when drawing mode is reopened |
 | `stroke_size` | float | Initial size shared by pen, line, arrow, and shape tools |
-| `size_range` | table | Optional `min`, `max`, `step`, and `stops` for scrolling through sizes |
+| `size_range` | table | Optional `min`, `max`, `step`, and `stops` for scrolling through sizes and pausing at each stop |
 | `default_color` | string | Initial `#RRGGBB` color. It must be present in `palette` |
 | `palette` | array of strings | Between 2 and 12 `#RRGGBB` colors |
 | `feedback_duration_ms` | integer | How long property feedback remains visible, from `0` to `60000` milliseconds |
@@ -191,73 +187,5 @@ Set these properties under `[tools.<tool>]`.
 
 ### Defaults
 
-<details>
-<summary>Show the complete default configuration</summary>
-
-```toml
-default_tool = "pen"
-remember_last_tool = true
-stroke_size = 5.0
-default_color = "#E84046"
-feedback_duration_ms = 500
-clear_on_escape = false
-default_fill_shapes = false
-
-size_range = {
-  min = 1.0,
-  max = 100.0,
-  step = 1.0,
-  stops = []
-}
-
-palette = [
-  "#E84046",
-  "#EC8948",
-  "#EED049",
-  "#3ED73C",
-  "#0283FC",
-  "#7C57EB",
-  "#FFFFFF",
-  "#000000",
-]
-
-[tools.pen]
-opacity = 1.0
-roundness = 1.0
-
-[tools.line]
-opacity = 1.0
-roundness = 0.5
-
-[tools.arrow]
-opacity = 1.0
-roundness = 0.25
-
-[tools.triangle]
-opacity = 1.0
-roundness = 0.0
-filled = false
-
-[tools.rectangle]
-opacity = 1.0
-roundness = 0.01
-filled = false
-
-[tools.ellipse]
-opacity = 1.0
-filled = false
-
-[tools.text]
-size = 16.0
-size_range.min = 8.0
-size_range.max = 500.0
-size_range.step = 0.5
-opacity = 1.0
-roundness = 0.1
-background = false
-
-[tools.eraser]
-size = 10.0
-```
-
-</details>
+See the [complete default configuration](default-config.toml). The source installer
+also places a copy under `~/.local/share/doc/vellum`.

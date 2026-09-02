@@ -23,7 +23,11 @@ rustPlatform.buildRustPackage {
       ../Cargo.toml
       ../Cargo.lock
       ../build.rs
+      ../build_support.rs
+      ../default-config.toml
       ../src
+      ../xtask/Cargo.toml
+      ../xtask/src
     ];
   };
 
@@ -43,10 +47,17 @@ rustPlatform.buildRustPackage {
   ];
 
   postInstall = ''
-    outputDir=$(find target -type d -path '*/build/vellum-*/out' -print -quit)
+    outputDir=$(find target -type d -path '*/build/vellum-*/out' \
+      -exec test -f '{}/completions/vellum.bash' ';' -print -quit)
     installManPage "$outputDir"/man/*.1
     installShellCompletion "$outputDir"/completions/vellum.{bash,fish,nu} \
       --zsh "$outputDir"/completions/_vellum
+    install -Dm644 "$outputDir"/completions/vellum.elv \
+      $out/share/elvish/lib/vellum.elv
+    install -Dm644 "$outputDir"/completions/_vellum.ps1 \
+      $out/share/powershell/vellum.Completion.ps1
+    install -Dm644 default-config.toml \
+      $out/share/doc/vellum/default-config.toml
 
     wrapProgram $out/bin/vellum \
       --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath [vulkan-loader wayland]}

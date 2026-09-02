@@ -1,0 +1,63 @@
+default_tool = "pen"
+remember_last_tool = true
+stroke_size = 5.0
+default_color = "#E84046"
+feedback_duration_ms = 500
+clear_on_escape = false
+default_fill_shapes = false
+
+size_range = {
+  min = 1.0,
+  max = 100.0,
+  step = 1.0,
+  stops = []
+}
+
+palette = [
+  "#E84046",
+  "#EC8948",
+  "#EED049",
+  "#3ED73C",
+  "#0283FC",
+  "#7C57EB",
+  "#FFFFFF",
+  "#000000",
+]
+
+[tools.pen]
+opacity = 1.0
+roundness = 1.0
+
+[tools.line]
+opacity = 1.0
+roundness = 0.5
+
+[tools.arrow]
+opacity = 1.0
+roundness = 0.25
+
+[tools.triangle]
+opacity = 1.0
+roundness = 0.0
+filled = false
+
+[tools.rectangle]
+opacity = 1.0
+roundness = 0.01
+filled = false
+
+[tools.ellipse]
+opacity = 1.0
+filled = false
+
+[tools.text]
+size = 16.0
+size_range.min = 8.0
+size_range.max = 500.0
+size_range.step = 0.5
+opacity = 1.0
+roundness = 0.1
+background = false
+
+[tools.eraser]
+size = 10.0
