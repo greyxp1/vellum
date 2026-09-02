@@ -159,6 +159,14 @@ impl DrawState {
         effect
     }
 
+    pub fn set_current_color(&mut self, rgba: [f32; 4]) -> bool {
+        if let Some((_, cursor)) = &mut self.tool_cursor {
+            cursor.color = rgba;
+        }
+        let damage = self.editor.apply_rgba(rgba);
+        self.record(damage)
+    }
+
     pub fn pointer_down(
         &mut self,
         point: Point,

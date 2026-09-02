@@ -1860,6 +1860,7 @@ dependencies = [
  "clap_complete",
  "clap_complete_nushell",
  "clap_mangen",
+ "color",
  "cosmic-text",
  "glifo",
  "kurbo",
@@ -2383,6 +2384,7 @@ dependencies = [
  "clap_complete",
  "clap_complete_nushell",
  "clap_mangen",
+ "color",
 ]
 
 [[package]]

@@ -17,6 +17,7 @@ clap = { version = "4.6.6", features = ["derive"] }
 clap_complete = "4.6.9"
 clap_complete_nushell = "4.6.2"
 clap_mangen = "0.3.0"
+color = "0.3.3"
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
@@ -46,6 +47,7 @@ pollster = "0.4.0"
 cosmic-text = { version = "0.18.2", default-features = false, features = ["std", "fontconfig"] }
 glifo = { version = "0.3.0", features = ["png"] }
 vello_hybrid = { version = "0.2.0", default-features = false, features = ["std", "wgpu", "text"] }
+color.workspace = true
 peniko = { version = "0.6.1", default-features = false }
 unicode-segmentation = "1.13.3"
 xkbcommon = "0.9.0"
@@ -59,3 +61,4 @@ clap.workspace = true
 clap_complete.workspace = true
 clap_complete_nushell.workspace = true
 clap_mangen.workspace = true
+color.workspace = true
