@@ -22,10 +22,10 @@ pub fn text_bounds(
     [left, top]: [f32; 2],
     [width, height]: [f32; 2],
     font_size: f32,
-    background: bool,
+    background_roundness: Option<f32>,
     [scale_x, scale_y]: [f32; 2],
 ) -> [[f32; 2]; 2] {
-    let [padding_x, padding_y] = if background {
+    let [padding_x, padding_y] = if background_roundness.is_some() {
         text_padding(font_size)
     } else {
         [0.0; 2]
@@ -34,10 +34,20 @@ pub fn text_bounds(
     let end_y = top + (height + padding_y) * scale_y;
     let start_x = left - padding_x * scale_x;
     let start_y = top - padding_y * scale_y;
-    [
-        [start_x.min(end_x), start_y.min(end_y)],
-        [start_x.max(end_x), start_y.max(end_y)],
-    ]
+    let mut min_x = start_x.min(end_x);
+    let min_y = start_y.min(end_y);
+    let mut max_x = start_x.max(end_x);
+    let max_y = start_y.max(end_y);
+    if let Some(roundness) = background_roundness {
+        let radius = (max_y - min_y) * 0.5 * roundness;
+        let missing_width = (2.0 * radius - (max_x - min_x)).max(0.0);
+        if scale_x < 0.0 {
+            min_x -= missing_width;
+        } else {
+            max_x += missing_width;
+        }
+    }
+    [[min_x, min_y], [max_x, max_y]]
 }
 
 fn background_color([red, green, blue, alpha]: [f32; 4]) -> [f32; 4] {
@@ -203,12 +213,10 @@ impl TextState {
                     [prepared.left, prepared.top],
                     cached.layout_size,
                     cached.font_size,
-                    true,
+                    Some(roundness),
                     prepared.scale,
                 );
-                let width = max_x - min_x;
-                let height = max_y - min_y;
-                let radius = width.min(height) * 0.5 * roundness;
+                let radius = (max_y - min_y) * 0.5 * roundness;
                 let background = kurbo::RoundedRect::new(
                     f64::from(min_x),
                     f64::from(min_y),

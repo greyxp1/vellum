@@ -248,7 +248,7 @@ impl DrawState {
     }
 
     pub fn adjust(&mut self, steps: f32, at: Point, modifiers: Modifiers) -> Adjustment {
-        let (damage, feedback, hit_stop) = if modifiers.shift && !self.editor.is_editing_text() {
+        let (damage, feedback, hit_stop) = if modifiers.shift {
             let (damage, feedback) = self.editor.adjust_roundness(steps);
             (damage, feedback, false)
         } else if modifiers.ctrl {
@@ -489,16 +489,22 @@ fn tool_cursor_geometry(point: Point, cursor: ToolCursor) -> Geometry {
 fn text_caret(left: f32, top: f32, scaled_font_size: f32) -> Geometry {
     use kurbo::Shape;
 
-    let bottom = top + text_line_height(scaled_font_size);
+    let line_height = text_line_height(scaled_font_size);
+    let caret_height = (scaled_font_size.abs() - 2.0)
+        .max(1.0)
+        .copysign(scaled_font_size);
+    let inset = (line_height - caret_height) * 0.5;
+    let top = top + inset;
+    let bottom = top + caret_height;
     let (top, bottom) = (top.min(bottom), top.max(bottom));
     let black = [0.0, 0.0, 0.0, 1.0];
     let white = [1.0, 1.0, 1.0, 1.0];
     let mut geometry = Geometry::fill(
         kurbo::Rect::new(
             f64::from(left - 1.0),
-            f64::from(top - 1.0),
-            f64::from(left + 2.0),
-            f64::from(bottom + 1.0),
+            f64::from(top),
+            f64::from(left + 1.0),
+            f64::from(bottom),
         )
         .to_path(0.1),
         FillRule::NonZero,
@@ -506,9 +512,9 @@ fn text_caret(left: f32, top: f32, scaled_font_size: f32) -> Geometry {
     );
     geometry.append(Geometry::fill(
         kurbo::Rect::new(
-            f64::from(left),
+            f64::from(left - 0.5),
             f64::from(top),
-            f64::from(left + 1.0),
+            f64::from(left + 0.5),
             f64::from(bottom),
         )
         .to_path(0.1),

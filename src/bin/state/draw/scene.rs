@@ -433,7 +433,7 @@ fn text_bounds(origin: Point, [width, height]: [f32; 2], style: Style, scale: [f
         [origin.x, origin.y],
         [width, height],
         style.size,
-        style.filled,
+        style.filled.then_some(style.roundness),
         scale,
     );
     Bounds {

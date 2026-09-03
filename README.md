@@ -146,7 +146,7 @@ Mod+A { spawn "vellum" "toggle"; }
 | `Alt` while drawing | Draw triangles, rectangles, and ellipses from their center |
 | `F` | Toggle shape fill or text background |
 | `Ctrl` + scroll | Change opacity |
-| `Shift` + scroll | Change roundness or text size while editing text |
+| `Shift` + scroll | Change roundness |
 | Drag a selection handle | Reshape the selection or stretch text |
 | `Shift` + drag a text handle | Resize text without stretching |
 
