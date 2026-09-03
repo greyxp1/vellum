@@ -87,6 +87,7 @@ pub(super) struct ToolPropertySet([ToolProperties; Tool::SIZED.len()]);
 impl ToolPropertySet {
     pub(super) fn new(
         stroke_size: f32,
+        default_opacity: f32,
         default_fill_shapes: bool,
         defaults: &crate::config::ToolDefaults,
         size_ranges: &std::collections::BTreeMap<Tool, SizeRange>,
@@ -102,7 +103,7 @@ impl ToolPropertySet {
             });
             ToolProperties {
                 size: size_range.clamp(size),
-                opacity: configured.opacity.unwrap_or(1.0),
+                opacity: configured.opacity.unwrap_or(default_opacity),
                 roundness: configured
                     .roundness
                     .unwrap_or_else(|| tool.initial_roundness()),
@@ -361,12 +362,8 @@ impl Editor {
         }
     }
 
-    pub(super) fn apply_rgb(&mut self, rgb: [f32; 3]) -> Damage {
-        self.apply_color(move |color| color[..3].copy_from_slice(&rgb))
-    }
-
     pub(in crate::state::draw) fn apply_rgba(&mut self, rgba: [f32; 4]) -> Damage {
-        if let Some(properties) = self.properties_mut(self.tool) {
+        if let Some(properties) = self.properties_mut(self.color_tool()) {
             properties.opacity = rgba[3];
         }
         self.apply_color(move |color| *color = rgba)

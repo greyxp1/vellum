@@ -166,10 +166,10 @@ fn push_palette(
     output: &mut Geometry,
     center: Point,
     hovered: Option<Choice>,
-    palette: &[[f32; 3]],
+    palette: &[[f32; 4]],
 ) {
     let step = std::f32::consts::TAU / palette.len() as f32;
-    for (index, &[red, green, blue]) in palette.iter().enumerate() {
+    for (index, &color) in palette.iter().enumerate() {
         let is_hovered = hovered == Some(Choice::Color(index));
         let start = index as f32 * step - step * 0.5;
         let end = start + step;
@@ -197,7 +197,7 @@ fn push_palette(
             } else {
                 SEPARATOR_HALF_WIDTH
             },
-            [red, green, blue, 1.0],
+            opaque(color),
         );
     }
 }
@@ -208,7 +208,7 @@ pub(super) fn picker_geometry(
     active: Tool,
     current_color: [f32; 4],
     tool_fills: ShapeFills,
-    palette: &[[f32; 3]],
+    palette: &[[f32; 4]],
 ) -> LocalGeometry {
     let mut output = Geometry::empty();
     let origin = [

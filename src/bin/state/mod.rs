@@ -3,7 +3,7 @@ mod input;
 
 pub(crate) use draw::Tool;
 
-use color::{ColorSpaceTag, DynamicColor};
+use color::DynamicColor;
 use wayland_client::delegate_dispatch;
 
 use wayland_client::Connection;
@@ -409,7 +409,7 @@ impl State {
     }
 
     pub fn set_current_color(&mut self, color: DynamicColor) {
-        let rgba = color.convert(ColorSpaceTag::Srgb).clip().components;
+        let rgba = crate::color_to_srgb(color);
         let render = self.draw.set_current_color(rgba);
         if render {
             self.request_render();

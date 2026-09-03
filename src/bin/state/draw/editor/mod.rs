@@ -79,13 +79,14 @@ pub struct Editor {
     default_tool_properties: ToolPropertySet,
     size_ranges: std::sync::Arc<std::collections::BTreeMap<Tool, crate::config::SizeRange>>,
     remember_last_tool: bool,
-    palette: Vec<[f32; 3]>,
+    palette: Vec<[f32; 4]>,
 }
 
 impl Editor {
     pub fn new(settings: crate::Settings) -> Self {
         let default_tool_properties = ToolPropertySet::new(
             settings.stroke_size,
+            settings.default_color[3],
             settings.default_fill_shapes,
             &settings.tool_defaults,
             &settings.size_ranges,
@@ -97,16 +98,13 @@ impl Editor {
             .copied()
             .expect("pen has adjustable properties");
         let active = active.unwrap_or(fallback);
+        let mut color = settings.default_color;
+        color[3] = active.opacity;
         Self {
             tool: settings.default_tool,
             style: Style {
                 size: active.size,
-                color: [
-                    settings.default_color[0],
-                    settings.default_color[1],
-                    settings.default_color[2],
-                    active.opacity,
-                ],
+                color,
                 roundness: active.roundness,
                 filled: active.filled,
             },
@@ -282,7 +280,7 @@ impl Editor {
         }
         self.picker = None;
         match choice {
-            Some(Choice::Color(index)) => Damage::Preview.max(self.apply_rgb(self.palette[index])),
+            Some(Choice::Color(index)) => Damage::Preview.max(self.apply_rgba(self.palette[index])),
             Some(Choice::Tool(tool)) => Damage::Preview.max(self.switch_tool(tool)),
             None => Damage::Preview,
         }
@@ -301,7 +299,7 @@ impl Editor {
         self.switch_tool(tool)
     }
 
-    fn picker_tool(&self) -> Tool {
+    fn color_tool(&self) -> Tool {
         if self.tool == Tool::Eraser {
             self.last_non_eraser_tool
         } else {
@@ -423,7 +421,7 @@ impl Editor {
 
     pub fn picker_geometry(&self) -> Option<crate::render::LocalGeometry> {
         let picker = self.picker?;
-        let active = self.picker_tool();
+        let active = self.color_tool();
         Some(picker_geometry(
             picker.center,
             picker.hovered,

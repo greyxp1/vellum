@@ -166,8 +166,8 @@ Vellum looks for `vellum/config.toml` in `$XDG_CONFIG_HOME` (default `~/.config`
 | `remember_last_tool` | boolean | Keep the selected tool when drawing mode is reopened |
 | `stroke_size` | float | Initial size shared by pen, line, arrow, and shape tools |
 | `size_range` | table | Optional `min`, `max`, `step`, and `stops` for scrolling through sizes and pausing at each stop |
-| `default_color` | string | Initial `#RRGGBB` color. It must be present in `palette` |
-| `palette` | array of strings | Between 2 and 12 `#RRGGBB` colors |
+| `default_color` | string | Initial CSS color. It must be present in `palette` |
+| `palette` | array of strings | Between 2 and 12 CSS colors |
 | `feedback_duration_ms` | integer | How long property feedback remains visible, from `0` to `60000` milliseconds |
 | `clear_on_escape` | boolean | Clear annotations when Escape deactivates drawing mode |
 | `default_fill_shapes` | boolean | Initially fill triangles, rectangles, and ellipses |
@@ -180,7 +180,7 @@ Set these properties under `[tools.<tool>]`.
 | --- | --- | --- | --- |
 | `size` | float | All except `select` | Initial logical-pixel size. Pen, line, arrow, and shapes inherit `stroke_size`. Text defaults to `16.0` and eraser to `10.0` |
 | `size_range` | table | All except `select` | Overrides the matching global fields. `stops = []` removes inherited stops |
-| `opacity` | float | All except `eraser` and `select` | Initial opacity from `0.05` to `1.0` |
+| `opacity` | float | All except `eraser` and `select` | Initial opacity from `0.05` to `1.0`. Overrides `default_color` alpha |
 | `roundness` | float | `pen`, `line`, `arrow`, `triangle`, `rectangle`, `text` | Initial roundness from `0.0` to `1.0` |
 | `filled` | boolean | `triangle`, `rectangle`, `ellipse` | Initial fill state. Inherits `default_fill_shapes` when omitted |
 | `background` | boolean | `text` | Whether text starts with an automatic black or white background |

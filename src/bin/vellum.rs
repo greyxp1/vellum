@@ -19,7 +19,11 @@ use config::Settings;
 use protocol::CONTROL_SOCKET;
 
 const MAX_SOCKET_MESSAGE: usize = 4096;
-pub(crate) type Rgb = [f32; 3];
+pub(crate) type Rgba = [f32; 4];
+
+pub(crate) fn color_to_srgb(color: color::DynamicColor) -> Rgba {
+    color.convert(color::ColorSpaceTag::Srgb).clip().components
+}
 
 fn main() -> ExitCode {
     match run() {

@@ -1,5 +1,5 @@
 use super::cli::Cli;
-use super::{Rgb, state};
+use super::{Rgba, state};
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -237,10 +237,10 @@ fn validate_tool_defaults(
 pub(super) struct Settings {
     pub(super) stroke_size: f32,
     pub(super) size_ranges: Arc<BTreeMap<state::Tool, SizeRange>>,
-    pub(super) default_color: Rgb,
+    pub(super) default_color: Rgba,
     pub(super) default_tool: state::Tool,
     pub(super) remember_last_tool: bool,
-    pub(super) palette: Vec<Rgb>,
+    pub(super) palette: Vec<Rgba>,
     pub(super) feedback_duration: Duration,
     pub(super) clear_on_escape: bool,
     pub(super) default_fill_shapes: bool,
@@ -328,21 +328,12 @@ impl Settings {
     }
 }
 
-fn parse_named_color(name: &str, value: &str) -> Result<Rgb, String> {
+fn parse_named_color(name: &str, value: &str) -> Result<Rgba, String> {
     parse_color(value).map_err(|error| format!("invalid {name} {value:?}: {error}"))
 }
 
-fn parse_color(value: &str) -> Result<Rgb, &'static str> {
-    let hex = value.strip_prefix('#').ok_or("color must start with #")?;
-    if hex.len() != 6 {
-        return Err("color must be #RRGGBB");
-    }
-    let value = u32::from_str_radix(hex, 16).map_err(|_| "color contains a non-hex digit")?;
-    Ok([
-        ((value >> 16) & 0xff) as f32 / 255.0,
-        ((value >> 8) & 0xff) as f32 / 255.0,
-        (value & 0xff) as f32 / 255.0,
-    ])
+fn parse_color(value: &str) -> Result<Rgba, color::ParseError> {
+    value.parse().map(super::color_to_srgb)
 }
 
 fn read_config(path: &Path) -> Result<FileConfig, String> {
