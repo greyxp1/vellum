@@ -20,8 +20,8 @@ use wayland_protocols::wp::tablet::zv2::client::zwp_tablet_seat_v2::EVT_PAD_ADDE
 use wayland_protocols::wp::tablet::zv2::client::zwp_tablet_seat_v2::EVT_TABLET_ADDED_OPCODE;
 use wayland_protocols::wp::tablet::zv2::client::zwp_tablet_seat_v2::EVT_TOOL_ADDED_OPCODE;
 
-use super::super::State;
 use super::super::draw::{Cursor, Point, ToolOverride};
+use super::super::{OutputId, State};
 use super::pointer::cursor_shape;
 use super::short_click;
 
@@ -39,6 +39,7 @@ pub(in crate::state) struct TabletState {
     cursor_serials: HashMap<ObjectId, u32>,
     current_cursors: HashMap<ObjectId, Cursor>,
     eraser_tools: HashSet<ObjectId>,
+    output: Option<OutputId>,
     pos: Option<(f64, f64)>,
     pen_held: bool,
     button_held: bool,
@@ -84,6 +85,16 @@ impl TabletState {
 
     pub(in crate::state) fn cursor_active(&self) -> bool {
         !self.cursor_serials.is_empty()
+    }
+
+    pub(in crate::state) fn input_grab_active(&self) -> bool {
+        self.pen_held || self.button_held
+    }
+
+    pub(in crate::state) fn cancel_gesture(&mut self) {
+        self.pen_held = false;
+        self.button_held = false;
+        self.button_press_time = None;
     }
 
     fn tool_cursor_supported(&self, tablet_tool: &ZwpTabletToolV2) -> bool {
@@ -140,6 +151,12 @@ impl Dispatch<ZwpTabletToolV2, (), State> for TabletState {
         _qhandle: &QueueHandle<State>,
     ) {
         use wayland_protocols::wp::tablet::zv2::client::zwp_tablet_tool_v2::{Event, Type};
+        if let Event::ProximityIn { surface, .. } = &event
+            && let Some(output) = state.output_for_surface(surface)
+        {
+            state.focus_output(output);
+            state.tablet.output = Some(output);
+        }
         match &event {
             Event::Removed => {
                 state
@@ -162,7 +179,16 @@ impl Dispatch<ZwpTabletToolV2, (), State> for TabletState {
             }
             _ => {}
         }
-        if let Some(sequence) = state.tablet.event_sequence.dispatch(event) {
+        let origin = state
+            .tablet
+            .output
+            .map(|output| state.output_origin(output))
+            .unwrap_or_default();
+        if let Some(sequence) = state
+            .tablet
+            .event_sequence
+            .dispatch(event, (f64::from(origin.x), f64::from(origin.y)))
+        {
             state.tablet.update_state(sequence);
             if let Some(serial) = sequence.enter_serial {
                 state.tablet.cursor_serials.insert(tablet_tool.id(), serial);
@@ -171,6 +197,7 @@ impl Dispatch<ZwpTabletToolV2, (), State> for TabletState {
             if sequence.proximity_out {
                 state.tablet.cursor_serials.remove(&tablet_tool.id());
                 state.tablet.current_cursors.remove(&tablet_tool.id());
+                state.tablet.output = None;
             }
             let pen_pressed = sequence.pressed(PEN);
             let pen_released = sequence.released(PEN);
@@ -256,6 +283,9 @@ impl Dispatch<ZwpTabletToolV2, (), State> for TabletState {
             } else {
                 state.refresh_pointer_cursor();
             }
+            if pen_pressed || pen_released || button_pressed || button_released {
+                state.update_output_input();
+            }
         }
     }
 }
@@ -281,7 +311,11 @@ impl EventSequence {
         self.released & input != 0
     }
 
-    fn dispatch(&mut self, event: <ZwpTabletToolV2 as Proxy>::Event) -> Option<Self> {
+    fn dispatch(
+        &mut self,
+        event: <ZwpTabletToolV2 as Proxy>::Event,
+        origin: (f64, f64),
+    ) -> Option<Self> {
         use wayland_protocols::wp::tablet::zv2::client::zwp_tablet_tool_v2::Event;
         match event {
             Event::ProximityIn {
@@ -305,7 +339,7 @@ impl EventSequence {
                 None
             }
             Event::Motion { x, y } => {
-                self.motion = Some((x, y));
+                self.motion = Some((x + origin.0, y + origin.1));
                 None
             }
             Event::Button {

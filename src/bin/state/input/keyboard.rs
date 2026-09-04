@@ -280,7 +280,6 @@ impl Dispatch<WlKeyboard, ()> for State {
             }
             Event::Leave { .. } => {
                 state.keyboard.cancel_repeat();
-                state.cancel_pointer_gesture();
             }
             Event::RepeatInfo { rate, delay } => state.keyboard.set_repeat_info(rate, delay),
             Event::Key {

@@ -10,8 +10,8 @@ use wayland_client::protocol::wl_pointer::WlPointer;
 use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::Shape;
 use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::WpCursorShapeDeviceV1;
 
-use super::super::State;
 use super::super::draw::{Action, Cursor, CursorHint, Modifiers, ToolOverride};
+use super::super::{OutputId, State};
 use super::short_click;
 
 const EVDEV_LEFT: u32 = 272;
@@ -40,6 +40,7 @@ pub(in crate::state) struct PointerState {
     cursor_shape_device: Option<WpCursorShapeDeviceV1>,
     cursor_serial: Option<u32>,
     current_cursor: Option<Cursor>,
+    output: Option<OutputId>,
     position: Option<(f64, f64)>,
     left_button_held: bool,
     right_button_held: bool,
@@ -75,6 +76,10 @@ impl PointerState {
         self.cursor_shape_device.is_some()
     }
 
+    pub(in crate::state) fn input_grab_active(&self) -> bool {
+        self.left_button_held || self.right_button_held || self.middle_button_held
+    }
+
     pub(in crate::state) fn restore_cursor(&mut self) {
         let (Some(serial), Some(device)) = (self.cursor_serial, &self.cursor_shape_device) else {
             return;
@@ -108,8 +113,13 @@ impl PointerState {
         *self = Self::default();
     }
 
-    pub(in crate::state) fn cancel_gesture(&mut self) -> bool {
-        let interaction_active = self.left_button_held || self.middle_dragging;
+    fn clear_focus(&mut self) {
+        self.output = None;
+        self.position = None;
+        self.cursor_serial = None;
+    }
+
+    pub(in crate::state) fn cancel_gesture(&mut self) {
         self.left_button_held = false;
         self.right_button_held = false;
         self.middle_button_held = false;
@@ -120,7 +130,6 @@ impl PointerState {
         self.middle_dragging = false;
         self.last_left_click = None;
         self.reset_scroll();
-        interaction_active
     }
 
     fn update_state(&mut self, sequence: EventSequence) {
@@ -131,11 +140,6 @@ impl PointerState {
         if let Some(serial) = sequence.enter_serial {
             self.cursor_serial = Some(serial);
             self.current_cursor = None;
-        }
-
-        if sequence.leave_serial.is_some() {
-            self.position = None;
-            self.cursor_serial = None;
         }
 
         update_button(&mut self.left_button_held, sequence, LEFT);
@@ -287,14 +291,23 @@ impl Dispatch<WlPointer, (), State> for PointerState {
         _conn: &Connection,
         _qhandle: &QueueHandle<State>,
     ) {
-        if let Some(sequence) = state.pointer.event_sequence.dispatch(event) {
+        if let wayland_client::protocol::wl_pointer::Event::Enter { surface, .. } = &event
+            && let Some(output) = state.output_for_surface(surface)
+        {
+            state.focus_output(output);
+            state.pointer.output = Some(output);
+        }
+        let origin = state
+            .pointer
+            .output
+            .map(|output| state.output_origin(output))
+            .unwrap_or_default();
+        if let Some(sequence) = state
+            .pointer
+            .event_sequence
+            .dispatch(event, (f64::from(origin.x), f64::from(origin.y)))
+        {
             state.pointer.update_state(sequence);
-
-            if sequence.leave_serial.is_some() {
-                state.refresh_pointer_cursor();
-                state.cancel_pointer_gesture();
-                return;
-            }
             let left_pressed = sequence.pressed(LEFT);
             let left_released = sequence.released(LEFT);
             let right_pressed = sequence.pressed(RIGHT);
@@ -409,7 +422,19 @@ impl Dispatch<WlPointer, (), State> for PointerState {
                     }
                 }
             }
+            if sequence.leave_serial.is_some() && sequence.enter_serial.is_none() {
+                state.pointer.clear_focus();
+            }
             state.refresh_pointer_cursor();
+            if left_pressed
+                || left_released
+                || right_pressed
+                || right_released
+                || middle_pressed
+                || middle_released
+            {
+                state.update_output_input();
+            }
         }
     }
 }
@@ -468,7 +493,7 @@ impl EventSequence {
         self.axis_value120 != 0 || self.axis_discrete != 0
     }
 
-    fn dispatch(&mut self, event: <WlPointer as Proxy>::Event) -> Option<Self> {
+    fn dispatch(&mut self, event: <WlPointer as Proxy>::Event, origin: (f64, f64)) -> Option<Self> {
         use wayland_client::protocol::wl_pointer::Event;
         match event {
             Event::Enter {
@@ -478,7 +503,7 @@ impl EventSequence {
                 surface_y,
             } => {
                 self.enter_serial = Some(serial);
-                self.motion = Some((surface_x, surface_y));
+                self.motion = Some((surface_x + origin.0, surface_y + origin.1));
                 None
             }
             Event::Leave { serial, surface: _ } => {
@@ -490,7 +515,7 @@ impl EventSequence {
                 surface_x,
                 surface_y,
             } => {
-                self.motion = Some((surface_x, surface_y));
+                self.motion = Some((surface_x + origin.0, surface_y + origin.1));
                 None
             }
             Event::Button {

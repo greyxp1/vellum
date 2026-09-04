@@ -4,7 +4,9 @@ mod input;
 pub(crate) use draw::Tool;
 
 use color::DynamicColor;
+use std::collections::BTreeMap;
 use wayland_client::delegate_dispatch;
+use wayland_client::globals::{GlobalListContents, registry_queue_init};
 
 use wayland_client::Connection;
 use wayland_client::Dispatch;
@@ -17,6 +19,7 @@ use wayland_client::protocol::wl_callback::WlCallback;
 use wayland_client::protocol::wl_compositor::WlCompositor;
 use wayland_client::protocol::wl_display::WlDisplay;
 use wayland_client::protocol::wl_keyboard::WlKeyboard;
+use wayland_client::protocol::wl_output::WlOutput;
 use wayland_client::protocol::wl_pointer::WlPointer;
 use wayland_client::protocol::wl_region::WlRegion;
 use wayland_client::protocol::wl_registry::WlRegistry;
@@ -31,16 +34,20 @@ use wayland_protocols::wp::tablet::zv2::client::zwp_tablet_pad_v2::ZwpTabletPadV
 use wayland_protocols::wp::tablet::zv2::client::zwp_tablet_seat_v2::ZwpTabletSeatV2;
 use wayland_protocols::wp::tablet::zv2::client::zwp_tablet_tool_v2::ZwpTabletToolV2;
 use wayland_protocols::wp::tablet::zv2::client::zwp_tablet_v2::ZwpTabletV2;
+use wayland_protocols::xdg::xdg_output::zv1::client::zxdg_output_manager_v1::ZxdgOutputManagerV1;
+use wayland_protocols::xdg::xdg_output::zv1::client::zxdg_output_v1::ZxdgOutputV1;
 use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_shell_v1::ZwlrLayerShellV1;
 use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::{
     KeyboardInteractivity, ZwlrLayerSurfaceV1,
 };
 
-use crate::render::WgpuState;
+use crate::config::DrawOn;
+use crate::render::{GpuContext, WgpuState};
 use draw::{Action, Cursor, Modifiers, Point};
 
 const MAX_PENDING_PEN_SAMPLES: usize = 64;
 const PEN_BEND_DEVIATION_SQUARED: f32 = 0.5 * 0.5;
+type OutputId = u32;
 
 macro_rules! delegate_noop {
     ($proxy:ty) => {
@@ -56,126 +63,6 @@ macro_rules! delegate_noop {
             }
         }
     };
-}
-
-#[derive(Default)]
-struct SetupWaylandState {
-    compositor: Option<WlCompositor>,
-    seat: Option<WlSeat>,
-
-    layer_shell: Option<ZwlrLayerShellV1>,
-    cursor_shape_manager: Option<WpCursorShapeManagerV1>,
-    tablet_manager: Option<ZwpTabletManagerV2>,
-}
-
-impl SetupWaylandState {
-    fn into_state(
-        self,
-        connection: Connection,
-        display: WlDisplay,
-        qhandle: &QueueHandle<State>,
-    ) -> Result<WaylandState, &'static str> {
-        use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_shell_v1::Layer;
-        use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::Anchor;
-
-        let compositor = self
-            .compositor
-            .ok_or("compositor does not provide wl_compositor")?;
-        let seat = self.seat.ok_or("compositor does not provide wl_seat")?;
-        let layer_shell = self
-            .layer_shell
-            .ok_or("compositor does not provide zwlr_layer_shell_v1")?;
-        let surface = compositor.create_surface(qhandle, ());
-        let layer_surface = layer_shell.get_layer_surface(
-            &surface,
-            None,
-            Layer::Overlay,
-            "vellum".into(),
-            qhandle,
-            (),
-        );
-        layer_surface.set_anchor(Anchor::all());
-        layer_surface.set_keyboard_interactivity(KeyboardInteractivity::None);
-        layer_surface.set_exclusive_zone(-1);
-
-        Ok(WaylandState {
-            _connection: connection,
-            display,
-            compositor,
-            surface,
-            seat,
-            layer_surface,
-            pointer: None,
-            keyboard: None,
-            cursor_shape_manager: self.cursor_shape_manager,
-            tablet_manager: self.tablet_manager,
-        })
-    }
-}
-
-impl Dispatch<WlRegistry, QueueHandle<State>> for SetupWaylandState {
-    fn event(
-        setup_state: &mut Self,
-        registry: &WlRegistry,
-        event: <WlRegistry as Proxy>::Event,
-        state_qhandle: &QueueHandle<State>,
-        _conn: &Connection,
-        _qhandle: &QueueHandle<Self>,
-    ) {
-        use wayland_client::protocol::wl_registry::Event;
-        match event {
-            Event::Global {
-                name,
-                interface,
-                version,
-            } => match interface.as_str() {
-                "wl_compositor" => {
-                    let compositor = registry.bind::<WlCompositor, _, _>(
-                        name,
-                        version.min(5),
-                        state_qhandle,
-                        (),
-                    );
-                    setup_state.compositor = Some(compositor);
-                }
-                "wl_seat" => {
-                    let seat =
-                        registry.bind::<WlSeat, _, _>(name, version.min(9), state_qhandle, ());
-                    setup_state.seat = Some(seat);
-                }
-                "zwlr_layer_shell_v1" => {
-                    let layer_shell = registry.bind::<ZwlrLayerShellV1, _, _>(
-                        name,
-                        version.min(4),
-                        state_qhandle,
-                        (),
-                    );
-                    setup_state.layer_shell = Some(layer_shell);
-                }
-                "wp_cursor_shape_manager_v1" => {
-                    let cursor_shape_manager = registry.bind::<WpCursorShapeManagerV1, _, _>(
-                        name,
-                        version.min(1),
-                        state_qhandle,
-                        (),
-                    );
-                    setup_state.cursor_shape_manager = Some(cursor_shape_manager);
-                }
-                "zwp_tablet_manager_v2" => {
-                    let tablet_manager = registry.bind::<ZwpTabletManagerV2, _, _>(
-                        name,
-                        version.min(1),
-                        state_qhandle,
-                        (),
-                    );
-                    setup_state.tablet_manager = Some(tablet_manager);
-                }
-                _ => {}
-            },
-            Event::GlobalRemove { name: _ } => {}
-            _ => {}
-        }
-    }
 }
 
 #[derive(Default)]
@@ -249,8 +136,10 @@ fn segment_distance_squared(point: Point, start: Point, end: Point) -> f32 {
 
 pub struct State {
     active: bool,
+    draw_on: DrawOn,
+    selected_output: Option<OutputId>,
+    keyboard_output: Option<OutputId>,
     clear_on_escape: bool,
-    frame_pending: bool,
     pending_pen_motion: PendingPenMotion,
 
     wayland: WaylandState,
@@ -259,7 +148,7 @@ pub struct State {
     pointer: input::PointerState,
     tablet: input::TabletState,
 
-    wgpu: Option<WgpuState>,
+    gpu: Option<GpuContext>,
     qhandle: QueueHandle<State>,
 }
 
@@ -267,37 +156,66 @@ impl State {
     pub fn setup_wayland(settings: crate::Settings) -> Result<(Self, EventQueue<Self>), String> {
         let connection = Connection::connect_to_env()
             .map_err(|error| format!("could not connect to Wayland: {error}"))?;
-        let mut setup_queue = connection.new_event_queue();
-        let event_queue = connection.new_event_queue();
-
-        let display = connection.display();
-        let _registry = display.get_registry(&setup_queue.handle(), event_queue.handle());
-
-        let mut tmp_wayland_state = SetupWaylandState::default();
-
-        setup_queue
-            .roundtrip(&mut tmp_wayland_state)
+        let (globals, event_queue) = registry_queue_init::<State>(&connection)
             .map_err(|error| format!("Wayland setup failed: {error}"))?;
-
         let qhandle = event_queue.handle();
-        let wayland_state = tmp_wayland_state
-            .into_state(connection, display, &qhandle)
-            .map_err(str::to_string)?;
-        wayland_state.surface.commit();
+        let display = connection.display();
+        let compositor = globals
+            .bind::<WlCompositor, _, _>(&qhandle, 1..=5, ())
+            .map_err(|_| "compositor does not provide wl_compositor")?;
+        let seat = globals
+            .bind::<WlSeat, _, _>(&qhandle, 1..=9, ())
+            .map_err(|_| "compositor does not provide wl_seat")?;
+        let layer_shell = globals
+            .bind::<ZwlrLayerShellV1, _, _>(&qhandle, 1..=4, ())
+            .map_err(|_| "compositor does not provide zwlr_layer_shell_v1")?;
+        let cursor_shape_manager = globals
+            .bind::<WpCursorShapeManagerV1, _, _>(&qhandle, 1..=1, ())
+            .ok();
+        let tablet_manager = globals
+            .bind::<ZwpTabletManagerV2, _, _>(&qhandle, 1..=1, ())
+            .ok();
+        let xdg_output_manager = globals
+            .bind::<ZxdgOutputManagerV1, _, _>(&qhandle, 1..=3, ())
+            .ok();
+        let output_globals = globals.contents().clone_list();
+        let draw_on = settings.draw_on;
+        let clear_on_escape = settings.clear_on_escape;
 
         let mut state = Self {
             active: false,
-            clear_on_escape: settings.clear_on_escape,
-            frame_pending: false,
+            draw_on,
+            selected_output: None,
+            keyboard_output: None,
+            clear_on_escape,
             pending_pen_motion: PendingPenMotion::default(),
-            wayland: wayland_state,
+            wayland: WaylandState {
+                _connection: connection,
+                display,
+                registry: globals.registry().clone(),
+                compositor,
+                seat,
+                layer_shell,
+                outputs: BTreeMap::new(),
+                pointer: None,
+                keyboard: None,
+                cursor_shape_manager,
+                tablet_manager,
+                xdg_output_manager,
+            },
             draw: draw::DrawState::new(settings),
             keyboard: input::KeyboardState::default(),
             pointer: input::PointerState::default(),
             tablet: input::TabletState::default(),
-            wgpu: None,
+            gpu: None,
             qhandle,
         };
+
+        for global in output_globals {
+            if global.interface == WlOutput::interface().name {
+                state.add_output(global.name, global.version);
+            }
+        }
 
         if let Some(manager) = &state.wayland.tablet_manager {
             state.tablet.set_tablet_seat(manager.get_tablet_seat(
@@ -308,6 +226,157 @@ impl State {
         }
 
         Ok((state, event_queue))
+    }
+
+    fn add_output(&mut self, id: OutputId, version: u32) {
+        use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_shell_v1::Layer;
+        use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::Anchor;
+
+        if self.wayland.outputs.contains_key(&id) {
+            return;
+        }
+        let output =
+            self.wayland
+                .registry
+                .bind::<WlOutput, _, _>(id, version.min(4), &self.qhandle, id);
+        let xdg_output = self
+            .wayland
+            .xdg_output_manager
+            .as_ref()
+            .map(|manager| manager.get_xdg_output(&output, &self.qhandle, id));
+        let surface = self.wayland.compositor.create_surface(&self.qhandle, id);
+        let layer_surface = self.wayland.layer_shell.get_layer_surface(
+            &surface,
+            Some(&output),
+            Layer::Overlay,
+            "vellum".into(),
+            &self.qhandle,
+            id,
+        );
+        layer_surface.set_anchor(Anchor::all());
+        layer_surface.set_keyboard_interactivity(KeyboardInteractivity::None);
+        layer_surface.set_exclusive_zone(-1);
+        let empty_region = self.wayland.compositor.create_region(&self.qhandle, ());
+        surface.set_input_region(Some(&empty_region));
+        empty_region.destroy();
+        surface.commit();
+
+        self.wayland.outputs.insert(
+            id,
+            Output {
+                output,
+                xdg_output,
+                origin: Point::default(),
+                surface,
+                layer_surface,
+                frame_pending: false,
+                wgpu: None,
+            },
+        );
+        self.draw.add_output(id);
+        if self.keyboard_output.is_none() {
+            self.keyboard_output = Some(id);
+        }
+        if self.active {
+            self.update_output_input();
+        }
+    }
+
+    fn remove_output(&mut self, id: OutputId) {
+        let Some(mut output) = self.wayland.outputs.remove(&id) else {
+            return;
+        };
+        output.wgpu.take();
+        if let Some(xdg_output) = output.xdg_output {
+            xdg_output.destroy();
+        }
+        output.layer_surface.destroy();
+        output.surface.destroy();
+        if output.output.version() >= 3 {
+            output.output.release();
+        }
+        self.draw.remove_output(id);
+
+        if self.selected_output == Some(id) {
+            self.selected_output = None;
+        }
+        if self.keyboard_output == Some(id) {
+            self.keyboard_output = self.wayland.outputs.keys().next().copied();
+        }
+        if self.active {
+            self.update_output_input();
+        }
+    }
+
+    fn focus_output(&mut self, output: OutputId) {
+        if !self.active || !self.wayland.outputs.contains_key(&output) {
+            return;
+        }
+        if self.draw_on == DrawOn::Current {
+            if let Some(selected) = self.selected_output
+                && selected != output
+            {
+                return;
+            }
+            self.selected_output = Some(output);
+        }
+        self.keyboard_output = Some(output);
+        self.update_output_input();
+    }
+
+    fn output_for_surface(&self, surface: &WlSurface) -> Option<OutputId> {
+        surface
+            .data::<OutputId>()
+            .copied()
+            .filter(|output| self.wayland.outputs.contains_key(output))
+    }
+
+    fn output_origin(&self, output: OutputId) -> Point {
+        self.wayland
+            .outputs
+            .get(&output)
+            .map_or_else(Point::default, |output| output.origin)
+    }
+
+    fn set_output_origin(&mut self, output: OutputId, origin: Point) {
+        let Some(output_state) = self.wayland.outputs.get_mut(&output) else {
+            return;
+        };
+        if output_state.origin == origin {
+            return;
+        }
+        output_state.origin = origin;
+        self.draw.damage_scene(output);
+        self.request_render();
+    }
+
+    fn update_output_input(&mut self) {
+        let empty_region = self.wayland.compositor.create_region(&self.qhandle, ());
+        let input_grab_active = self.pointer.input_grab_active() || self.tablet.input_grab_active();
+        for (&id, output) in &self.wayland.outputs {
+            let accepts_input = self.active
+                && match self.draw_on {
+                    DrawOn::All => true,
+                    DrawOn::Current => {
+                        input_grab_active
+                            || self.selected_output.is_none_or(|selected| selected == id)
+                    }
+                };
+            output.surface.set_input_region(if accepts_input {
+                None
+            } else {
+                Some(&empty_region)
+            });
+            output.layer_surface.set_keyboard_interactivity(
+                if accepts_input && self.keyboard_output == Some(id) {
+                    KeyboardInteractivity::Exclusive
+                } else {
+                    KeyboardInteractivity::None
+                },
+            );
+            output.surface.commit();
+        }
+        empty_region.destroy();
     }
 
     pub fn toggle_input(&mut self) {
@@ -334,14 +403,15 @@ impl State {
     }
 
     pub fn activate(&mut self) {
-        // reset to full region
-        self.wayland
-            .layer_surface
-            .set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
-        self.wayland.surface.set_input_region(None);
-        self.wayland.surface.commit();
-
         self.active = true;
+        self.selected_output = None;
+        if self
+            .keyboard_output
+            .is_none_or(|output| !self.wayland.outputs.contains_key(&output))
+        {
+            self.keyboard_output = self.wayland.outputs.keys().next().copied();
+        }
+        self.update_output_input();
         if self.draw.activate() {
             self.request_render();
         }
@@ -349,36 +419,31 @@ impl State {
 
     pub fn deactivate(&mut self) {
         self.keyboard.cancel_repeat();
+        self.pointer.cancel_gesture();
+        self.tablet.cancel_gesture();
+        self.pending_pen_motion.reset(None);
         let preview_changed = self.draw.deactivate();
         self.pointer.restore_cursor();
         self.tablet.restore_cursors();
-        let empty_region = self.wayland.compositor.create_region(&self.qhandle, ());
-        self.wayland
-            .layer_surface
-            .set_keyboard_interactivity(KeyboardInteractivity::None);
-        self.wayland.surface.set_input_region(Some(&empty_region));
-        self.wayland.surface.commit();
-
         self.active = false;
+        self.selected_output = None;
+        self.update_output_input();
         if preview_changed {
             self.request_render();
-        } else if let Some(wgpu) = &mut self.wgpu {
-            wgpu.release_picker_target();
-        }
-    }
-
-    fn render(&mut self) {
-        if let Some(wgpu) = &mut self.wgpu {
-            self.draw.render(wgpu);
-            if !self.active {
-                wgpu.release_picker_target();
+        } else {
+            for output in self.wayland.outputs.values_mut() {
+                if let Some(wgpu) = &mut output.wgpu {
+                    wgpu.release_picker_target();
+                }
             }
         }
     }
 
-    fn force_render(&mut self) {
-        if let Some(wgpu) = &mut self.wgpu {
-            self.draw.force_render(wgpu);
+    fn render(&mut self, output: OutputId) {
+        if let Some(output_state) = self.wayland.outputs.get_mut(&output)
+            && let Some(wgpu) = output_state.wgpu.as_mut()
+        {
+            self.draw.render(output, output_state.origin, wgpu);
             if !self.active {
                 wgpu.release_picker_target();
             }
@@ -424,14 +489,6 @@ impl State {
         let modifiers = self.modifiers();
         if self.draw.modifiers_changed(modifiers) {
             self.request_render();
-        }
-    }
-
-    fn cancel_pointer_gesture(&mut self) {
-        let interaction_active = self.pointer.cancel_gesture();
-        self.pending_pen_motion.reset(None);
-        if self.active && (interaction_active || self.draw.picker_active()) {
-            self.apply_action(Action::Cancel);
         }
     }
 
@@ -567,20 +624,29 @@ impl State {
     }
 
     fn request_render(&mut self) {
-        if self.frame_pending {
-            return;
-        }
         self.flush_pen_motion();
-        if self.wgpu.is_none() || !self.needs_frame() {
+        let outputs: Vec<_> = self.draw.damaged_outputs().collect();
+        for output in outputs {
+            self.request_output_render(output);
+        }
+    }
+
+    fn request_output_render(&mut self, id: OutputId) {
+        let Some(output) = self.wayland.outputs.get_mut(&id) else {
+            return;
+        };
+        if output.frame_pending || output.wgpu.is_none() || !self.draw.needs_render(id) {
             return;
         }
-        self.wayland.surface.frame(&self.qhandle, ());
-        self.frame_pending = true;
-        self.render();
+        output.surface.frame(&self.qhandle, id);
+        output.frame_pending = true;
+        self.render(id);
         // A successful presentation commits the frame request with its buffer.
         // If acquisition failed, commit the callback alone so it can retry.
-        if self.needs_frame() {
-            self.wayland.surface.commit();
+        if self.draw.needs_render(id)
+            && let Some(output) = self.wayland.outputs.get(&id)
+        {
+            output.surface.commit();
         }
     }
 
@@ -610,36 +676,119 @@ impl State {
             self.request_render();
         }
     }
-
-    fn needs_frame(&self) -> bool {
-        self.draw.needs_render()
-    }
 }
 
 impl Drop for State {
     fn drop(&mut self) {
-        self.wgpu.take();
+        for output in self.wayland.outputs.values_mut() {
+            output.wgpu.take();
+        }
+        self.gpu.take();
     }
 }
 
 struct WaylandState {
     _connection: Connection,
     display: WlDisplay,
+    registry: WlRegistry,
     compositor: WlCompositor,
-    surface: WlSurface,
     seat: WlSeat,
-
-    layer_surface: ZwlrLayerSurfaceV1,
+    layer_shell: ZwlrLayerShellV1,
+    outputs: BTreeMap<OutputId, Output>,
     pointer: Option<WlPointer>,
     keyboard: Option<WlKeyboard>,
 
     cursor_shape_manager: Option<WpCursorShapeManagerV1>,
     tablet_manager: Option<ZwpTabletManagerV2>,
+    xdg_output_manager: Option<ZxdgOutputManagerV1>,
+}
+
+struct Output {
+    output: WlOutput,
+    xdg_output: Option<ZxdgOutputV1>,
+    origin: Point,
+    surface: WlSurface,
+    layer_surface: ZwlrLayerSurfaceV1,
+    frame_pending: bool,
+    wgpu: Option<WgpuState>,
 }
 
 delegate_noop!(WlCompositor);
 delegate_noop!(WlRegion);
-delegate_noop!(WlSurface);
+
+impl Dispatch<WlRegistry, GlobalListContents> for State {
+    fn event(
+        state: &mut Self,
+        _registry: &WlRegistry,
+        event: <WlRegistry as Proxy>::Event,
+        _data: &GlobalListContents,
+        _conn: &Connection,
+        _qhandle: &QueueHandle<Self>,
+    ) {
+        use wayland_client::protocol::wl_registry::Event;
+        match event {
+            Event::Global {
+                name,
+                interface,
+                version,
+            } if interface == WlOutput::interface().name => state.add_output(name, version),
+            Event::GlobalRemove { name } => state.remove_output(name),
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<WlOutput, OutputId> for State {
+    fn event(
+        state: &mut Self,
+        _proxy: &WlOutput,
+        event: <WlOutput as Proxy>::Event,
+        output: &OutputId,
+        _conn: &Connection,
+        _qhandle: &QueueHandle<Self>,
+    ) {
+        use wayland_client::protocol::wl_output::Event;
+        if let Event::Geometry { x, y, .. } = event
+            && state
+                .wayland
+                .outputs
+                .get(output)
+                .is_some_and(|output| output.xdg_output.is_none())
+        {
+            state.set_output_origin(*output, Point::new(x as f32, y as f32));
+        }
+    }
+}
+
+delegate_noop!(ZxdgOutputManagerV1);
+
+impl Dispatch<ZxdgOutputV1, OutputId> for State {
+    fn event(
+        state: &mut Self,
+        _proxy: &ZxdgOutputV1,
+        event: <ZxdgOutputV1 as Proxy>::Event,
+        output: &OutputId,
+        _conn: &Connection,
+        _qhandle: &QueueHandle<Self>,
+    ) {
+        use wayland_protocols::xdg::xdg_output::zv1::client::zxdg_output_v1::Event;
+        if let Event::LogicalPosition { x, y } = event {
+            state.set_output_origin(*output, Point::new(x as f32, y as f32));
+        }
+    }
+}
+
+impl Dispatch<WlSurface, OutputId> for State {
+    fn event(
+        _state: &mut Self,
+        _proxy: &WlSurface,
+        _event: <WlSurface as Proxy>::Event,
+        _data: &OutputId,
+        _conn: &Connection,
+        _qhandle: &QueueHandle<Self>,
+    ) {
+    }
+}
 
 impl Dispatch<WlSeat, ()> for State {
     fn event(
@@ -689,33 +838,32 @@ impl Dispatch<WlSeat, ()> for State {
     }
 }
 
-impl Dispatch<WlCallback, ()> for State {
+impl Dispatch<WlCallback, OutputId> for State {
     fn event(
         state: &mut Self,
         _callback: &WlCallback,
         event: <WlCallback as Proxy>::Event,
-        _data: &(),
+        output: &OutputId,
         _conn: &Connection,
         _qhandle: &QueueHandle<Self>,
     ) {
         use wayland_client::protocol::wl_callback::Event;
         if let Event::Done { callback_data: _ } = event {
-            state.frame_pending = false;
-            state.flush_pen_motion();
-            if state.needs_frame() {
-                state.request_render();
+            if let Some(output_state) = state.wayland.outputs.get_mut(output) {
+                output_state.frame_pending = false;
             }
+            state.request_render();
         }
     }
 }
 
 delegate_noop!(ZwlrLayerShellV1);
-impl Dispatch<ZwlrLayerSurfaceV1, ()> for State {
+impl Dispatch<ZwlrLayerSurfaceV1, OutputId> for State {
     fn event(
         state: &mut Self,
         layer_surface: &ZwlrLayerSurfaceV1,
         event: <ZwlrLayerSurfaceV1 as Proxy>::Event,
-        _data: &(),
+        output: &OutputId,
         _conn: &Connection,
         _qhandle: &QueueHandle<Self>,
     ) {
@@ -727,26 +875,30 @@ impl Dispatch<ZwlrLayerSurfaceV1, ()> for State {
                 height,
             } => {
                 layer_surface.ack_configure(serial);
-
-                if let Some(wgpu) = &mut state.wgpu {
+                let Some(output_state) = state.wayland.outputs.get_mut(output) else {
+                    return;
+                };
+                if let Some(wgpu) = &mut output_state.wgpu {
                     wgpu.resize(width, height);
-                    state.draw.damage_scene();
+                    state.draw.damage_scene(*output);
                     state.request_render();
                 } else {
-                    let wgpu = WgpuState::new(
-                        &state.wayland.display,
-                        &state.wayland.surface,
-                        width,
-                        height,
-                    );
+                    let surface = output_state.surface.clone();
+                    let display = state.wayland.display.clone();
+                    let wgpu = if let Some(gpu) = &state.gpu {
+                        WgpuState::new(gpu, gpu.create_surface(&display, &surface), width, height)
+                    } else {
+                        let (gpu, wgpu) = GpuContext::new(&display, &surface, width, height);
+                        state.gpu = Some(gpu);
+                        wgpu
+                    };
+                    output_state.wgpu = Some(wgpu);
 
-                    state.wgpu = Some(wgpu);
-
-                    // some compositors are unhappy if we don't force render here
-                    state.force_render();
+                    // Some compositors require a buffer with the initial configure.
+                    state.render(*output);
                 }
             }
-            Event::Closed => {}
+            Event::Closed => state.remove_output(*output),
             _ => {}
         }
     }

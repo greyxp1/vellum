@@ -103,36 +103,84 @@ pub struct WgpuState {
     text: Option<TextState>,
 }
 
-impl WgpuState {
-    pub fn new(display: &WlDisplay, surface: &WlSurface, width: u32, height: u32) -> Self {
+pub struct GpuContext {
+    instance: wgpu::Instance,
+    adapter: wgpu::Adapter,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+}
+
+impl GpuContext {
+    pub fn new(
+        display: &WlDisplay,
+        surface: &WlSurface,
+        width: u32,
+        height: u32,
+    ) -> (Self, WgpuState) {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::VULKAN,
             ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
-
-        let raw_display_handle =
-            wgpu::rwh::RawDisplayHandle::Wayland(wgpu::rwh::WaylandDisplayHandle::new(
-                std::ptr::NonNull::new(display.id().as_ptr() as *mut _).unwrap(),
-            ));
-        let raw_window_handle =
-            wgpu::rwh::RawWindowHandle::Wayland(wgpu::rwh::WaylandWindowHandle::new(
-                std::ptr::NonNull::new(surface.id().as_ptr() as *mut _).unwrap(),
-            ));
-        let surface = unsafe {
-            instance.create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
-                raw_display_handle: Some(raw_display_handle),
-                raw_window_handle,
-            })
-        }
-        .unwrap();
-
+        let surface = create_surface(&instance, display, surface);
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::default(),
             force_fallback_adapter: false,
             compatible_surface: Some(&surface),
         }))
         .unwrap();
-        let capabilities = surface.get_capabilities(&adapter);
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: None,
+            required_features: wgpu::Features::empty(),
+            required_limits: wgpu::Limits::default(),
+            experimental_features: wgpu::ExperimentalFeatures::disabled(),
+            memory_hints: wgpu::MemoryHints::MemoryUsage,
+            trace: wgpu::Trace::Off,
+        }))
+        .unwrap();
+        let gpu = Self {
+            instance,
+            adapter,
+            device,
+            queue,
+        };
+        let wgpu = WgpuState::new(&gpu, surface, width, height);
+        (gpu, wgpu)
+    }
+
+    pub fn create_surface(
+        &self,
+        display: &WlDisplay,
+        surface: &WlSurface,
+    ) -> wgpu::Surface<'static> {
+        create_surface(&self.instance, display, surface)
+    }
+}
+
+fn create_surface(
+    instance: &wgpu::Instance,
+    display: &WlDisplay,
+    surface: &WlSurface,
+) -> wgpu::Surface<'static> {
+    let raw_display_handle =
+        wgpu::rwh::RawDisplayHandle::Wayland(wgpu::rwh::WaylandDisplayHandle::new(
+            std::ptr::NonNull::new(display.id().as_ptr() as *mut _).unwrap(),
+        ));
+    let raw_window_handle =
+        wgpu::rwh::RawWindowHandle::Wayland(wgpu::rwh::WaylandWindowHandle::new(
+            std::ptr::NonNull::new(surface.id().as_ptr() as *mut _).unwrap(),
+        ));
+    unsafe {
+        instance.create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
+            raw_display_handle: Some(raw_display_handle),
+            raw_window_handle,
+        })
+    }
+    .unwrap()
+}
+
+impl WgpuState {
+    pub fn new(gpu: &GpuContext, surface: wgpu::Surface<'static>, width: u32, height: u32) -> Self {
+        let capabilities = surface.get_capabilities(&gpu.adapter);
         let format = capabilities
             .formats
             .iter()
@@ -145,15 +193,8 @@ impl WgpuState {
             .find(|mode| matches!(mode, wgpu::CompositeAlphaMode::PreMultiplied))
             .copied()
             .unwrap_or(wgpu::CompositeAlphaMode::Auto);
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: None,
-            required_features: wgpu::Features::empty(),
-            required_limits: wgpu::Limits::default(),
-            experimental_features: wgpu::ExperimentalFeatures::disabled(),
-            memory_hints: wgpu::MemoryHints::MemoryUsage,
-            trace: wgpu::Trace::Off,
-        }))
-        .unwrap();
+        let device = gpu.device.clone();
+        let queue = gpu.queue.clone();
         let surface_config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
@@ -284,8 +325,13 @@ impl WgpuState {
         self.text.as_mut()?.cursor_x(key, index)
     }
 
-    pub fn render(&mut self, previews: &[Geometry], picker: Option<&LocalGeometry>) -> bool {
-        self.render_surface(previews, picker)
+    pub fn render(
+        &mut self,
+        previews: &[Geometry],
+        picker: Option<&LocalGeometry>,
+        viewport_origin: [f32; 2],
+    ) -> bool {
+        self.render_surface(previews, picker, viewport_origin)
     }
 
     fn composite_picker(
@@ -320,7 +366,12 @@ impl WgpuState {
         pass.draw(0..3, 0..1);
     }
 
-    fn render_surface(&mut self, previews: &[Geometry], picker: Option<&LocalGeometry>) -> bool {
+    fn render_surface(
+        &mut self,
+        previews: &[Geometry],
+        picker: Option<&LocalGeometry>,
+        viewport_origin: [f32; 2],
+    ) -> bool {
         let output = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(output)
             | wgpu::CurrentSurfaceTexture::Suboptimal(output) => output,
@@ -351,7 +402,10 @@ impl WgpuState {
             return false;
         };
         self.main_scene.reset_and_resize(main_size[0], main_size[1]);
-        self.main_scene.set_transform(Affine::IDENTITY);
+        self.main_scene.set_transform(Affine::translate((
+            -f64::from(viewport_origin[0]),
+            -f64::from(viewport_origin[1]),
+        )));
         let target_is_srgb = self.surface_config.format.is_srgb();
         replay_geometry(&mut self.main_scene, &self.committed, target_is_srgb);
         if let Some(text) = &mut self.text {
@@ -365,6 +419,12 @@ impl WgpuState {
             replay_geometry(&mut self.main_scene, geometry, target_is_srgb);
         }
 
+        let picker_origin = picker.map_or([0.0; 2], |picker| {
+            [
+                picker.origin[0] - viewport_origin[0],
+                picker.origin[1] - viewport_origin[1],
+            ]
+        });
         let picker_size = if let Some(picker) = picker {
             let Some(scene_size) = checked_picker_scene_size(picker.size) else {
                 return false;
@@ -378,7 +438,7 @@ impl WgpuState {
                     &self.device,
                     self.surface_config.format,
                     picker.size,
-                    picker.origin,
+                    picker_origin,
                     &self.picker_composite_layout,
                 );
                 if self.picker_target.is_none() {
@@ -387,13 +447,13 @@ impl WgpuState {
                 }
             }
             let target = self.picker_target.as_mut().unwrap();
-            if target.origin != picker.origin {
+            if target.origin != picker_origin {
                 self.queue.write_buffer(
                     &target.composite_buffer,
                     0,
-                    &composite_bytes(picker.origin),
+                    &composite_bytes(picker_origin),
                 );
-                target.origin = picker.origin;
+                target.origin = picker_origin;
             }
             Some(scene_size)
         } else {
@@ -448,12 +508,12 @@ impl WgpuState {
                 eprintln!("vellum: Vello picker render failed: {error}");
                 return false;
             }
-            let left = picker.origin[0].max(0.0);
-            let top = picker.origin[1].max(0.0);
+            let left = picker_origin[0].max(0.0);
+            let top = picker_origin[1].max(0.0);
             let right =
-                (picker.origin[0] + picker.size[0] as f32).min(self.surface_config.width as f32);
+                (picker_origin[0] + picker.size[0] as f32).min(self.surface_config.width as f32);
             let bottom =
-                (picker.origin[1] + picker.size[1] as f32).min(self.surface_config.height as f32);
+                (picker_origin[1] + picker.size[1] as f32).min(self.surface_config.height as f32);
             if right > left && bottom > top {
                 self.composite_picker(
                     &mut encoder,

@@ -162,6 +162,7 @@ Vellum looks for `vellum/config.toml` in `$XDG_CONFIG_HOME` (default `~/.config`
 
 | Option | Type | Description |
 | --- | --- | --- |
+| `draw_on` | string | Where drawing can start: `all` monitors or only the `current` monitor |
 | `default_tool` | string | Startup tool: `pen`, `line`, `arrow`, `triangle`, `rectangle`, `ellipse`, `text`, `eraser`, or `select` |
 | `remember_last_tool` | boolean | Keep the selected tool when drawing mode is reopened |
 | `stroke_size` | float | Initial size shared by pen, line, arrow, and shape tools |

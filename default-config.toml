@@ -1,3 +1,4 @@
+draw_on = "all"
 default_tool = "pen"
 remember_last_tool = true
 stroke_size = 5.0

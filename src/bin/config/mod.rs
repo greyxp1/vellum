@@ -17,6 +17,7 @@ const DEFAULT_PALETTE: [&str; 8] = [
 #[derive(Debug, Default, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct FileConfig {
+    draw_on: Option<DrawOn>,
     default_tool: Option<String>,
     remember_last_tool: Option<bool>,
     stroke_size: Option<f32>,
@@ -29,6 +30,14 @@ struct FileConfig {
     default_fill_shapes: Option<bool>,
     #[serde(default)]
     tools: ToolDefaults,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum DrawOn {
+    #[default]
+    All,
+    Current,
 }
 
 pub(crate) type ToolDefaults = BTreeMap<state::Tool, PropertyDefaults>;
@@ -235,6 +244,7 @@ fn validate_tool_defaults(
 }
 
 pub(super) struct Settings {
+    pub(super) draw_on: DrawOn,
     pub(super) stroke_size: f32,
     pub(super) size_ranges: Arc<BTreeMap<state::Tool, SizeRange>>,
     pub(super) default_color: Rgba,
@@ -314,6 +324,7 @@ impl Settings {
         validate_tool_defaults(&file.tools, &size_ranges)?;
 
         Ok(Self {
+            draw_on: file.draw_on.unwrap_or_default(),
             stroke_size,
             size_ranges,
             default_color,

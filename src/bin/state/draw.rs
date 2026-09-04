@@ -9,7 +9,10 @@ mod tool;
 mod triangle;
 
 use crate::render::{FillRule, Geometry, LocalGeometry, TextSpec, WgpuState, text_line_height};
+use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
+
+use super::OutputId;
 
 pub(crate) use self::editor::{Action, CursorMove};
 use self::editor::{Damage, Editor, EditorEffect};
@@ -84,7 +87,7 @@ pub(super) struct Adjustment {
 
 pub struct DrawState {
     editor: Editor,
-    damage: Damage,
+    damage: BTreeMap<OutputId, Damage>,
     feedback: Option<(String, Point)>,
     property_feedback_anchor: Option<Point>,
     feedback_until: Option<Instant>,
@@ -102,7 +105,7 @@ impl DrawState {
         let editor = Editor::new(settings);
         Self {
             editor,
-            damage: Damage::Scene,
+            damage: BTreeMap::new(),
             feedback: None,
             property_feedback_anchor: None,
             feedback_until: None,
@@ -155,7 +158,7 @@ impl DrawState {
         } else {
             self.caret_until = None;
         }
-        self.damage.merge(effect.damage);
+        self.record(effect.damage);
         effect
     }
 
@@ -215,7 +218,7 @@ impl DrawState {
             return false;
         }
         self.tool_cursor = cursor;
-        self.damage.merge(Damage::Preview);
+        self.record(Damage::Preview);
         true
     }
 
@@ -261,7 +264,7 @@ impl DrawState {
             let anchor = *self.property_feedback_anchor.get_or_insert(at);
             self.feedback = Some((feedback, anchor));
             self.feedback_until = Some(Instant::now() + self.feedback_duration);
-            self.damage.merge(damage);
+            self.record(damage);
         }
         Adjustment {
             changed: damage.changed(),
@@ -269,16 +272,35 @@ impl DrawState {
         }
     }
 
-    pub fn needs_render(&self) -> bool {
-        self.damage.changed()
+    pub fn add_output(&mut self, output: OutputId) {
+        self.damage.insert(output, Damage::Scene);
     }
 
-    pub fn damage_scene(&mut self) {
-        self.damage.merge(Damage::Scene);
+    pub fn remove_output(&mut self, output: OutputId) {
+        self.damage.remove(&output);
+    }
+
+    pub fn needs_render(&self, output: OutputId) -> bool {
+        self.damage
+            .get(&output)
+            .is_some_and(|damage| damage.changed())
+    }
+
+    pub fn damaged_outputs(&self) -> impl Iterator<Item = OutputId> + '_ {
+        self.damage
+            .iter()
+            .filter(|(_, damage)| damage.changed())
+            .map(|(&output, _)| output)
+    }
+
+    pub fn damage_scene(&mut self, output: OutputId) {
+        self.damage.entry(output).or_default().merge(Damage::Scene);
     }
 
     fn record(&mut self, damage: Damage) -> bool {
-        self.damage.merge(damage);
+        for current in self.damage.values_mut() {
+            current.merge(damage);
+        }
         damage.changed()
     }
 
@@ -307,16 +329,17 @@ impl DrawState {
             }
         }
         if changed {
-            self.damage.merge(Damage::Preview);
+            self.record(Damage::Preview);
         }
         changed
     }
 
-    pub fn render(&mut self, wgpu: &mut WgpuState) {
-        if !self.damage.changed() {
+    pub fn render(&mut self, output: OutputId, origin: Point, wgpu: &mut WgpuState) {
+        let damage = self.damage.get(&output).copied().unwrap_or_default();
+        if !damage.changed() {
             return;
         }
-        if self.damage == Damage::Scene {
+        if damage == Damage::Scene {
             wgpu.set_committed_geometry(
                 self.editor
                     .elements()
@@ -326,10 +349,10 @@ impl DrawState {
             );
         }
 
-        let editing_id = self.editor.active_text().and_then(|edit| edit.id);
+        let active_text = self.editor.active_text();
+        let editing_id = active_text.and_then(|edit| edit.id);
         let mut caret = None;
         {
-            let active_text = self.editor.active_text();
             let mut text_specs = Vec::new();
             for element in self.editor.elements() {
                 if Some(element.id) == editing_id {
@@ -423,14 +446,9 @@ impl DrawState {
             self.previews.push(tool_cursor_geometry(point, cursor));
         }
         self.picker = self.editor.picker_geometry();
-        if wgpu.render(&self.previews, self.picker.as_ref()) {
-            self.damage = Damage::None;
+        if wgpu.render(&self.previews, self.picker.as_ref(), [origin.x, origin.y]) {
+            self.damage.insert(output, Damage::None);
         }
-    }
-
-    pub fn force_render(&mut self, wgpu: &mut WgpuState) {
-        self.damage = Damage::Scene;
-        self.render(wgpu);
     }
 
     fn show_caret(&mut self) -> bool {
