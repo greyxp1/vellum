@@ -9,8 +9,8 @@ use super::{srgb_to_linear, vello_color};
 
 const DARK_TEXT_EMBOLDENING: f64 = 0.2;
 const LINE_HEIGHT_SCALE: f32 = 1.25;
-const BLACK_BACKGROUND_COLOR: f32 = 0.078_431_375;
-const WHITE_BACKGROUND_COLOR: f32 = 0.921_568_63;
+const BLACK_BACKGROUND_COLOR: f32 = 20.0 / 255.0;
+const WHITE_BACKGROUND_COLOR: f32 = 235.0 / 255.0;
 
 pub fn text_line_height(font_size: f32) -> f32 {
     font_size * LINE_HEIGHT_SCALE
@@ -56,23 +56,16 @@ fn background_color([red, green, blue, alpha]: [f32; 4]) -> [f32; 4] {
     let luminance = 0.2126 * srgb_to_linear(red)
         + 0.7152 * srgb_to_linear(green)
         + 0.0722 * srgb_to_linear(blue);
-    let contrast_with_black = (luminance + 0.05) / 0.05;
-    let contrast_with_white = 1.05 / (luminance + 0.05);
-    if contrast_with_black >= contrast_with_white {
-        [
-            BLACK_BACKGROUND_COLOR,
-            BLACK_BACKGROUND_COLOR,
-            BLACK_BACKGROUND_COLOR,
-            alpha,
-        ]
+    let contrast = |background| {
+        let background_luminance = srgb_to_linear(background);
+        (luminance.max(background_luminance) + 0.05) / (luminance.min(background_luminance) + 0.05)
+    };
+    let background = if contrast(BLACK_BACKGROUND_COLOR) >= contrast(WHITE_BACKGROUND_COLOR) {
+        BLACK_BACKGROUND_COLOR
     } else {
-        [
-            WHITE_BACKGROUND_COLOR,
-            WHITE_BACKGROUND_COLOR,
-            WHITE_BACKGROUND_COLOR,
-            alpha,
-        ]
-    }
+        WHITE_BACKGROUND_COLOR
+    };
+    [background, background, background, alpha]
 }
 
 pub struct TextSpec<'a> {
