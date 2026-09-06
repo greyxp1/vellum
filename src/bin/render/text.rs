@@ -9,8 +9,8 @@ use super::{srgb_to_linear, vello_color};
 
 const DARK_TEXT_EMBOLDENING: f64 = 0.2;
 const LINE_HEIGHT_SCALE: f32 = 1.25;
-const BLACK_BACKGROUND_COLOR: f32 = 0.07843137255;
-const WHITE_BACKGROUND_COLOR: f32 = 0.9215686275;
+const BLACK_BACKGROUND_COLOR: f32 = 0.078_431_372_55;
+const WHITE_BACKGROUND_COLOR: f32 = 0.921_568_627_50;
 
 pub fn text_line_height(font_size: f32) -> f32 {
     font_size * LINE_HEIGHT_SCALE
