@@ -9,6 +9,8 @@ use super::{srgb_to_linear, vello_color};
 
 const DARK_TEXT_EMBOLDENING: f64 = 0.2;
 const LINE_HEIGHT_SCALE: f32 = 1.25;
+const BLACK_BACKGROUND_COLOR: f32 = 0.07843137255;
+const WHITE_BACKGROUND_COLOR: f32 = 0.9215686275;
 
 pub fn text_line_height(font_size: f32) -> f32 {
     font_size * LINE_HEIGHT_SCALE
@@ -57,9 +59,19 @@ fn background_color([red, green, blue, alpha]: [f32; 4]) -> [f32; 4] {
     let contrast_with_black = (luminance + 0.05) / 0.05;
     let contrast_with_white = 1.05 / (luminance + 0.05);
     if contrast_with_black >= contrast_with_white {
-        [0.0, 0.0, 0.0, alpha]
+        [
+            BLACK_BACKGROUND_COLOR,
+            BLACK_BACKGROUND_COLOR,
+            BLACK_BACKGROUND_COLOR,
+            alpha,
+        ]
     } else {
-        [1.0, 1.0, 1.0, alpha]
+        [
+            WHITE_BACKGROUND_COLOR,
+            WHITE_BACKGROUND_COLOR,
+            WHITE_BACKGROUND_COLOR,
+            alpha,
+        ]
     }
 }
 

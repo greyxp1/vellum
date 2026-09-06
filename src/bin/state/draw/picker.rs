@@ -17,8 +17,8 @@ const PREVIEW_BORDER_WIDTH: f32 = 1.0;
 const SEPARATOR_HALF_WIDTH: f32 = 2.0;
 
 const GAP_LINE_COLOR: [f32; 4] = [0.03, 0.03, 0.03, 1.0];
-const HOVER_COLOR: [f32; 4] = rgb_to_f32(2, 131, 252, 0.98);
-const ACTIVE_COLOR: [f32; 4] = rgb_to_f32(55, 100, 138, 0.95);
+const HOVER_COLOR: [f32; 4] = rgb_to_f32(4, 131, 250, 0.98);
+const ACTIVE_COLOR: [f32; 4] = rgb_to_f32(57, 100, 136, 0.95);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Choice {
