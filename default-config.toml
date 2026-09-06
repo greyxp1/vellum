@@ -16,13 +16,13 @@ size_range = {
 
 palette = [
   "#E84046",
-  "#EC8948",
-  "#EED049",
-  "#3ED73C",
-  "#0283FC",
-  "#7C57EB",
-  "#FFFFFF",
-  "#000000",
+  "#EF8F4F",
+  "#EED14D",
+  "#4DD54F",
+  "#0483FA",
+  "#7C58EA",
+  "#EBEBEB",
+  "#141414",
 ]
 
 [tools.pen]

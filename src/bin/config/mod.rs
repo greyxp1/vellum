@@ -11,7 +11,7 @@ const DEFAULT_TEXT_MIN_SIZE: f32 = 8.0;
 const DEFAULT_TEXT_MAX_SIZE: f32 = 500.0;
 const DEFAULT_TEXT_STEP: f32 = 0.5;
 const DEFAULT_PALETTE: [&str; 8] = [
-    "#E84046", "#EC8948", "#EED049", "#3ED73C", "#0283FC", "#7C57EB", "#FFFFFF", "#000000",
+    "#E84046", "#EF8F4F", "#EED14D", "#4DD54F", "#0483FA", "#7C58EA", "#EBEBEB", "#141414",
 ];
 
 #[derive(Debug, Default, serde::Deserialize)]
