@@ -475,13 +475,7 @@ impl Dispatch<WlPointer, (), State> for PointerState {
                 state.pointer.clear_focus();
             }
             state.refresh_cursor();
-            if left_pressed
-                || left_released
-                || right_pressed
-                || right_released
-                || middle_pressed
-                || middle_released
-            {
+            if (sequence.pressed | sequence.released) & (LEFT | RIGHT | MIDDLE) != 0 {
                 state.update_output_input();
             }
         }
@@ -573,11 +567,9 @@ impl EventSequence {
             } => {
                 self.enter_serial = Some(serial);
                 self.motion = Some((surface_x + origin.0, surface_y + origin.1));
-                None
             }
             Event::Leave { .. } => {
                 self.left_surface = true;
-                None
             }
             Event::Motion {
                 time: _,
@@ -585,7 +577,6 @@ impl EventSequence {
                 surface_y,
             } => {
                 self.motion = Some((surface_x + origin.0, surface_y + origin.1));
-                None
             }
             Event::Button {
                 serial: _,
@@ -617,7 +608,6 @@ impl EventSequence {
                 if mask == MIDDLE {
                     self.middle_button_time = Some(time);
                 }
-                None
             }
             Event::Axis {
                 axis: WEnum::Value(wayland_client::protocol::wl_pointer::Axis::VerticalScroll),
@@ -626,32 +616,29 @@ impl EventSequence {
             } => {
                 self.axis_vertical += value;
                 self.axis_time = Some(time);
-                None
             }
             Event::AxisDiscrete {
                 axis: WEnum::Value(wayland_client::protocol::wl_pointer::Axis::VerticalScroll),
                 discrete,
             } => {
                 self.axis_discrete += discrete;
-                None
             }
             Event::AxisValue120 {
                 axis: WEnum::Value(wayland_client::protocol::wl_pointer::Axis::VerticalScroll),
                 value120,
             } => {
                 self.axis_value120 += value120;
-                None
             }
             Event::AxisStop {
                 axis: WEnum::Value(wayland_client::protocol::wl_pointer::Axis::VerticalScroll),
                 ..
             } => {
                 self.vertical_axis_stopped = true;
-                None
             }
-            Event::Frame => Some(std::mem::take(self)),
-            _ => None,
+            Event::Frame => return Some(std::mem::take(self)),
+            _ => {}
         }
+        None
     }
 }
 

@@ -31,7 +31,7 @@ pub(super) struct WaylandState {
     pub(super) display: WlDisplay,
     pub(super) registry: WlRegistry,
     pub(super) compositor: WlCompositor,
-    pub(super) seat: WlSeat,
+    _seat: WlSeat,
     pub(super) layer_shell: ZwlrLayerShellV1,
     pub(super) outputs: BTreeMap<OutputId, Output>,
     pub(super) pointer: Option<WlPointer>,
@@ -39,7 +39,6 @@ pub(super) struct WaylandState {
     pub(super) text_input: Option<ZwpTextInputV3>,
 
     pub(super) cursor_shape_manager: Option<WpCursorShapeManagerV1>,
-    pub(super) tablet_manager: Option<ZwpTabletManagerV2>,
     pub(super) xdg_output_manager: Option<ZxdgOutputManagerV1>,
     pub(super) viewporter: Option<WpViewporter>,
     pub(super) fractional_scale_manager: Option<WpFractionalScaleManagerV1>,
@@ -67,9 +66,11 @@ impl State {
         let cursor_shape_manager = globals
             .bind::<WpCursorShapeManagerV1, _, _>(&qhandle, 1..=1, ())
             .ok();
-        let tablet_manager = globals
-            .bind::<ZwpTabletManagerV2, _, _>(&qhandle, 1..=1, ())
-            .ok();
+        let mut tablet = input::TabletState::default();
+        if let Ok(manager) = globals.bind::<ZwpTabletManagerV2, _, _>(&qhandle, 1..=1, ()) {
+            tablet.set_tablet_seat(manager.get_tablet_seat(&seat, &qhandle, ()));
+            manager.destroy();
+        }
         let xdg_output_manager = globals
             .bind::<ZxdgOutputManagerV1, _, _>(&qhandle, 1..=3, ())
             .ok();
@@ -105,14 +106,13 @@ impl State {
                 display,
                 registry: globals.registry().clone(),
                 compositor,
-                seat,
+                _seat: seat,
                 layer_shell,
                 outputs: BTreeMap::new(),
                 pointer: None,
                 keyboard: None,
                 text_input,
                 cursor_shape_manager,
-                tablet_manager,
                 xdg_output_manager,
                 viewporter,
                 fractional_scale_manager,
@@ -121,7 +121,7 @@ impl State {
             keyboard: input::KeyboardState::default(),
             text_input: input::TextInputState::default(),
             pointer: input::PointerState::default(),
-            tablet: input::TabletState::default(),
+            tablet,
             gpu: None,
             qhandle,
         };
@@ -130,14 +130,6 @@ impl State {
             if global.interface == WlOutput::interface().name {
                 state.add_output(global.name, global.version);
             }
-        }
-
-        if let Some(manager) = &state.wayland.tablet_manager {
-            state.tablet.set_tablet_seat(manager.get_tablet_seat(
-                &state.wayland.seat,
-                &state.qhandle,
-                (),
-            ));
         }
 
         Ok((state, event_queue))

@@ -433,12 +433,7 @@ impl Dispatch<ZwpTabletToolV2, (), State> for TabletState {
                 state.tablet.gesture_owner = None;
             }
             state.refresh_cursor();
-            if pen_pressed
-                || pen_released
-                || button_pressed
-                || button_released
-                || sequence.proximity_out
-            {
+            if (sequence.pressed | sequence.released) != 0 || sequence.proximity_out {
                 state.update_output_input();
             }
         }
@@ -479,23 +474,18 @@ impl EventSequence {
                 surface: _,
             } => {
                 self.enter_serial = Some(serial);
-                None
             }
             Event::ProximityOut => {
                 self.proximity_out = true;
-                None
             }
             Event::Down { serial: _ } => {
                 self.pressed |= PEN;
-                None
             }
             Event::Up => {
                 self.released |= PEN;
-                None
             }
             Event::Motion { x, y } => {
                 self.motion = Some((x + origin.0, y + origin.1));
-                None
             }
             Event::Button {
                 serial: _,
@@ -510,14 +500,14 @@ impl EventSequence {
                         _ => {}
                     }
                 }
-                None
             }
             Event::Frame { time } => {
                 self.time = time;
-                Some(std::mem::take(self))
+                return Some(std::mem::take(self));
             }
-            _ => None,
+            _ => {}
         }
+        None
     }
 }
 
