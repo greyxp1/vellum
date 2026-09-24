@@ -3,7 +3,6 @@
   installShellFiles,
   lib,
   libxkbcommon,
-  makeBinaryWrapper,
   pkg-config,
   rustPlatform,
   versionCheckHook,
@@ -37,7 +36,6 @@ rustPlatform.buildRustPackage {
 
   nativeBuildInputs = [
     installShellFiles
-    makeBinaryWrapper
     pkg-config
   ];
 
@@ -46,6 +44,13 @@ rustPlatform.buildRustPackage {
     libxkbcommon
     wayland
   ];
+
+  env.RUSTFLAGS = "-C link-arg=-Wl,-rpath,${
+    lib.makeLibraryPath [
+      vulkan-loader
+      wayland
+    ]
+  }";
 
   postInstall = ''
     mapfile -d "" outputDirs < <(find "$tmpDir/build" -type d -path '*/build/vellum-*/out' \
@@ -64,9 +69,6 @@ rustPlatform.buildRustPackage {
       $out/share/powershell/vellum.Completion.ps1
     install -Dm644 default-config.toml \
       $out/share/doc/vellum/default-config.toml
-
-    wrapProgram $out/bin/vellum \
-      --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath [vulkan-loader wayland]}
   '';
 
   doInstallCheck = true;
