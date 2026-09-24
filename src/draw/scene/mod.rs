@@ -227,10 +227,6 @@ impl Element {
         (kind, style)
     }
 
-    pub(super) fn hit_test(&self, point: Point) -> bool {
-        self.hit_test_with_slop(point, HIT_SLOP)
-    }
-
     pub(super) fn erase_hit_test(&self, start: Point, end: Point, radius: f32) -> bool {
         use kurbo::Shape;
         let swept_bounds = Bounds::from_points([start, end]).expanded(radius);
@@ -252,7 +248,8 @@ impl Element {
         self.geometry.swept_hit_test(line, f64::from(radius))
     }
 
-    fn hit_test_with_slop(&self, point: Point, slop: f32) -> bool {
+    pub(super) fn hit_test(&self, point: Point) -> bool {
+        let slop = HIT_SLOP;
         if !self.bounds.expanded(slop).contains(point) {
             return false;
         }

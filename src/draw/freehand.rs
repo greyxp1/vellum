@@ -100,11 +100,7 @@ impl LiveStroke {
     }
 
     pub fn tail_geometry(&self) -> Geometry {
-        if self.direction_locked {
-            self.render_tail(false)
-        } else {
-            render_geometry(&self.points, self.style, false)
-        }
+        self.render_tail(false)
     }
 
     pub fn update_style(&mut self, style: Style) {

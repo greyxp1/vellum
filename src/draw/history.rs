@@ -3,7 +3,7 @@ use super::scene::{Element, ElementId, ElementKind, Style};
 const LIMIT: usize = 256;
 
 pub(super) enum Entry {
-    Insert(Vec<(usize, ElementId)>),
+    Insert(Vec<usize>),
     Remove(Vec<(usize, Element)>),
     Update(Vec<(ElementId, ElementKind, Style)>),
     Clear(Vec<Element>),
@@ -45,11 +45,8 @@ fn apply(entry: Entry, elements: &mut Vec<Element>) -> Entry {
     match entry {
         Entry::Insert(inserted) => {
             let mut removed = Vec::with_capacity(inserted.len());
-            for (index, id) in inserted.into_iter().rev() {
-                let actual = elements
-                    .binary_search_by_key(&id, |element| element.id)
-                    .expect("history element exists");
-                removed.push((index, elements.remove(actual)));
+            for index in inserted.into_iter().rev() {
+                removed.push((index, elements.remove(index)));
             }
             removed.reverse();
             Entry::Remove(removed)
@@ -57,9 +54,8 @@ fn apply(entry: Entry, elements: &mut Vec<Element>) -> Entry {
         Entry::Remove(removed) => {
             let mut inserted = Vec::with_capacity(removed.len());
             for (index, element) in removed {
-                let id = element.id;
-                elements.insert(index.min(elements.len()), element);
-                inserted.push((index, id));
+                elements.insert(index, element);
+                inserted.push(index);
             }
             Entry::Insert(inserted)
         }

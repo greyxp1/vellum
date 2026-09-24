@@ -141,9 +141,8 @@ impl Editor {
     pub(super) fn insert_element(&mut self, element: Element) {
         self.next_id += 1;
         let index = self.elements.len();
-        let id = element.id;
         self.elements.push(element);
-        self.history.record(HistoryEntry::Insert(vec![(index, id)]));
+        self.history.record(HistoryEntry::Insert(vec![index]));
     }
 
     fn remove_id(&mut self, id: ElementId) -> bool {
