@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use wayland_client::globals::{GlobalListContents, registry_queue_init};
+use wayland_client::protocol::wl_buffer::WlBuffer;
 use wayland_client::protocol::wl_compositor::WlCompositor;
 use wayland_client::protocol::wl_display::WlDisplay;
 use wayland_client::protocol::wl_keyboard::WlKeyboard;
@@ -10,6 +11,8 @@ use wayland_client::protocol::wl_pointer::WlPointer;
 use wayland_client::protocol::wl_region::WlRegion;
 use wayland_client::protocol::wl_registry::WlRegistry;
 use wayland_client::protocol::wl_seat::WlSeat;
+use wayland_client::protocol::wl_shm::WlShm;
+use wayland_client::protocol::wl_shm_pool::WlShmPool;
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, delegate_noop};
 use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_manager_v1::WpCursorShapeManagerV1;
 use wayland_protocols::wp::fractional_scale::v1::client::wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1;
@@ -18,6 +21,9 @@ use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_manager_v3::Z
 use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_v3::ZwpTextInputV3;
 use wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
 use wayland_protocols::xdg::xdg_output::zv1::client::zxdg_output_manager_v1::ZxdgOutputManagerV1;
+use wayland_protocols::ext::image_capture_source::v1::client::ext_output_image_capture_source_manager_v1::ExtOutputImageCaptureSourceManagerV1;
+use wayland_protocols::ext::image_capture_source::v1::client::ext_image_capture_source_v1::ExtImageCaptureSourceV1;
+use wayland_protocols::ext::image_copy_capture::v1::client::ext_image_copy_capture_manager_v1::ExtImageCopyCaptureManagerV1;
 use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_shell_v1::ZwlrLayerShellV1;
 
 use super::input::PendingPenMotion;
@@ -42,6 +48,10 @@ pub(super) struct WaylandState {
     pub(super) xdg_output_manager: Option<ZxdgOutputManagerV1>,
     pub(super) viewporter: Option<WpViewporter>,
     pub(super) fractional_scale_manager: Option<WpFractionalScaleManagerV1>,
+
+    pub(super) shm: Option<WlShm>,
+    pub(super) image_copy_manager: Option<ExtImageCopyCaptureManagerV1>,
+    pub(super) image_capture_source_manager: Option<ExtOutputImageCaptureSourceManagerV1>,
 }
 
 impl State {
@@ -80,6 +90,13 @@ impl State {
                 .bind::<WpFractionalScaleManagerV1, _, _>(&qhandle, 1..=1, ())
                 .ok()
         });
+        let shm = globals.bind::<WlShm, _, _>(&qhandle, 1..=1, ()).ok();
+        let image_copy_manager = globals
+            .bind::<ExtImageCopyCaptureManagerV1, _, _>(&qhandle, 1..=1, ())
+            .ok();
+        let image_capture_source_manager = globals
+            .bind::<ExtOutputImageCaptureSourceManagerV1, _, _>(&qhandle, 1..=1, ())
+            .ok();
         let text_input = globals
             .bind::<ZwpTextInputManagerV3, _, _>(&qhandle, 1..=2, ())
             .ok()
@@ -123,6 +140,9 @@ impl State {
                 xdg_output_manager,
                 viewporter,
                 fractional_scale_manager,
+                shm,
+                image_copy_manager,
+                image_capture_source_manager,
             },
             draw: draw::DrawState::new(settings),
             keyboard: input::KeyboardState::default(),
@@ -173,3 +193,9 @@ delegate_noop!(State: ignore WpFractionalScaleManagerV1);
 delegate_noop!(State: ignore ZxdgOutputManagerV1);
 delegate_noop!(State: ignore ZwlrLayerShellV1);
 delegate_noop!(State: ignore WpCursorShapeManagerV1);
+delegate_noop!(State: ignore WlShm);
+delegate_noop!(State: ignore WlShmPool);
+delegate_noop!(State: ignore WlBuffer);
+delegate_noop!(State: ignore ExtImageCaptureSourceV1);
+delegate_noop!(State: ignore ExtImageCopyCaptureManagerV1);
+delegate_noop!(State: ignore ExtOutputImageCaptureSourceManagerV1);
