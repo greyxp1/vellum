@@ -117,7 +117,9 @@ impl WgpuState {
     pub(crate) fn set_frozen_background(
         &mut self,
         size: [u32; 2],
-        rgba: &[u8],
+        pixel_data: &[u8],
+        is_bgra: bool,
+        transform: wayland_client::protocol::wl_output::Transform,
     ) -> Result<(), String> {
         let checked = checked_target_size(&self.device, size, "screen capture")?;
         let [width, height] = self.size();
@@ -134,25 +136,61 @@ impl WgpuState {
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 // Vello samples external textures in the render target's color space.
-                format: if self.surface_config.format.is_srgb() {
-                    wgpu::TextureFormat::Rgba8UnormSrgb
-                } else {
-                    wgpu::TextureFormat::Rgba8Unorm
+                format: match (is_bgra, self.surface_config.format.is_srgb()) {
+                    (true, true) => wgpu::TextureFormat::Bgra8UnormSrgb,
+                    (true, false) => wgpu::TextureFormat::Bgra8Unorm,
+                    (false, true) => wgpu::TextureFormat::Rgba8UnormSrgb,
+                    (false, false) => wgpu::TextureFormat::Rgba8Unorm,
                 },
                 usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
                 view_formats: &[],
             },
             wgpu::util::TextureDataOrder::LayerMajor,
-            rgba,
+            pixel_data,
         );
         self.texture_bindings
             .insert(FROZEN_TEXTURE, texture.create_view(&Default::default()));
+
+        use wayland_client::protocol::wl_output::Transform;
+        let (w, h) = (f64::from(size[0]), f64::from(size[1]));
+        let orientation = match transform {
+            Transform::_90 => {
+                Affine::translate((h, 0.0)) * Affine::rotate(std::f64::consts::FRAC_PI_2)
+            }
+            Transform::_180 => Affine::translate((w, h)) * Affine::rotate(std::f64::consts::PI),
+            Transform::_270 => {
+                Affine::translate((0.0, w)) * Affine::rotate(3.0 * std::f64::consts::FRAC_PI_2)
+            }
+            Transform::Flipped => {
+                Affine::translate((w, 0.0)) * Affine::scale_non_uniform(-1.0, 1.0)
+            }
+            Transform::Flipped90 => {
+                Affine::scale_non_uniform(-1.0, 1.0) * Affine::rotate(std::f64::consts::FRAC_PI_2)
+            }
+            Transform::Flipped180 => {
+                Affine::translate((0.0, h)) * Affine::scale_non_uniform(1.0, -1.0)
+            }
+            Transform::Flipped270 => {
+                Affine::translate((h, w))
+                    * Affine::scale_non_uniform(-1.0, 1.0)
+                    * Affine::rotate(3.0 * std::f64::consts::FRAC_PI_2)
+            }
+            _ => Affine::IDENTITY,
+        };
+
+        let (logical_w, logical_h) = match transform {
+            Transform::_90 | Transform::_270 | Transform::Flipped90 | Transform::Flipped270 => {
+                (h, w)
+            }
+            _ => (w, h),
+        };
+
         self.frozen = Some(vello_hybrid::SampleRect {
             source_region: vello_common::geometry::RectU16::new(0, 0, checked[0], checked[1]),
             transform: Affine::scale_non_uniform(
-                f64::from(width) / f64::from(size[0]),
-                f64::from(height) / f64::from(size[1]),
-            ),
+                f64::from(width) / logical_w,
+                f64::from(height) / logical_h,
+            ) * orientation,
         });
         Ok(())
     }

@@ -43,7 +43,8 @@ wgpu = { version = "29.0.0", default-features = false, features = [
 pollster = "0.4.0"
 log = "0.4"
 env_logger = { version = "0.11", default-features = false }
-wlr-capture = { version = "1.10.0", default-features = false, features = ["gpu"] }
+gbm = { version = "0.18.0", default-features = false }
+memmap2 = "0.9.11"
 parley = { version = "0.11.1", features = ["complex-scripts"] }
 glifo = { version = "0.3.0", features = ["png"] }
 skrifa = "0.44.0"

@@ -11,7 +11,13 @@ use wayland_client::protocol::wl_region::WlRegion;
 use wayland_client::protocol::wl_registry::WlRegistry;
 use wayland_client::protocol::wl_seat::WlSeat;
 use wayland_client::protocol::wl_subcompositor::WlSubcompositor;
+use wayland_client::protocol::{wl_shm::WlShm, wl_shm_pool::WlShmPool};
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, delegate_noop};
+use wayland_protocols::ext::image_capture_source::v1::client::{
+    ext_image_capture_source_v1::ExtImageCaptureSourceV1,
+    ext_output_image_capture_source_manager_v1::ExtOutputImageCaptureSourceManagerV1,
+};
+use wayland_protocols::ext::image_copy_capture::v1::client::ext_image_copy_capture_manager_v1::ExtImageCopyCaptureManagerV1;
 use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_manager_v1::WpCursorShapeManagerV1;
 use wayland_protocols::wp::fractional_scale::v1::client::wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1;
 use wayland_protocols::wp::linux_dmabuf::zv1::client::zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1;
@@ -35,6 +41,9 @@ pub(super) struct WaylandState {
     pub(super) compositor: WlCompositor,
     pub(super) subcompositor: Option<WlSubcompositor>,
     pub(super) dmabuf: Option<ZwpLinuxDmabufV1>,
+    pub(super) shm: Option<WlShm>,
+    pub(super) image_copy_manager: Option<ExtImageCopyCaptureManagerV1>,
+    pub(super) image_capture_source_manager: Option<ExtOutputImageCaptureSourceManagerV1>,
     _seat: WlSeat,
     pub(super) layer_shell: ZwlrLayerShellV1,
     pub(super) outputs: BTreeMap<OutputId, Output>,
@@ -85,6 +94,13 @@ impl State {
         let dmabuf = globals
             .bind::<ZwpLinuxDmabufV1, _, _>(&qhandle, 3..=3, ())
             .ok();
+        let shm = globals.bind::<WlShm, _, _>(&qhandle, 1..=1, ()).ok();
+        let image_copy_manager = globals
+            .bind::<ExtImageCopyCaptureManagerV1, _, _>(&qhandle, 1..=1, ())
+            .ok();
+        let image_capture_source_manager = globals
+            .bind::<ExtOutputImageCaptureSourceManagerV1, _, _>(&qhandle, 1..=1, ())
+            .ok();
         let fractional_scale_manager = viewporter.as_ref().and_then(|_| {
             globals
                 .bind::<WpFractionalScaleManagerV1, _, _>(&qhandle, 1..=1, ())
@@ -127,6 +143,9 @@ impl State {
                 compositor,
                 subcompositor,
                 dmabuf,
+                shm,
+                image_copy_manager,
+                image_capture_source_manager,
                 _seat: seat,
                 layer_shell,
                 outputs: BTreeMap::new(),
@@ -190,3 +209,8 @@ delegate_noop!(State: ignore WpCursorShapeManagerV1);
 
 delegate_noop!(State: ignore WlSubcompositor);
 delegate_noop!(State: ignore ZwpLinuxDmabufV1);
+delegate_noop!(State: ignore WlShm);
+delegate_noop!(State: ignore WlShmPool);
+delegate_noop!(State: ignore ExtImageCaptureSourceV1);
+delegate_noop!(State: ignore ExtImageCopyCaptureManagerV1);
+delegate_noop!(State: ignore ExtOutputImageCaptureSourceManagerV1);
