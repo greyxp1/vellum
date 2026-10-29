@@ -3,22 +3,24 @@ mod client;
 pub(crate) use client::{query, send_command};
 
 use std::borrow::Cow;
+use std::fs::File;
 use std::io::IoSliceMut;
 use std::mem::MaybeUninit;
 use std::os::unix::net::UnixDatagram;
+use std::path::PathBuf;
 
-use color::DynamicColor;
-use rustix::net::{
-    RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, SocketAddrAny, SocketAddrUnix,
-};
+use rustix::net::{RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, SocketAddrAny};
 
 use crate::cli::{Command, VisibilityCommand, WhiteboardCommand};
 
-pub(crate) fn control_socket_name() -> Vec<u8> {
+fn control_socket_path() -> Result<PathBuf, String> {
     use std::os::unix::ffi::OsStrExt;
+    let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR")
+        .filter(|dir| !dir.is_empty())
+        .map(PathBuf::from)
+        .ok_or("XDG_RUNTIME_DIR is not set")?;
     let display = std::env::var_os("WAYLAND_DISPLAY").unwrap_or_else(|| "wayland-0".into());
-    let socket = std::path::PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR").unwrap_or_default())
-        .join(display);
+    let socket = runtime_dir.join(display);
     let socket = socket.canonicalize().unwrap_or(socket);
     // FNV-1a keeps the name short and stable across installed and development builds.
     let hash = socket
@@ -28,26 +30,38 @@ pub(crate) fn control_socket_name() -> Vec<u8> {
         .fold(0xcbf29ce484222325_u64, |hash, byte| {
             (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
         });
-    format!("vellum-{}-{hash:016x}", rustix::process::geteuid().as_raw()).into_bytes()
+    Ok(runtime_dir.join(format!("vellum-{hash:016x}.sock")))
 }
 
 pub(crate) struct ControlSocket {
     pub socket: UnixDatagram,
+    path: PathBuf,
+    _lock: File,
 }
 
 impl ControlSocket {
     pub(crate) fn bind() -> Result<Self, String> {
-        let socket = UnixDatagram::unbound().map_err(|error| error.to_string())?;
-        rustix::net::sockopt::set_socket_passcred(&socket, true)
-            .map_err(|error| format!("could not enable control socket credentials: {error}"))?;
-        let address = SocketAddrUnix::new_abstract_name(&control_socket_name())
-            .map_err(|error| format!("invalid control socket name: {error}"))?;
-        rustix::net::bind(&socket, &address)
+        let path = control_socket_path()?;
+        // Holding the lock makes any existing socket a leftover from an unclean exit.
+        let lock = File::create(path.with_extension("lock"))
+            .map_err(|error| format!("could not create control socket lock: {error}"))?;
+        rustix::fs::flock(&lock, rustix::fs::FlockOperation::NonBlockingLockExclusive)
+            .map_err(|_| "another instance is already running")?;
+        let _ = std::fs::remove_file(&path);
+        let socket = UnixDatagram::bind(&path)
             .map_err(|error| format!("could not bind control socket: {error}"))?;
-        socket
+        let control = Self {
+            socket,
+            path,
+            _lock: lock,
+        };
+        rustix::net::sockopt::set_socket_passcred(&control.socket, true)
+            .map_err(|error| format!("could not enable control socket credentials: {error}"))?;
+        control
+            .socket
             .set_nonblocking(true)
             .map_err(|error| format!("could not configure control socket: {error}"))?;
-        Ok(Self { socket })
+        Ok(control)
     }
 
     pub(crate) fn recv(
@@ -73,8 +87,14 @@ impl ControlSocket {
     }
 }
 
+impl Drop for ControlSocket {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
 impl Command {
-    pub(crate) fn serialize(&self) -> Cow<'static, str> {
+    fn serialize(&self) -> Cow<'static, str> {
         match self {
             Self::Toggle => "toggle".into(),
             Self::Activate => "activate".into(),
@@ -132,25 +152,21 @@ impl Command {
                 command: WhiteboardCommand::Clear,
             }),
             _ if let Some(color) = message.strip_prefix(b"whiteboard_color=") => {
-                let value =
-                    std::str::from_utf8(color).map_err(|_| "expected color to be valid utf8")?;
-                let color = crate::cli::opaque_color(value)
+                let color = crate::cli::opaque_color(color_str(color)?)
                     .map_err(|_| "invalid or transparent whiteboard color")?;
                 Ok(Self::Whiteboard {
                     command: WhiteboardCommand::SetColor { color },
                 })
             }
             _ if let Some(color) = message.strip_prefix(b"set_color=") => Ok(Self::SetColor {
-                color: color_from_utf8(color)?,
+                color: crate::cli::visible_color(color_str(color)?)
+                    .map_err(|_| "invalid or transparent color")?,
             }),
             _ => Err("invalid command"),
         }
     }
 }
 
-fn color_from_utf8(msg: &[u8]) -> Result<DynamicColor, &'static str> {
-    std::str::from_utf8(msg)
-        .map_err(|_| "expected color to be valid utf8")?
-        .parse()
-        .map_err(|_| "invalid color")
+fn color_str(color: &[u8]) -> Result<&str, &'static str> {
+    std::str::from_utf8(color).map_err(|_| "expected color to be valid utf8")
 }

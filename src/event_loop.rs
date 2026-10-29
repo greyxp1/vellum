@@ -115,14 +115,27 @@ pub(crate) fn run(mut settings: Settings, mut config: Config) -> Result<(), Stri
                     Err(error) => return Err(format!("socket read failed: {error}")),
                 };
                 if size > MAX_SOCKET_MESSAGE {
-                    eprintln!("vellum: socket message exceeded {MAX_SOCKET_MESSAGE} bytes");
+                    log::warn!("socket message exceeded {MAX_SOCKET_MESSAGE} bytes");
                     continue;
                 }
                 let command = match Command::deserialize(&message[..size]) {
                     Ok(command) => command,
                     Err(error) => {
-                        eprintln!("{error}");
+                        log::warn!("ignored socket message: {error}");
                         continue;
+                    }
+                };
+                let reply = |active: bool| {
+                    let response: &[u8] = if active { b"true" } else { b"false" };
+                    if let Some(sender) = &sender
+                        && let Err(error) = rustix::net::sendto(
+                            socket,
+                            response,
+                            rustix::net::SendFlags::empty(),
+                            sender,
+                        )
+                    {
+                        log::warn!("could not send status: {error}");
                     }
                 };
                 match command {
@@ -137,23 +150,8 @@ pub(crate) fn run(mut settings: Settings, mut config: Config) -> Result<(), Stri
                     Command::SetColor { color } => state.set_current_color(color),
                     Command::Whiteboard { command } => state.whiteboard(command),
                     Command::Annotations { command } => state.annotations(command),
-                    Command::IsActive | Command::IsTextEditing => {
-                        let active = match command {
-                            Command::IsActive => state.is_active(),
-                            _ => state.is_text_editing(),
-                        };
-                        let response: &[u8] = if active { b"true" } else { b"false" };
-                        if let Some(sender) = &sender
-                            && let Err(error) = rustix::net::sendto(
-                                socket,
-                                response,
-                                rustix::net::SendFlags::empty(),
-                                sender,
-                            )
-                        {
-                            eprintln!("vellum: could not send status: {error}");
-                        }
-                    }
+                    Command::IsActive => reply(state.is_active()),
+                    Command::IsTextEditing => reply(state.is_text_editing()),
                     Command::Exit => return Ok(()),
                 }
             }
