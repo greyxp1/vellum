@@ -206,7 +206,7 @@ impl State {
         }
     }
 
-    pub(super) fn toggle_whiteboard(&mut self) {
+    fn toggle_whiteboard(&mut self) {
         self.set_mode(if self.mode == Mode::Whiteboard {
             Mode::Desktop
         } else {

@@ -1,5 +1,7 @@
 //! Shared GPU device and the Wayland raw-handle boundary.
 
+use std::sync::{Arc, OnceLock};
+
 use wayland_client::Proxy;
 use wayland_client::protocol::wl_display::WlDisplay;
 use wayland_client::protocol::wl_surface::WlSurface;
@@ -11,9 +13,14 @@ pub(crate) struct GpuContext {
     pub(super) adapter: wgpu::Adapter,
     pub(super) device: wgpu::Device,
     pub(super) queue: wgpu::Queue,
+    lost: Arc<OnceLock<String>>,
 }
 
 impl GpuContext {
+    pub(crate) fn lost(&self) -> Option<&String> {
+        self.lost.get()
+    }
+
     pub(crate) fn new(
         display: &WlDisplay,
         surface: &WlSurface,
@@ -59,9 +66,13 @@ impl GpuContext {
             trace: wgpu::Trace::Off,
         }))
         .map_err(|error| format!("could not create the GPU device: {error}"))?;
-        device.set_device_lost_callback(|reason, message| {
-            if reason != wgpu::DeviceLostReason::Destroyed {
-                log::error!("GPU device lost ({reason:?}): {message}");
+        let lost = Arc::new(OnceLock::new());
+        device.set_device_lost_callback({
+            let lost = lost.clone();
+            move |reason, message| {
+                if reason != wgpu::DeviceLostReason::Destroyed {
+                    let _ = lost.set(format!("GPU device lost ({reason:?}): {message}"));
+                }
             }
         });
         let gpu = Self {
@@ -69,6 +80,7 @@ impl GpuContext {
             adapter,
             device,
             queue,
+            lost,
         };
         let wgpu = WgpuState::new(&gpu, surface, width, height)?;
         Ok((gpu, wgpu))

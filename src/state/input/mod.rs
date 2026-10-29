@@ -7,6 +7,7 @@ mod tablet;
 mod text;
 
 const CLICK_DURATION_MS: u32 = 300;
+const MULTI_CLICK_INTERVAL_MS: u32 = 400;
 
 fn short_click(pressed: Option<u32>, released: Option<u32>) -> bool {
     pressed
@@ -78,7 +79,7 @@ impl PendingPenMotion {
 }
 
 impl State {
-    pub(super) fn focus_output(&mut self, output: OutputId) {
+    fn focus_output(&mut self, output: OutputId) {
         if !self.is_active() || !self.wayland.outputs.contains_key(&output) {
             return;
         }
@@ -108,14 +109,14 @@ impl State {
         }
     }
 
-    pub(super) fn restore_keyboard_focus(&mut self) {
+    fn restore_keyboard_focus(&mut self) {
         if self.draw.is_editing_text() {
             return;
         }
         self.focus_keyboard_on_input();
     }
 
-    pub(super) fn focus_keyboard_on_input(&mut self) {
+    fn focus_keyboard_on_input(&mut self) {
         if self.pointer.keyboard_grab_active() {
             return;
         }
@@ -176,26 +177,25 @@ impl State {
         self.request_render();
     }
 
-    pub(super) fn interrupt_pointer_gesture(&mut self) {
+    fn interrupt_pointer_gesture(&mut self) {
         let was_grabbed = self.pointer.input_grab_active();
-        if was_grabbed {
-            self.flush_pen_motion();
-            let point = self
-                .pointer
-                .position()
-                .map(|(x, y)| Point::new(x as f32, y as f32));
-            if self
-                .draw
-                .finish_pointer_interaction(point, self.modifiers())
-            {
-                self.request_render();
-            }
-        }
+        let position = self.pointer.position();
         self.pointer.cancel_gesture();
         if was_grabbed {
-            self.pending_pen_motion.reset(None);
+            self.finish_interrupted_gesture(position);
             self.update_output_input();
         }
+    }
+
+    pub(super) fn finish_interrupted_gesture(&mut self, position: Option<Point>) {
+        self.flush_pen_motion();
+        if self
+            .draw
+            .finish_pointer_interaction(position, self.modifiers())
+        {
+            self.request_render();
+        }
+        self.pending_pen_motion.reset(None);
     }
 
     pub(super) fn apply_action(&mut self, action: Action) {
@@ -205,10 +205,7 @@ impl State {
         self.flush_pen_motion();
         self.pointer.clear_released_pen_tip();
         let clear_on_cancel = self.clear_on_cancel && matches!(action, Action::Cancel);
-        let anchor = self
-            .pointer
-            .position()
-            .map(|(x, y)| Point::new(x as f32, y as f32));
+        let anchor = self.pointer.position();
         let effect = self.draw.handle_action(action, anchor);
         if self.freeze.capturing() {
             self.stop_freeze(false);
@@ -241,11 +238,10 @@ impl State {
 
     pub(super) fn pointer_down(
         &mut self,
-        (x, y): (f64, f64),
+        point: Point,
         modifiers: Modifiers,
         tool_override: draw::ToolOverride,
     ) {
-        let point = Point::new(x as f32, y as f32);
         self.pending_pen_motion.reset(None);
         if self.draw.picker_active() {
             if tool_override == draw::ToolOverride::Eraser {
@@ -265,11 +261,9 @@ impl State {
         if changed {
             self.request_render();
         }
-        self.restore_keyboard_focus();
     }
 
-    pub(super) fn pointer_motion(&mut self, (x, y): (f64, f64), modifiers: Modifiers) {
-        let point = Point::new(x as f32, y as f32);
+    pub(super) fn pointer_motion(&mut self, point: Point, modifiers: Modifiers) {
         if self.draw.picker_active() {
             if self.draw.picker_motion(point) {
                 self.request_render();
@@ -294,7 +288,7 @@ impl State {
 
     pub(super) fn pointer_up(
         &mut self,
-        (x, y): (f64, f64),
+        point: Point,
         modifiers: Modifiers,
         latch_picker: bool,
     ) -> Option<Point> {
@@ -302,7 +296,6 @@ impl State {
             return None;
         }
         self.flush_pen_motion();
-        let point = Point::new(x as f32, y as f32);
         if self.draw.picker_active() {
             if self.draw.picker_release(point, latch_picker) {
                 self.request_render();
@@ -318,9 +311,8 @@ impl State {
         pen_tip
     }
 
-    pub(super) fn open_picker(&mut self, (x, y): (f64, f64)) {
+    pub(super) fn open_picker(&mut self, point: Point) {
         self.flush_pen_motion();
-        let point = Point::new(x as f32, y as f32);
         self.draw
             .finish_pointer_interaction(Some(point), self.modifiers());
         self.pending_pen_motion.reset(None);
@@ -328,11 +320,11 @@ impl State {
         self.request_render();
     }
 
-    pub(super) fn toggle_picker(&mut self, pos: (f64, f64)) {
+    fn toggle_picker(&mut self, point: Point) {
         if self.draw.picker_active() {
             self.dismiss_picker();
         } else {
-            self.open_picker(pos);
+            self.open_picker(point);
         }
     }
 
@@ -342,11 +334,8 @@ impl State {
         }
     }
 
-    pub(super) fn text_click_at(&mut self, (x, y): (f64, f64), clicks: u8) -> bool {
-        let Some(changed) = self
-            .draw
-            .text_click_at(Point::new(x as f32, y as f32), clicks)
-        else {
+    pub(super) fn text_click_at(&mut self, point: Point, clicks: u8) -> bool {
+        let Some(changed) = self.draw.text_click_at(point, clicks) else {
             return false;
         };
         self.focus_keyboard_on_input();
@@ -356,10 +345,8 @@ impl State {
         true
     }
 
-    pub(super) fn adjust(&mut self, steps: f32, (x, y): (f64, f64), modifiers: Modifiers) -> bool {
-        let hit_stop = self
-            .draw
-            .adjust(steps, Point::new(x as f32, y as f32), modifiers);
+    pub(super) fn adjust(&mut self, steps: f32, point: Point, modifiers: Modifiers) -> bool {
+        let hit_stop = self.draw.adjust(steps, point, modifiers);
         self.request_render();
         hit_stop
     }
@@ -377,11 +364,10 @@ impl State {
             }
             return;
         }
-        let (Some((x, y)), Some(pointer)) = (self.pointer.position(), &self.wayland.pointer) else {
+        let (Some(point), Some(pointer)) = (self.pointer.position(), &self.wayland.pointer) else {
             self.clear_tool_cursor();
             return;
         };
-        let point = Point::new(x as f32, y as f32);
         let cursor = self.draw.cursor(point, self.pointer.tool_override());
         let preview_changed = self.draw.set_tool_cursor(match cursor.tool() {
             Some(preview) if self.pointer.tool_cursor_supported() => {
@@ -400,7 +386,7 @@ impl State {
         }
     }
 
-    pub(super) fn clear_tool_cursor(&mut self) {
+    fn clear_tool_cursor(&mut self) {
         if self.draw.set_tool_cursor(None) {
             self.request_render();
         }

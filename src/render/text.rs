@@ -5,7 +5,8 @@ use parley::{Layout, PositionedLayoutItem};
 use skrifa::MetadataProvider;
 use skrifa::bitmap::{BitmapData, BitmapFormat, BitmapGlyph, Origin};
 use skrifa::raw::TableProvider;
-use vello_common::paint::{Image, ImageId, ImageSource};
+use vello_common::{TextureId, geometry::RectU16};
+use wgpu::util::DeviceExt;
 
 use super::{srgb_to_linear, vello_color};
 
@@ -43,19 +44,26 @@ pub struct TextSpec<'a> {
 pub(super) struct TextTarget<'a> {
     pub scene: &'a mut vello_hybrid::Scene,
     pub resources: &'a mut vello_hybrid::Resources,
-    pub renderer: &'a mut vello_hybrid::Renderer,
+    pub texture_bindings: &'a mut vello_hybrid::TextureBindings,
     pub device: &'a wgpu::Device,
     pub queue: &'a wgpu::Queue,
-    pub encoder: &'a mut wgpu::CommandEncoder,
     pub is_srgb: bool,
 }
 
 type BitmapKey = (u64, u32, u32, u32, u32);
 
 struct BitmapImage {
-    id: ImageId,
+    texture: TextureId,
     size: [u16; 2],
     used: bool,
+}
+
+// Bitmaps use their own textures because Hybrid's upload_image panics once the atlases it
+// shares with the glyph cache are full.
+#[derive(Default)]
+struct Bitmaps {
+    images: HashMap<BitmapKey, BitmapImage>,
+    next_texture: u64,
 }
 
 impl TextSpec<'_> {
@@ -63,7 +71,7 @@ impl TextSpec<'_> {
         &self,
         layout: &Layout<()>,
         target: &mut TextTarget<'_>,
-        bitmaps: &mut HashMap<BitmapKey, BitmapImage>,
+        bitmaps: &mut Bitmaps,
         outline_glyphs: &mut Vec<glifo::Glyph>,
     ) {
         let scene = &mut *target.scene;
@@ -180,7 +188,7 @@ impl TextSpec<'_> {
     fn draw_bitmap(
         &self,
         target: &mut TextTarget<'_>,
-        cache: &mut HashMap<BitmapKey, BitmapImage>,
+        bitmaps: &mut Bitmaps,
         run: &parley::Run<'_, ()>,
         glyph: parley::Glyph,
         bitmap: &BitmapGlyph<'_>,
@@ -196,7 +204,7 @@ impl TextSpec<'_> {
             bitmap.ppem_x.to_bits(),
             bitmap.ppem_y.to_bits(),
         );
-        let image = match cache.entry(key) {
+        let image = match bitmaps.images.entry(key) {
             std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
             std::collections::hash_map::Entry::Vacant(entry) => {
                 let Ok(mut pixmap) = vello_hybrid::Pixmap::from_png(std::io::Cursor::new(data))
@@ -217,15 +225,40 @@ impl TextSpec<'_> {
                     }
                 }
                 let size = [pixmap.width(), pixmap.height()];
-                let id = target.renderer.upload_image(
-                    target.resources,
-                    target.device,
+                let limit = target.device.limits().max_texture_dimension_2d;
+                if size
+                    .iter()
+                    .any(|&side| side == 0 || u32::from(side) > limit)
+                {
+                    return;
+                }
+                let texture = target.device.create_texture_with_data(
                     target.queue,
-                    target.encoder,
-                    &pixmap,
+                    &wgpu::TextureDescriptor {
+                        label: Some("bitmap glyph"),
+                        size: wgpu::Extent3d {
+                            width: u32::from(size[0]),
+                            height: u32::from(size[1]),
+                            depth_or_array_layers: 1,
+                        },
+                        mip_level_count: 1,
+                        sample_count: 1,
+                        dimension: wgpu::TextureDimension::D2,
+                        format: wgpu::TextureFormat::Rgba8Unorm,
+                        usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                        view_formats: &[],
+                    },
+                    wgpu::util::TextureDataOrder::LayerMajor,
+                    pixmap.data_as_u8_slice(),
                 );
+                // The picker owns texture 0.
+                bitmaps.next_texture += 1;
+                let id = TextureId(bitmaps.next_texture);
+                target
+                    .texture_bindings
+                    .insert(id, texture.create_view(&Default::default()));
                 entry.insert(BitmapImage {
-                    id,
+                    texture: id,
                     size,
                     used: false,
                 })
@@ -258,18 +291,15 @@ impl TextSpec<'_> {
                 f64::from(-bitmap.inner_bearing_y) + origin_y,
             ));
         target.scene.set_transform(transform);
-        target.scene.reset_paint_transform();
-        target.scene.set_paint(Image {
-            image: ImageSource::opaque_id(image.id),
-            sampler: Default::default(),
-        });
         target.scene.push_opacity_layer(self.color[3]);
-        target.scene.fill_rect(&kurbo::Rect::new(
-            0.0,
-            0.0,
-            f64::from(image.size[0]),
-            f64::from(image.size[1]),
-        ));
+        target.scene.draw_texture_rects(
+            image.texture,
+            peniko::ImageQuality::Medium,
+            [vello_hybrid::SampleRect {
+                source_region: RectU16::new(0, 0, image.size[0], image.size[1]),
+                transform: kurbo::Affine::IDENTITY,
+            }],
+        );
         target.scene.pop_layer();
         target.scene.restore_state(saved);
     }
@@ -302,7 +332,7 @@ fn cached_layout<'a>(
 #[derive(Default)]
 pub(super) struct TextState {
     buffers: HashMap<u64, CachedText>,
-    bitmaps: HashMap<BitmapKey, BitmapImage>,
+    bitmaps: Bitmaps,
     outline_glyphs: Vec<glifo::Glyph>,
 }
 
@@ -327,15 +357,12 @@ impl TextState {
     pub(super) fn finish_frame(&mut self, target: &mut TextTarget<'_>) {
         self.buffers
             .retain(|_, cached| std::mem::take(&mut cached.used));
-        self.bitmaps.retain(|_, image| {
-            if std::mem::take(&mut image.used) {
-                true
-            } else {
-                target
-                    .renderer
-                    .destroy_image(target.resources, target.encoder, image.id);
-                false
+        self.bitmaps.images.retain(|_, image| {
+            let used = std::mem::take(&mut image.used);
+            if !used {
+                target.texture_bindings.remove(image.texture);
             }
+            used
         });
     }
 }

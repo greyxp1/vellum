@@ -17,7 +17,7 @@ struct TextInputSession {
     id: u64,
     enable_serial: u32,
     waiting_for_matching_done: bool,
-    surrounding: Option<(String, [i32; 2])>,
+    surrounding: (String, [i32; 2]),
     external_revision: u64,
     rectangle: [i32; 4],
 }
@@ -49,14 +49,8 @@ impl TextInputState {
         snapshot: Option<TextInputSnapshot<'_>>,
     ) {
         let snapshot = snapshot.filter(|_| self.focused_output.is_some());
-        let supports_surrounding =
-            snapshot.is_some_and(|s| s.cursor.abs_diff(s.anchor) <= MAX_SURROUNDING_BYTES);
         if self.session.as_ref().map(|session| session.id)
             != snapshot.map(|snapshot| snapshot.session)
-            || self
-                .session
-                .as_ref()
-                .is_some_and(|session| session.surrounding.is_some() != supports_surrounding)
         {
             if self.session.is_some() {
                 if text_input.version() >= 2 {
@@ -76,14 +70,12 @@ impl TextInputState {
             return;
         }
 
-        let surrounding = surrounding_text(snapshot.content, snapshot.cursor, snapshot.anchor);
+        let (text, positions) =
+            surrounding_text(snapshot.content, snapshot.cursor, snapshot.anchor);
         let external =
             previous.is_none_or(|sent| sent.external_revision != snapshot.external_revision);
-        let surrounding_changed = surrounding.as_ref().is_some_and(|(text, positions)| {
-            previous
-                .and_then(|sent| sent.surrounding.as_ref())
-                .is_none_or(|(sent, sent_positions)| sent != text || sent_positions != positions)
-        });
+        let surrounding_changed = previous
+            .is_none_or(|sent| sent.surrounding.0 != text || sent.surrounding.1 != positions);
         let rectangle_changed = previous.is_none_or(|sent| sent.rectangle != rectangle);
         if !external && !surrounding_changed && !rectangle_changed {
             return;
@@ -101,8 +93,8 @@ impl TextInputState {
             };
             text_input.set_content_type(hint, ContentPurpose::Normal);
         }
-        if surrounding_changed && let Some((text, [cursor, anchor])) = &surrounding {
-            text_input.set_surrounding_text(text.to_string(), *cursor, *anchor);
+        if surrounding_changed {
+            text_input.set_surrounding_text(text.to_string(), positions[0], positions[1]);
         }
         if external {
             text_input.set_text_change_cause(ChangeCause::Other);
@@ -116,8 +108,8 @@ impl TextInputState {
             enable_serial: self.serial,
             ..Default::default()
         });
-        if surrounding_changed && let Some((text, positions)) = surrounding {
-            let (sent_text, sent_positions) = sent.surrounding.get_or_insert_default();
+        if surrounding_changed {
+            let (sent_text, sent_positions) = &mut sent.surrounding;
             match text {
                 Cow::Borrowed(text) => text.clone_into(sent_text),
                 Cow::Owned(text) => *sent_text = text,
@@ -269,28 +261,33 @@ fn surrounding_text(
     text: parley::SplitString<'_>,
     cursor: usize,
     anchor: usize,
-) -> Option<(Cow<'_, str>, [i32; 2])> {
-    // Re-enable without surrounding text when the full selection cannot fit.
-    let room = MAX_SURROUNDING_BYTES.checked_sub(cursor.abs_diff(anchor))?;
+) -> (Cow<'_, str>, [i32; 2]) {
     let mut parts = text.into_iter();
     let (before, after) = (parts.next().unwrap(), parts.next().unwrap());
+    // Move the anchor of a selection that cannot fit toward the cursor.
+    let anchor = if anchor > cursor {
+        before.floor_char_boundary(anchor.min(cursor + MAX_SURROUNDING_BYTES))
+    } else {
+        before.ceil_char_boundary(anchor.max(cursor.saturating_sub(MAX_SURROUNDING_BYTES)))
+    };
+    let room = MAX_SURROUNDING_BYTES - cursor.abs_diff(anchor);
     let start = before.ceil_char_boundary(cursor.min(anchor).saturating_sub(room / 2));
     if after.is_empty() {
         let end = before.floor_char_boundary((start + MAX_SURROUNDING_BYTES).min(before.len()));
         let start = before.ceil_char_boundary(end.saturating_sub(MAX_SURROUNDING_BYTES));
-        return Some((
+        return (
             Cow::Borrowed(&before[start..end]),
             [(cursor - start) as i32, (anchor - start) as i32],
-        ));
+        );
     }
     // While composing, Parley splits committed text at the preedit's insertion point.
     let end =
         after.floor_char_boundary((MAX_SURROUNDING_BYTES - (cursor - start)).min(after.len()));
     let start = before.ceil_char_boundary(cursor.saturating_sub(MAX_SURROUNDING_BYTES - end));
-    Some((
+    (
         Cow::Owned([&before[start..], &after[..end]].concat()),
         [(cursor - start) as i32, (anchor - start) as i32],
-    ))
+    )
 }
 
 fn preedit_cursor(text: &str, begin: i32, end: i32) -> Option<(usize, usize)> {

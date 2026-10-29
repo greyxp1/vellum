@@ -32,12 +32,7 @@ impl Dispatch<WlSeat, ()> for State {
         } else if !capabilities.contains(Capability::Pointer)
             && let Some(pointer) = state.wayland.pointer.take()
         {
-            if state.pointer.input_grab_active()
-                && !state.tablet.input_grab_active()
-                && let Some(pos) = state.pointer.position()
-            {
-                state.pointer_up(pos, state.modifiers(), false);
-            }
+            state.interrupt_pointer_gesture();
             pointer.release();
             state.pointer.clear_pointer();
             state.refresh_cursor();

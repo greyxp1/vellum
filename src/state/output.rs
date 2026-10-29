@@ -43,19 +43,15 @@ impl Output {
         self.frozen_surface
             .as_ref()
             .is_some_and(super::freeze::FrozenSurface::is_frozen)
-            || self.wgpu.as_ref().is_some_and(WgpuState::is_frozen)
     }
 
     pub(super) fn clear_frozen_background(&mut self) {
         if let Some(surface) = &mut self.frozen_surface {
             surface.clear();
         }
-        if let Some(wgpu) = &mut self.wgpu {
-            wgpu.clear_frozen_background();
-        }
     }
 
-    pub(super) fn buffer_size(&self) -> [u32; 2] {
+    fn buffer_size(&self) -> [u32; 2] {
         let scale = self
             .preferred_scale
             .map_or(f64::from(self.integer_scale), |scale| {
@@ -73,7 +69,7 @@ impl Output {
         ]
     }
 
-    pub(super) fn configure_scale(&self) {
+    fn configure_scale(&self) {
         if let Some(viewport) = &self.viewport {
             self.surface.set_buffer_scale(1);
             viewport.set_destination(self.logical_size[0] as i32, self.logical_size[1] as i32);
@@ -84,6 +80,20 @@ impl Output {
 }
 
 impl State {
+    pub(super) fn add_outputs(&mut self) {
+        let globals = self
+            .wayland
+            .registry
+            .data::<GlobalListContents>()
+            .unwrap()
+            .clone_list();
+        for global in globals {
+            if global.interface == WlOutput::interface().name {
+                self.add_output(global.name, global.version);
+            }
+        }
+    }
+
     pub(super) fn add_output(&mut self, id: OutputId, version: u32) {
         use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_shell_v1::Layer;
         use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::Anchor;
@@ -163,6 +173,9 @@ impl State {
     }
 
     pub(super) fn remove_output(&mut self, id: OutputId) {
+        let Some(mut output) = self.wayland.outputs.remove(&id) else {
+            return;
+        };
         if self.selected_output == Some(id) {
             self.pending_pen_motion.reset(None);
             self.keyboard.cancel_repeat();
@@ -172,14 +185,10 @@ impl State {
             self.sync_text_input();
         }
         let pointer_position = self.pointer.remove_output(id);
-        let pointer_owned_gesture = !self.tablet.input_grab_active();
         let tablet_position = self.tablet.remove_output(id);
-        if let Some(pos) = tablet_position.or(pointer_position.filter(|_| pointer_owned_gesture)) {
-            self.pointer_up(pos, self.modifiers(), false);
+        if let Some(pos) = tablet_position.or(pointer_position) {
+            self.finish_interrupted_gesture(Some(pos));
         }
-        let Some(mut output) = self.wayland.outputs.remove(&id) else {
-            return;
-        };
         self.invalidate_freeze();
         output.frozen_surface.take();
         output.wgpu.take();
@@ -205,7 +214,7 @@ impl State {
             self.damage_presentation();
         }
         if self.input_output == Some(id) {
-            self.input_output = self.wayland.outputs.keys().next().copied();
+            self.input_output = None;
         }
         if self.keyboard_output == Some(id) {
             self.keyboard_output = self.wayland.outputs.keys().next().copied();
@@ -285,16 +294,18 @@ impl Dispatch<WlOutput, OutputId> for State {
                 let transform = u32::from(transform);
                 std::mem::replace(&mut output_state.transform, transform) != transform
             }
+            // A preferred fractional scale overrides the integer scale.
             Event::Scale { factor } => {
                 std::mem::replace(&mut output_state.integer_scale, factor.max(1)) != factor.max(1)
+                    && output_state.preferred_scale.is_none()
             }
             _ => false,
         };
+        if changed && matches!(event, Event::Scale { .. }) {
+            state.resize_output(*output);
+        }
         if changed {
             state.invalidate_freeze();
-        }
-        if let Event::Scale { .. } = event {
-            state.resize_output(*output);
         }
         if let Event::Geometry { x, y, .. } = event
             && state
@@ -320,9 +331,9 @@ impl Dispatch<WpFractionalScaleV1, OutputId> for State {
         if let wayland_protocols::wp::fractional_scale::v1::client::wp_fractional_scale_v1::Event::PreferredScale { scale } = event {
             let Some(output_state) = state.wayland.outputs.get_mut(output) else { return; };
             if output_state.preferred_scale.replace(scale.max(1)) != Some(scale.max(1)) {
+                state.resize_output(*output);
                 state.invalidate_freeze();
             }
-            state.resize_output(*output);
         }
     }
 }
@@ -369,17 +380,7 @@ impl Dispatch<WlCallback, ()> for State {
         _conn: &Connection,
         _qhandle: &QueueHandle<Self>,
     ) {
-        let globals = state
-            .wayland
-            .registry
-            .data::<GlobalListContents>()
-            .unwrap()
-            .clone_list();
-        for global in globals {
-            if global.interface == WlOutput::interface().name {
-                state.add_output(global.name, global.version);
-            }
-        }
+        state.add_outputs();
     }
 }
 
@@ -403,14 +404,6 @@ impl Dispatch<ZwlrLayerSurfaceV1, OutputId> for State {
                 if width == 0 || height == 0 {
                     return;
                 }
-                if state
-                    .wayland
-                    .outputs
-                    .get(output)
-                    .is_some_and(|output| output.logical_size != [width, height])
-                {
-                    state.invalidate_freeze();
-                }
                 let Some(output_state) = state.wayland.outputs.get_mut(output) else {
                     return;
                 };
@@ -420,7 +413,9 @@ impl Dispatch<ZwlrLayerSurfaceV1, OutputId> for State {
                     // Input/focus changes can produce another configure with
                     // unchanged dimensions. Its acknowledgement needs no redraw.
                     if resized {
+                        // Resize first so stopping a freeze renders at the new size.
                         state.resize_output(*output);
+                        state.invalidate_freeze();
                     }
                 } else {
                     output_state.configure_scale();

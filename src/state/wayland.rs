@@ -44,7 +44,6 @@ pub(super) struct WaylandState {
     pub(super) shm: Option<WlShm>,
     pub(super) image_copy_manager: Option<ExtImageCopyCaptureManagerV1>,
     pub(super) image_capture_source_manager: Option<ExtOutputImageCaptureSourceManagerV1>,
-    _seat: WlSeat,
     pub(super) layer_shell: ZwlrLayerShellV1,
     pub(super) outputs: BTreeMap<OutputId, Output>,
     pub(super) pointer: Option<WlPointer>,
@@ -79,9 +78,8 @@ impl State {
         let cursor_shape_manager = globals
             .bind::<WpCursorShapeManagerV1, _, _>(&qhandle, 1..=1, ())
             .ok();
-        let mut tablet = input::TabletState::default();
         if let Ok(manager) = globals.bind::<ZwpTabletManagerV2, _, _>(&qhandle, 1..=1, ()) {
-            tablet.set_tablet_seat(manager.get_tablet_seat(&seat, &qhandle, ()));
+            manager.get_tablet_seat(&seat, &qhandle, ());
             manager.destroy();
         }
         let xdg_output_manager = globals
@@ -114,26 +112,17 @@ impl State {
                 manager.destroy();
                 text_input
             });
-        let output_globals = globals.contents().clone_list();
-        let annotations_visible = settings.annotations_visible;
-        let whiteboard_color = settings.whiteboard_color;
-        let draw_on = settings.draw_on;
-        let clear_on_cancel = settings.clear_on_cancel;
-        let freeze = freeze::Freeze::new(settings.freeze_on_activate);
-        let keyboard =
-            input::KeyboardState::new(settings.keybinds.clone(), settings.text_keybinds.clone());
-
         let mut state = Self {
             fatal_error: None,
             mode: super::Mode::Inactive,
-            annotations_visible,
-            whiteboard_color,
-            draw_on,
+            annotations_visible: settings.annotations_visible,
+            whiteboard_color: settings.whiteboard_color,
+            draw_on: settings.draw_on,
             selected_output: None,
             input_output: None,
             keyboard_output: None,
-            clear_on_cancel,
-            freeze,
+            clear_on_cancel: settings.clear_on_cancel,
+            freeze: freeze::Freeze::new(settings.freeze_on_activate),
             pending_pen_motion: PendingPenMotion::default(),
             render_requested: false,
             wayland: WaylandState {
@@ -146,7 +135,6 @@ impl State {
                 shm,
                 image_copy_manager,
                 image_capture_source_manager,
-                _seat: seat,
                 layer_shell,
                 outputs: BTreeMap::new(),
                 pointer: None,
@@ -158,19 +146,17 @@ impl State {
                 fractional_scale_manager,
             },
             draw: draw::DrawState::new(settings),
-            keyboard,
+            keyboard: input::KeyboardState::new(
+                settings.keybinds.clone(),
+                settings.text_keybinds.clone(),
+            ),
             text_input: input::TextInputState::default(),
             pointer: input::PointerState::default(),
-            tablet,
+            tablet: input::TabletState::default(),
             gpu: None,
             qhandle,
         };
-
-        for global in output_globals {
-            if global.interface == WlOutput::interface().name {
-                state.add_output(global.name, global.version);
-            }
-        }
+        state.add_outputs();
 
         Ok((state, event_queue))
     }

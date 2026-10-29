@@ -10,7 +10,7 @@ use wayland_client::protocol::wl_pointer::WlPointer;
 use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::Shape;
 use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::WpCursorShapeDeviceV1;
 
-use super::short_click;
+use super::{MULTI_CLICK_INTERVAL_MS, short_click};
 use crate::OutputId;
 use crate::config::{BindingAction, MouseButton};
 use crate::draw::{Action, Cursor, CursorHint, Modifiers, Point, ToolOverride};
@@ -19,7 +19,7 @@ use crate::state::State;
 const DRAW_BUTTON: u8 = 1;
 const PICKER_BUTTON: u8 = 2;
 const ERASER_BUTTON: u8 = 4;
-const CLICK_SLOP_SQUARED: f64 = 36.0;
+const CLICK_SLOP_SQUARED: f32 = 36.0;
 const SCROLL_BURST_TIMEOUT_MS: u32 = 100;
 const WHEEL_ACCEL_SAMPLE_COUNT: usize = 3;
 const WHEEL_ACCEL_MAX_GAIN: f64 = 8.0;
@@ -42,18 +42,15 @@ pub(in crate::state) struct PointerState {
     cursor_serial: Option<u32>,
     current_cursor: Option<Cursor>,
     output: Option<OutputId>,
-    position: Option<(f64, f64)>,
+    position: Option<Point>,
     released_pen_tip: Option<Point>,
-    draw_button_held: bool,
-    picker_button_held: bool,
-    eraser_button_held: bool,
     suppressed_gesture: bool,
     draw_button_in_picker: bool,
-    draw_press_pos: Option<(f64, f64)>,
+    draw_press_pos: Option<Point>,
     picker_press_time: Option<u32>,
-    eraser_press: Option<(u32, (f64, f64))>,
+    eraser_press: Option<(u32, Point)>,
     eraser_dragging: bool,
-    last_draw_click: Option<(u32, (f64, f64), u8)>,
+    last_draw_click: Option<(u32, Point, u8)>,
     scroll_remainder: f64,
     wheel_acceleration: WheelAcceleration,
     scroll_stop: Option<ScrollStop>,
@@ -78,6 +75,12 @@ impl PointerState {
         (!held).then_some(mask)
     }
 
+    fn held(&self, mask: u8) -> bool {
+        self.gesture_bindings
+            .iter()
+            .any(|(_, held)| held & mask != 0)
+    }
+
     pub(in crate::state) fn set_cursor_device(
         &mut self,
         cursor_shape_device: Option<WpCursorShapeDeviceV1>,
@@ -85,7 +88,7 @@ impl PointerState {
         self.cursor_shape_device = cursor_shape_device;
     }
 
-    pub(in crate::state) fn position(&self) -> Option<(f64, f64)> {
+    pub(in crate::state) fn position(&self) -> Option<Point> {
         self.position
     }
 
@@ -98,7 +101,7 @@ impl PointerState {
     }
 
     pub(in crate::state) fn tool_override(&self) -> ToolOverride {
-        if self.eraser_button_held {
+        if self.held(ERASER_BUTTON) {
             ToolOverride::InvertEraser
         } else {
             ToolOverride::None
@@ -110,8 +113,7 @@ impl PointerState {
     }
 
     pub(in crate::state) fn input_grab_active(&self) -> bool {
-        !self.suppressed_gesture
-            && (self.draw_button_held || self.picker_button_held || self.eraser_button_held)
+        !self.suppressed_gesture && !self.gesture_bindings.is_empty()
     }
 
     pub(in crate::state) fn keyboard_grab_active(&self) -> bool {
@@ -147,7 +149,7 @@ impl PointerState {
         *self = Self::default();
     }
 
-    pub(in crate::state) fn remove_output(&mut self, output: OutputId) -> Option<(f64, f64)> {
+    pub(in crate::state) fn remove_output(&mut self, output: OutputId) -> Option<Point> {
         if self.output != Some(output) {
             return None;
         }
@@ -174,9 +176,6 @@ impl PointerState {
             left_surface: self.event_sequence.left_surface,
             ..Default::default()
         };
-        self.draw_button_held = false;
-        self.picker_button_held = false;
-        self.eraser_button_held = false;
         self.suppressed_gesture = false;
         self.draw_button_in_picker = false;
         self.draw_press_pos = None;
@@ -189,19 +188,9 @@ impl PointerState {
 
     pub(in crate::state) fn suppress_gesture(&mut self) {
         let bindings = std::mem::take(&mut self.gesture_bindings);
-        let held = (
-            self.draw_button_held,
-            self.picker_button_held,
-            self.eraser_button_held,
-        );
         self.cancel_gesture();
+        self.suppressed_gesture = !bindings.is_empty();
         self.gesture_bindings = bindings;
-        (
-            self.draw_button_held,
-            self.picker_button_held,
-            self.eraser_button_held,
-        ) = held;
-        self.suppressed_gesture = held.0 || held.1 || held.2;
     }
 
     fn update_state(&mut self, sequence: &EventSequence) {
@@ -213,19 +202,6 @@ impl PointerState {
             self.cursor_serial = Some(serial);
             self.current_cursor = None;
         }
-
-        self.draw_button_held = self
-            .gesture_bindings
-            .iter()
-            .any(|(_, mask)| *mask == DRAW_BUTTON);
-        self.picker_button_held = self
-            .gesture_bindings
-            .iter()
-            .any(|(_, mask)| *mask == PICKER_BUTTON);
-        self.eraser_button_held = self
-            .gesture_bindings
-            .iter()
-            .any(|(_, mask)| *mask == ERASER_BUTTON);
     }
 
     fn scroll_steps(&mut self, sequence: &EventSequence, modifiers: Modifiers) -> f32 {
@@ -429,12 +405,7 @@ impl State {
         pressed: bool,
         time: u32,
     ) -> bool {
-        let mask = match binding {
-            Some(BindingAction::Draw) => Some(DRAW_BUTTON),
-            Some(BindingAction::OpenPicker) => Some(PICKER_BUTTON),
-            Some(BindingAction::Erase) => Some(ERASER_BUTTON),
-            _ => None,
-        };
+        let mask = binding.and_then(gesture_mask);
         if (pressed && mask.is_none())
             || (!pressed
                 && !self
@@ -480,7 +451,7 @@ impl State {
                     scroll_at = Some(index);
                     scroll.modifiers = Some(pending.modifiers);
                 }
-                scroll.dispatch(&pending.event, (0.0, 0.0));
+                scroll.dispatch(&pending.event, Point::default());
             }
         }
         let mut pending_events = events.drain(..).enumerate().peekable();
@@ -514,30 +485,22 @@ impl State {
                             continue;
                         };
                         self.keyboard.reset_compose();
-                        match binding {
-                            BindingAction::Draw => Some(DRAW_BUTTON),
-                            BindingAction::OpenPicker => Some(PICKER_BUTTON),
-                            BindingAction::Erase => Some(ERASER_BUTTON),
-                            binding => {
-                                if self.tablet.input_grab_active()
-                                    || self.pointer.suppressed_gesture
-                                {
-                                    continue;
-                                }
-                                match binding {
-                                    BindingAction::ToggleWhiteboard => self.toggle_whiteboard(),
-                                    BindingAction::ToggleFreeze => self.toggle_freeze(),
-                                    _ => {
-                                        if let Some(action) =
-                                            binding.action(pending.modifiers.shift)
-                                        {
-                                            self.apply_action(action);
-                                        }
-                                    }
-                                }
+                        let Some(mask) = gesture_mask(binding) else {
+                            if self.tablet.input_grab_active() || self.pointer.suppressed_gesture {
                                 continue;
                             }
-                        }
+                            match binding {
+                                BindingAction::ToggleWhiteboard => self.toggle_whiteboard(),
+                                BindingAction::ToggleFreeze => self.toggle_freeze(),
+                                _ => {
+                                    if let Some(action) = binding.action(pending.modifiers.shift) {
+                                        self.apply_action(action);
+                                    }
+                                }
+                            }
+                            continue;
+                        };
+                        Some(mask)
                     } else {
                         None
                     };
@@ -584,9 +547,7 @@ impl State {
                         .map(|output| self.output_origin(output))
                         .unwrap_or_default();
                     self.pointer.event_sequence.modifiers = Some(pending.modifiers);
-                    self.pointer
-                        .event_sequence
-                        .dispatch(&event, (f64::from(origin.x), f64::from(origin.y)));
+                    self.pointer.event_sequence.dispatch(&event, origin);
                     if focus {
                         self.flush_pointer_motion();
                     }
@@ -607,7 +568,12 @@ impl State {
     }
 
     fn pointer_sequence(&mut self, sequence: EventSequence) {
+        let left_surface = sequence.left_surface && sequence.enter_serial.is_none();
         self.pointer.update_state(&sequence);
+        // The last moved device owns the cursor and tool preview.
+        if sequence.motion.is_some() {
+            self.tablet.clear_cursor_tool();
+        }
         if sequence.motion.is_some()
             || sequence.pressed & (DRAW_BUTTON | PICKER_BUTTON | ERASER_BUTTON) != 0
         {
@@ -618,19 +584,15 @@ impl State {
                 return;
             }
             self.interrupt_pointer_gesture();
-            if self.pointer.output.is_none()
-                || (sequence.left_surface && sequence.enter_serial.is_none())
-            {
+            if self.pointer.output.is_none() || left_surface {
                 self.pointer.clear_focus();
             }
             return;
         }
         // Keep tracking releases, but never let a second device take over a drag.
         if self.tablet.input_grab_active() || self.pointer.suppressed_gesture {
-            self.pointer.suppressed_gesture = self.pointer.draw_button_held
-                || self.pointer.picker_button_held
-                || self.pointer.eraser_button_held;
-            if sequence.left_surface && sequence.enter_serial.is_none() {
+            self.pointer.suppressed_gesture = !self.pointer.gesture_bindings.is_empty();
+            if left_surface {
                 self.pointer.clear_focus();
             }
             return;
@@ -648,12 +610,9 @@ impl State {
         let modifiers = sequence.modifiers.unwrap_or_else(|| self.modifiers());
         if self.freeze.capturing() {
             self.pointer.cancel_gesture();
-            if sequence.left_surface && sequence.enter_serial.is_none() {
+            if left_surface {
                 self.pointer.clear_focus();
             }
-            return;
-        }
-        if !self.is_active() || self.pointer.suppressed_gesture {
             return;
         }
         if draw_pressed && let Some(pos) = self.pointer.position {
@@ -666,8 +625,8 @@ impl State {
                     !self.pointer.draw_button_in_picker
                         && !modifiers.shift
                         && !modifiers.ctrl
-                        && time.wrapping_sub(*previous) <= 400
-                        && distance_squared(pos, *previous_pos) <= CLICK_SLOP_SQUARED
+                        && time.wrapping_sub(*previous) <= MULTI_CLICK_INTERVAL_MS
+                        && pos.distance_squared(*previous_pos) <= CLICK_SLOP_SQUARED
                 })
                 .map_or(1, |(_, (_, _, count))| count % 3 + 1);
             if clicks == 1 || !self.text_click_at(pos, clicks) {
@@ -688,26 +647,25 @@ impl State {
         if sequence.motion.is_some()
             && let Some(pos) = self.pointer.position
         {
-            if (self.pointer.draw_button_held
+            if (self.pointer.held(DRAW_BUTTON)
                 || (draw_released && self.pointer.draw_press_pos.is_some()))
                 && self
                     .pointer
                     .draw_press_pos
-                    .is_some_and(|start| distance_squared(pos, start) > CLICK_SLOP_SQUARED)
+                    .is_some_and(|start| pos.distance_squared(start) > CLICK_SLOP_SQUARED)
             {
                 self.pointer.last_draw_click = None;
             }
-            if (self.pointer.eraser_button_held || eraser_released)
+            if (self.pointer.held(ERASER_BUTTON) || eraser_released)
                 && !self.pointer.eraser_dragging
                 && let Some((_, start)) = self.pointer.eraser_press
-                && distance_squared(pos, start) > CLICK_SLOP_SQUARED
+                && pos.distance_squared(start) > CLICK_SLOP_SQUARED
             {
                 self.pointer.eraser_dragging = true;
                 self.pointer_down(start, modifiers, ToolOverride::InvertEraser);
             }
             if (self.draw.picker_active()
-                || self.pointer.draw_button_held
-                || self.pointer.picker_button_held
+                || self.pointer.held(DRAW_BUTTON | PICKER_BUTTON)
                 || self.pointer.eraser_dragging)
                 && !draw_pressed
                 && !picker_pressed
@@ -755,7 +713,7 @@ impl State {
                 }
             }
         }
-        if sequence.left_surface && sequence.enter_serial.is_none() {
+        if left_surface {
             if self.pointer.keyboard_grab_active() {
                 self.pointer.output = None;
                 self.pointer.cursor_serial = None;
@@ -794,6 +752,15 @@ pub(super) fn update_cursor(
     *current = Some(cursor);
 }
 
+fn gesture_mask(binding: BindingAction) -> Option<u8> {
+    binding.pointer_gesture().then(|| match binding {
+        BindingAction::Draw => DRAW_BUTTON,
+        BindingAction::OpenPicker => PICKER_BUTTON,
+        BindingAction::Erase => ERASER_BUTTON,
+        _ => unreachable!("unmapped pointer gesture"),
+    })
+}
+
 fn cursor_shape(hint: CursorHint) -> Shape {
     match hint {
         CursorHint::Crosshair => Shape::Crosshair,
@@ -809,7 +776,7 @@ fn cursor_shape(hint: CursorHint) -> Shape {
 #[derive(Default)]
 struct EventSequence {
     modifiers: Option<Modifiers>,
-    motion: Option<(f64, f64)>,
+    motion: Option<Point>,
 
     pressed: u8,
     released: u8,
@@ -861,7 +828,7 @@ impl EventSequence {
         }
     }
 
-    fn dispatch(&mut self, event: &<WlPointer as Proxy>::Event, origin: (f64, f64)) {
+    fn dispatch(&mut self, event: &<WlPointer as Proxy>::Event, origin: Point) {
         use wayland_client::protocol::wl_pointer::Event;
         match event {
             Event::Enter {
@@ -871,7 +838,7 @@ impl EventSequence {
                 ..
             } => {
                 self.enter_serial = Some(*serial);
-                self.motion = Some((surface_x + origin.0, surface_y + origin.1));
+                self.motion = Some(Point::new(*surface_x as f32, *surface_y as f32) + origin);
             }
             Event::Leave { .. } => self.left_surface = true,
             Event::Motion {
@@ -879,7 +846,7 @@ impl EventSequence {
                 surface_y,
                 ..
             } => {
-                self.motion = Some((surface_x + origin.0, surface_y + origin.1));
+                self.motion = Some(Point::new(*surface_x as f32, *surface_y as f32) + origin);
             }
             Event::Axis {
                 axis: WEnum::Value(wayland_client::protocol::wl_pointer::Axis::VerticalScroll),
@@ -904,10 +871,6 @@ impl EventSequence {
             _ => {}
         }
     }
-}
-
-fn distance_squared(first: (f64, f64), second: (f64, f64)) -> f64 {
-    (first.0 - second.0).powi(2) + (first.1 - second.1).powi(2)
 }
 
 wayland_client::delegate_dispatch!(State: [WlPointer: ()] => PointerState);

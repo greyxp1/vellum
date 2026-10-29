@@ -39,7 +39,6 @@ const BUTTON: u8 = 2;
 
 #[derive(Default)]
 pub(in crate::state) struct TabletState {
-    _tablet_seat: Option<ZwpTabletSeatV2>,
     tools: HashMap<ZwpTabletToolV2, ToolState>,
     gesture_owner: Option<ZwpTabletToolV2>,
     cursor_tool: Option<ZwpTabletToolV2>,
@@ -53,7 +52,7 @@ struct ToolState {
     current_cursor: Option<Cursor>,
     eraser: bool,
     output: Option<OutputId>,
-    pos: Option<(f64, f64)>,
+    pos: Option<Point>,
     pen_held: bool,
     buttons_held: u8,
     suppressed_gesture: bool,
@@ -61,12 +60,11 @@ struct ToolState {
 }
 
 impl ToolState {
-    fn update_state(&mut self, sequence: EventSequence) {
-        if let Some(new_pos) = sequence.motion {
-            self.pos = Some(new_pos);
-        }
-
-        update_held(&mut self.pen_held, sequence, PEN);
+    fn clear_gesture(&mut self) {
+        self.pen_held = false;
+        self.buttons_held = 0;
+        self.suppressed_gesture = false;
+        self.button_press_time = None;
     }
 
     fn refresh_cursor(&mut self, tablet_tool: &ZwpTabletToolV2, cursor: Cursor) {
@@ -81,30 +79,13 @@ impl ToolState {
 }
 
 impl TabletState {
-    pub(in crate::state) fn set_tablet_seat(&mut self, tablet_seat: ZwpTabletSeatV2) {
-        self._tablet_seat = Some(tablet_seat);
-    }
-
     pub(in crate::state) fn refresh_cursor(&mut self, draw: &mut DrawState) -> Option<bool> {
-        let tablet_tool = self
-            .gesture_owner
-            .as_ref()
-            .or(self.cursor_tool.as_ref())
-            .filter(|id| {
-                self.tools
-                    .get(*id)
-                    .is_some_and(|tool| tool.cursor_serial.is_some() && tool.output.is_some())
-            })
-            .cloned()
-            .or_else(|| {
-                self.tools
-                    .iter()
-                    .find(|(_, tool)| tool.cursor_serial.is_some() && tool.output.is_some())
-                    .map(|(id, _)| id.clone())
-            })?;
-        let tool = self.tools.get_mut(&tablet_tool)?;
-        let (x, y) = tool.pos?;
-        let point = Point::new(x as f32, y as f32);
+        let tablet_tool = self.gesture_owner.as_ref().or(self.cursor_tool.as_ref())?;
+        let tool = self
+            .tools
+            .get_mut(tablet_tool)
+            .filter(|tool| tool.cursor_serial.is_some() && tool.output.is_some())?;
+        let point = tool.pos?;
         let tool_override =
             ToolOverride::from_eraser(tool.eraser || (tool.buttons_held != 0 && tool.pen_held));
         let cursor = draw.cursor(point, tool_override);
@@ -112,9 +93,12 @@ impl TabletState {
             Some(preview) if tool.cursor_shape_device.is_some() => Some((point, preview)),
             _ => None,
         });
-        tool.refresh_cursor(&tablet_tool, cursor);
-        self.cursor_tool = Some(tablet_tool);
+        tool.refresh_cursor(tablet_tool, cursor);
         Some(changed)
+    }
+
+    pub(in crate::state) fn clear_cursor_tool(&mut self) {
+        self.cursor_tool = None;
     }
 
     pub(in crate::state) fn input_grab_active(&self) -> bool {
@@ -126,10 +110,7 @@ impl TabletState {
         for tool in self.tools.values_mut() {
             tool.event_sequence.pressed = 0;
             tool.event_sequence.released = 0;
-            tool.pen_held = false;
-            tool.buttons_held = 0;
-            tool.suppressed_gesture = false;
-            tool.button_press_time = None;
+            tool.clear_gesture();
         }
     }
 
@@ -152,7 +133,7 @@ impl TabletState {
         }
     }
 
-    pub(in crate::state) fn remove_output(&mut self, output: OutputId) -> Option<(f64, f64)> {
+    pub(in crate::state) fn remove_output(&mut self, output: OutputId) -> Option<Point> {
         let mut end_position = None;
         for (id, tool) in &mut self.tools {
             if tool.output != Some(output) {
@@ -170,10 +151,7 @@ impl TabletState {
             tool.pos = None;
             tool.cursor_serial = None;
             tool.current_cursor = None;
-            tool.pen_held = false;
-            tool.buttons_held = 0;
-            tool.suppressed_gesture = false;
-            tool.button_press_time = None;
+            tool.clear_gesture();
         }
         end_position
     }
@@ -287,20 +265,16 @@ impl Dispatch<ZwpTabletToolV2, (), State> for TabletState {
         {
             return;
         }
-        let id = tablet_tool.clone();
         if let Event::Removed = event {
-            if state.tablet.gesture_owner.as_ref() == Some(&id) {
-                if let Some(pos) = state.tablet.tools.get(&id).and_then(|tool| tool.pos) {
-                    state.pointer_up(pos, state.modifiers(), false);
-                }
+            let tool = state.tablet.tools.remove(tablet_tool);
+            if state.tablet.gesture_owner.as_ref() == Some(tablet_tool) {
                 state.tablet.gesture_owner = None;
+                state.finish_interrupted_gesture(tool.as_ref().and_then(|tool| tool.pos));
             }
-            if let Some(tool) = state.tablet.tools.remove(&id)
-                && let Some(device) = tool.cursor_shape_device
-            {
+            if let Some(device) = tool.and_then(|tool| tool.cursor_shape_device) {
                 device.destroy();
             }
-            if state.tablet.cursor_tool.as_ref() == Some(&id) {
+            if state.tablet.cursor_tool.as_ref() == Some(tablet_tool) {
                 state.tablet.cursor_tool = None;
             }
             tablet_tool.destroy();
@@ -308,159 +282,166 @@ impl Dispatch<ZwpTabletToolV2, (), State> for TabletState {
             state.update_output_input();
             return;
         }
-        if let Event::ProximityIn { surface, .. } = &event {
-            let output = state.output_for_surface(surface);
-            state.tablet.tools.entry(id.clone()).or_default().output = output;
+        let proximity_output = match &event {
+            Event::ProximityIn { surface, .. } => Some(state.output_for_surface(surface)),
+            _ => None,
+        };
+        let active = state.is_active();
+        let Some(tool) = state.tablet.tools.get_mut(tablet_tool) else {
+            return;
+        };
+        if let Some(output) = proximity_output {
+            tool.output = output;
         }
-        let tool = state.tablet.tools.entry(id.clone()).or_default();
         if let Event::Type { tool_type } = &event {
             tool.eraser = matches!(tool_type, WEnum::Value(Type::Eraser));
         }
         let output = tool.output;
         let origin = output
-            .map(|output| state.output_origin(output))
-            .unwrap_or_default();
-        let active = state.is_active();
-        let tool = state.tablet.tools.get_mut(&id).unwrap();
-        if let Some(sequence) = tool.event_sequence.dispatch(
-            event,
-            (f64::from(origin.x), f64::from(origin.y)),
-            &mut tool.buttons_held,
-        ) {
-            tool.update_state(sequence);
-            if let Some(serial) = sequence.enter_serial {
-                tool.cursor_serial = Some(serial);
-                tool.current_cursor = None;
-            }
-            if sequence.proximity_out {
-                tool.cursor_serial = None;
-                tool.current_cursor = None;
-                tool.output = None;
-            }
-            if !active || state.freeze.capturing() || output.is_none() {
-                tool.pen_held = false;
-                tool.buttons_held = 0;
-                tool.suppressed_gesture = false;
-                tool.button_press_time = None;
-                return;
-            }
-            let pen_pressed = sequence.pressed(PEN);
-            let pen_released = sequence.released(PEN);
-            let button_pressed = sequence.pressed(BUTTON);
-            let button_released = sequence.released(BUTTON);
-            let eraser = tool.eraser;
-            if button_pressed {
-                tool.button_press_time = Some(sequence.time);
-            }
-            let short_button_click =
-                button_released && short_click(tool.button_press_time.take(), Some(sequence.time));
-            let pos = tool.pos;
-            let pen_held = tool.pen_held;
-            let button_held = tool.buttons_held != 0;
-            if sequence.proximity_out {
-                tool.pen_held = false;
-                tool.buttons_held = 0;
-                tool.button_press_time = None;
-            }
-            if state.pointer.input_grab_active() || tool.suppressed_gesture {
-                tool.suppressed_gesture = !sequence.proximity_out && (pen_held || button_held);
-                tool.button_press_time = None;
-                return;
-            }
-            if state
+            .and_then(|output| state.wayland.outputs.get(&output))
+            .map_or_else(Point::default, |output| output.origin);
+        let Some(sequence) = tool
+            .event_sequence
+            .dispatch(event, origin, &mut tool.buttons_held)
+        else {
+            return;
+        };
+        if let Some(pos) = sequence.motion {
+            tool.pos = Some(pos);
+        }
+        if sequence.pressed(PEN) {
+            tool.pen_held = true;
+        }
+        if sequence.released(PEN) {
+            tool.pen_held = false;
+        }
+        if let Some(serial) = sequence.enter_serial {
+            tool.cursor_serial = Some(serial);
+            tool.current_cursor = None;
+        }
+        if sequence.proximity_out {
+            tool.cursor_serial = None;
+            tool.current_cursor = None;
+            tool.output = None;
+        }
+        if !active || state.freeze.capturing() || output.is_none() {
+            tool.clear_gesture();
+            return;
+        }
+        let pen_pressed = sequence.pressed(PEN);
+        let pen_released = sequence.released(PEN);
+        let button_pressed = sequence.pressed(BUTTON);
+        let button_released = sequence.released(BUTTON);
+        let eraser = tool.eraser;
+        if button_pressed {
+            tool.button_press_time = Some(sequence.time);
+        }
+        let short_button_click =
+            button_released && short_click(tool.button_press_time.take(), Some(sequence.time));
+        let pos = tool.pos;
+        let pen_held = tool.pen_held;
+        let button_held = tool.buttons_held != 0;
+        if sequence.proximity_out {
+            tool.pen_held = false;
+            tool.buttons_held = 0;
+            tool.button_press_time = None;
+        }
+        if state.pointer.input_grab_active()
+            || tool.suppressed_gesture
+            || state
                 .tablet
                 .gesture_owner
                 .as_ref()
-                .is_some_and(|owner| owner != &id)
+                .is_some_and(|owner| owner != tablet_tool)
+        {
+            tool.suppressed_gesture = !sequence.proximity_out && (pen_held || button_held);
+            tool.button_press_time = None;
+            return;
+        }
+        if let Some(output) = output {
+            state.focus_output(output);
+        }
+        // Selecting the first output can start an activation-time capture.
+        if state.freeze.capturing() {
+            state.tablet.cancel_gesture();
+            return;
+        }
+        if (pen_pressed || button_pressed) && pos.is_some() {
+            state.tablet.gesture_owner = Some(tablet_tool.clone());
+        }
+        if !sequence.proximity_out {
+            state.tablet.cursor_tool = Some(tablet_tool.clone());
+        } else if state.tablet.cursor_tool.as_ref() == Some(tablet_tool) {
+            state.tablet.cursor_tool = None;
+        }
+        let modifiers = state.modifiers();
+        if state.tablet.gesture_owner.as_ref() == Some(tablet_tool) {
+            if button_pressed && let Some(pos) = pos {
+                if pen_held {
+                    state.pointer_up(pos, modifiers, false);
+                    state.pointer_down(pos, modifiers, ToolOverride::Eraser);
+                } else {
+                    state.toggle_picker(pos);
+                }
+            }
+            if pen_pressed
+                && !button_pressed
+                && let Some(pos) = pos
             {
-                tool.suppressed_gesture = !sequence.proximity_out && (pen_held || button_held);
-                return;
-            }
-            if let Some(output) = output {
-                state.focus_output(output);
-            }
-            // Selecting the first output can start an activation-time capture.
-            if state.freeze.capturing() {
-                state.tablet.cancel_gesture();
-                return;
-            }
-            if (pen_pressed || button_pressed) && pos.is_some() {
-                state.tablet.gesture_owner = Some(id.clone());
-            }
-            if !sequence.proximity_out {
-                state.tablet.cursor_tool = Some(id.clone());
-            } else if state.tablet.cursor_tool.as_ref() == Some(&id) {
-                state.tablet.cursor_tool = None;
-            }
-            let modifiers = state.modifiers();
-            if state.tablet.gesture_owner.as_ref() == Some(&id) {
-                if button_pressed && let Some(pos) = pos {
-                    if pen_held {
-                        state.pointer_up(pos, modifiers, false);
-                        state.pointer_down(pos, modifiers, ToolOverride::Eraser);
-                    } else {
-                        state.toggle_picker(pos);
-                    }
+                if eraser {
+                    state.dismiss_picker();
                 }
-                if pen_pressed
-                    && !button_pressed
-                    && let Some(pos) = pos
-                {
-                    if eraser {
-                        state.dismiss_picker();
-                    }
-                    state.pointer_down(
-                        pos,
-                        modifiers,
-                        ToolOverride::from_eraser(eraser || button_held),
-                    );
-                }
-                if button_released
-                    && pen_held
-                    && !pen_released
-                    && let Some(pos) = pos
-                {
-                    state.pointer_up(pos, modifiers, false);
-                    state.pointer_down(pos, modifiers, ToolOverride::from_eraser(eraser));
-                } else if button_released
-                    && state.draw.picker_active()
-                    && let Some(pos) = pos
-                {
-                    state.pointer_up(pos, modifiers, short_button_click);
-                }
-                if !button_pressed
-                    && !button_released
-                    && sequence.motion.is_some()
-                    && (pen_held || (state.draw.picker_active() && button_held))
-                    && let Some(pos) = pos
-                {
-                    state.pointer_motion(pos, modifiers);
-                }
-                if pen_released && let Some(pos) = pos {
-                    state.pointer_up(pos, modifiers, false);
-                }
+                state.pointer_down(
+                    pos,
+                    modifiers,
+                    ToolOverride::from_eraser(eraser || button_held),
+                );
             }
-            if sequence.proximity_out
+            if button_released
+                && pen_held
                 && !pen_released
-                && state.tablet.gesture_owner.as_ref() == Some(&id)
                 && let Some(pos) = pos
             {
                 state.pointer_up(pos, modifiers, false);
+                state.pointer_down(pos, modifiers, ToolOverride::from_eraser(eraser));
+            } else if button_released
+                && state.draw.picker_active()
+                && let Some(pos) = pos
+            {
+                state.pointer_up(pos, modifiers, short_button_click);
             }
-            if sequence.proximity_out || (!pen_held && !button_held) {
-                state.tablet.gesture_owner = None;
+            if !button_pressed
+                && !button_released
+                && sequence.motion.is_some()
+                && (pen_held || (state.draw.picker_active() && button_held))
+                && let Some(pos) = pos
+            {
+                state.pointer_motion(pos, modifiers);
             }
-            state.refresh_cursor();
-            if (sequence.pressed | sequence.released) != 0 || sequence.proximity_out {
-                state.update_output_input();
+            if pen_released && let Some(pos) = pos {
+                state.pointer_up(pos, modifiers, false);
             }
+        }
+        if sequence.proximity_out
+            && !pen_released
+            && state.tablet.gesture_owner.as_ref() == Some(tablet_tool)
+            && let Some(pos) = pos
+        {
+            state.pointer_up(pos, modifiers, false);
+        }
+        if sequence.proximity_out || (!pen_held && !button_held) {
+            state.tablet.gesture_owner = None;
+        }
+        state.refresh_cursor();
+        if (sequence.pressed | sequence.released) != 0 || sequence.proximity_out {
+            state.update_output_input();
         }
     }
 }
 
 #[derive(Default, Clone, Copy)]
 struct EventSequence {
-    motion: Option<(f64, f64)>,
+    motion: Option<Point>,
 
     pressed: u8,
     released: u8,
@@ -482,7 +463,7 @@ impl EventSequence {
     fn dispatch(
         &mut self,
         event: <ZwpTabletToolV2 as Proxy>::Event,
-        origin: (f64, f64),
+        origin: Point,
         buttons_held: &mut u8,
     ) -> Option<Self> {
         use wayland_protocols::wp::tablet::zv2::client::zwp_tablet_tool_v2::Event;
@@ -504,7 +485,7 @@ impl EventSequence {
                 self.released |= PEN;
             }
             Event::Motion { x, y } => {
-                self.motion = Some((x + origin.0, y + origin.1));
+                self.motion = Some(Point::new(x as f32, y as f32) + origin);
             }
             Event::Button {
                 serial: _,
@@ -541,15 +522,6 @@ impl EventSequence {
             _ => {}
         }
         None
-    }
-}
-
-fn update_held(held: &mut bool, sequence: EventSequence, input: u8) {
-    if sequence.pressed(input) {
-        *held = true;
-    }
-    if sequence.released(input) {
-        *held = false;
     }
 }
 

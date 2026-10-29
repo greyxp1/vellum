@@ -12,10 +12,6 @@ use kurbo::Affine;
 use picker::PickerState;
 use std::borrow::Cow;
 use text::TextState;
-use wgpu::util::DeviceExt;
-
-// Picker texture 0 and frozen background 1 share the same binding table.
-const FROZEN_TEXTURE: vello_hybrid::TextureId = vello_hybrid::TextureId(1);
 
 pub(crate) struct Viewport {
     pub origin: [f32; 2],
@@ -36,10 +32,11 @@ pub(crate) struct WgpuState {
     main_renderer: vello_hybrid::Renderer,
     main_resources: vello_hybrid::Resources,
     main_scene: vello_hybrid::Scene,
-    texture_bindings: vello_hybrid::TextureBindings,
-    frozen: Option<vello_hybrid::SampleRect>,
-    picker: PickerState,
+    // Built on first use to avoid compiling a second pipeline per output.
+    picker: Option<PickerState>,
     text: TextState,
+    // Textures the main scene samples: the picker target and color glyph bitmaps.
+    texture_bindings: vello_hybrid::TextureBindings,
 }
 
 impl WgpuState {
@@ -66,12 +63,14 @@ impl WgpuState {
             .copied()
             .or_else(|| capabilities.formats.first().copied())
             .ok_or("GPU adapter does not support the Wayland surface")?;
-        let alpha_mode = capabilities
-            .alpha_modes
-            .iter()
-            .find(|mode| matches!(mode, wgpu::CompositeAlphaMode::PreMultiplied))
-            .copied()
-            .unwrap_or(wgpu::CompositeAlphaMode::Auto);
+        // Vello writes premultiplied alpha. Wayland composites inherited alpha as premultiplied.
+        let alpha_mode = [
+            wgpu::CompositeAlphaMode::PreMultiplied,
+            wgpu::CompositeAlphaMode::Inherit,
+        ]
+        .into_iter()
+        .find(|mode| capabilities.alpha_modes.contains(mode))
+        .ok_or("GPU surface does not support transparency")?;
         let device = gpu.device.clone();
         let queue = gpu.queue.clone();
         let surface_config = wgpu::SurfaceConfiguration {
@@ -93,11 +92,10 @@ impl WgpuState {
             height: 1,
         };
         let mut main_settings = vello_hybrid::RenderSettings::default();
-        // Text is the main scene's only atlas user; 1024px avoids a 64 MiB first-use allocation.
+        // The glyph cache is the main scene's only atlas user; 1024px avoids a 64 MiB first-use allocation.
         main_settings.memory_settings.image_atlas_config.atlas_size = (1024, 1024);
         let (main_renderer, main_resources) =
             vello_hybrid::Renderer::new_with(&device, &target_config, main_settings);
-        let picker = PickerState::new(&device, format);
 
         Ok(Self {
             surface,
@@ -107,101 +105,10 @@ impl WgpuState {
             main_renderer,
             main_resources,
             main_scene: vello_hybrid::Scene::new(1, 1),
-            texture_bindings: vello_hybrid::TextureBindings::new(),
-            frozen: None,
-            picker,
+            picker: None,
             text: TextState::default(),
+            texture_bindings: vello_hybrid::TextureBindings::new(),
         })
-    }
-
-    pub(crate) fn set_frozen_background(
-        &mut self,
-        size: [u32; 2],
-        pixel_data: &[u8],
-        is_bgra: bool,
-        transform: wayland_client::protocol::wl_output::Transform,
-    ) -> Result<(), String> {
-        let checked = checked_target_size(&self.device, size, "screen capture")?;
-        let [width, height] = self.size();
-        let texture = self.device.create_texture_with_data(
-            &self.queue,
-            &wgpu::TextureDescriptor {
-                label: Some("frozen desktop"),
-                size: wgpu::Extent3d {
-                    width: size[0],
-                    height: size[1],
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                // Vello samples external textures in the render target's color space.
-                format: match (is_bgra, self.surface_config.format.is_srgb()) {
-                    (true, true) => wgpu::TextureFormat::Bgra8UnormSrgb,
-                    (true, false) => wgpu::TextureFormat::Bgra8Unorm,
-                    (false, true) => wgpu::TextureFormat::Rgba8UnormSrgb,
-                    (false, false) => wgpu::TextureFormat::Rgba8Unorm,
-                },
-                usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
-                view_formats: &[],
-            },
-            wgpu::util::TextureDataOrder::LayerMajor,
-            pixel_data,
-        );
-        self.texture_bindings
-            .insert(FROZEN_TEXTURE, texture.create_view(&Default::default()));
-
-        use wayland_client::protocol::wl_output::Transform;
-        let (w, h) = (f64::from(size[0]), f64::from(size[1]));
-        let orientation = match transform {
-            Transform::_90 => {
-                Affine::translate((h, 0.0)) * Affine::rotate(std::f64::consts::FRAC_PI_2)
-            }
-            Transform::_180 => Affine::translate((w, h)) * Affine::rotate(std::f64::consts::PI),
-            Transform::_270 => {
-                Affine::translate((0.0, w)) * Affine::rotate(3.0 * std::f64::consts::FRAC_PI_2)
-            }
-            Transform::Flipped => {
-                Affine::translate((w, 0.0)) * Affine::scale_non_uniform(-1.0, 1.0)
-            }
-            Transform::Flipped90 => {
-                Affine::scale_non_uniform(-1.0, 1.0) * Affine::rotate(std::f64::consts::FRAC_PI_2)
-            }
-            Transform::Flipped180 => {
-                Affine::translate((0.0, h)) * Affine::scale_non_uniform(1.0, -1.0)
-            }
-            Transform::Flipped270 => {
-                Affine::translate((h, w))
-                    * Affine::scale_non_uniform(-1.0, 1.0)
-                    * Affine::rotate(3.0 * std::f64::consts::FRAC_PI_2)
-            }
-            _ => Affine::IDENTITY,
-        };
-
-        let (logical_w, logical_h) = match transform {
-            Transform::_90 | Transform::_270 | Transform::Flipped90 | Transform::Flipped270 => {
-                (h, w)
-            }
-            _ => (w, h),
-        };
-
-        self.frozen = Some(vello_hybrid::SampleRect {
-            source_region: vello_common::geometry::RectU16::new(0, 0, checked[0], checked[1]),
-            transform: Affine::scale_non_uniform(
-                f64::from(width) / logical_w,
-                f64::from(height) / logical_h,
-            ) * orientation,
-        });
-        Ok(())
-    }
-
-    pub(crate) fn clear_frozen_background(&mut self) {
-        self.frozen = None;
-        self.texture_bindings.remove(FROZEN_TEXTURE);
-    }
-
-    pub(crate) fn is_frozen(&self) -> bool {
-        self.frozen.is_some()
     }
 
     pub(crate) fn hide_annotations(&self) -> Result<Option<wgpu::SurfaceTexture>, String> {
@@ -302,13 +209,6 @@ impl WgpuState {
                 f64::from(main_size[0]),
                 f64::from(main_size[1]),
             ));
-        } else if let Some(background) = &self.frozen {
-            self.main_scene.set_transform(Affine::IDENTITY);
-            self.main_scene.draw_texture_rects(
-                FROZEN_TEXTURE,
-                peniko::ImageQuality::Medium,
-                [*background],
-            );
         }
         let scene_transform = Affine::scale_non_uniform(scale[0], scale[1])
             * Affine::translate((
@@ -323,10 +223,9 @@ impl WgpuState {
         let mut target = text::TextTarget {
             scene: &mut self.main_scene,
             resources: &mut self.main_resources,
-            renderer: &mut self.main_renderer,
+            texture_bindings: &mut self.texture_bindings,
             device: &self.device,
             queue: &self.queue,
-            encoder: &mut encoder,
             is_srgb: target_is_srgb,
         };
         for item in items {
@@ -352,20 +251,18 @@ impl WgpuState {
         }
 
         if let Some(picker) = picker {
-            self.picker.prepare(
+            let picker_state = self
+                .picker
+                .get_or_insert_with(|| PickerState::new(&self.device, self.surface_config.format));
+            picker_state.prepare(
                 &self.device,
-                &mut self.texture_bindings,
                 &mut self.main_scene,
+                &mut self.texture_bindings,
                 &self.surface_config,
                 picker,
                 &viewport,
             )?;
-            self.picker.render(
-                &self.device,
-                &self.queue,
-                &mut encoder,
-                &self.texture_bindings,
-            )?;
+            picker_state.render(&self.device, &self.queue, &mut encoder)?;
         }
 
         let swapchain_view = output
@@ -397,7 +294,9 @@ impl WgpuState {
     }
 
     pub(crate) fn release_picker_target(&mut self) {
-        self.picker.release_target(&mut self.texture_bindings);
+        if let Some(picker) = &mut self.picker {
+            picker.release_target(&mut self.texture_bindings);
+        }
     }
 }
 

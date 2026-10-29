@@ -59,8 +59,8 @@ impl PickerState {
     pub(super) fn prepare(
         &mut self,
         device: &wgpu::Device,
-        bindings: &mut vello_hybrid::TextureBindings,
         scene: &mut vello_hybrid::Scene,
+        bindings: &mut vello_hybrid::TextureBindings,
         config: &wgpu::SurfaceConfiguration,
         picker: &LocalGeometry,
         viewport: &Viewport,
@@ -117,7 +117,6 @@ impl PickerState {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
-        texture_bindings: &vello_hybrid::TextureBindings,
     ) -> Result<(), String> {
         let target = self.target.as_ref().unwrap();
         self.renderer
@@ -132,7 +131,7 @@ impl PickerState {
                     height: u32::from(target.size[1]),
                 },
                 &target.view,
-                texture_bindings,
+                &vello_hybrid::TextureBindings::new(),
             )
             .map_err(|error| format!("Vello picker render failed: {error}"))
     }

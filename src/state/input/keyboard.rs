@@ -36,6 +36,8 @@ pub(in crate::state) struct KeyboardState {
     context: xkb::Context,
     state: Option<xkb::State>,
     shift_free_state: Option<xkb::State>,
+    modifiers: Modifiers,
+    logo: bool,
     compose: Option<xkb::compose::State>,
     compose_session: Option<u64>,
     repeat: Option<KeyRepeat>,
@@ -67,9 +69,7 @@ impl KeyboardState {
     }
 
     pub(in crate::state) fn logo(&self) -> bool {
-        self.state.as_ref().is_some_and(|state| {
-            state.mod_name_is_active(xkb::MOD_NAME_LOGO, xkb::STATE_MODS_EFFECTIVE)
-        })
+        self.logo
     }
 
     pub(in crate::state) fn reload(&mut self, keybinds: Keybinds, text_keybinds: Keybinds) {
@@ -98,6 +98,8 @@ impl KeyboardState {
             compose_session: None,
             state: None,
             shift_free_state: None,
+            modifiers: Modifiers::default(),
+            logo: false,
             repeat: None,
             repeat_delay: Duration::ZERO,
             repeat_interval: None,
@@ -105,19 +107,22 @@ impl KeyboardState {
     }
 
     pub(in crate::state) fn clear(&mut self) {
-        self.reset_compose();
-        self.state = None;
-        self.shift_free_state = None;
-        self.repeat = None;
+        self.clear_keymap();
         self.repeat_delay = Duration::ZERO;
         self.repeat_interval = None;
     }
 
-    fn set_keymap(&mut self, fd: OwnedFd, size: u32) -> std::io::Result<()> {
+    fn clear_keymap(&mut self) {
         self.reset_compose();
         self.repeat = None;
         self.state = None;
         self.shift_free_state = None;
+        self.modifiers = Modifiers::default();
+        self.logo = false;
+    }
+
+    fn set_keymap(&mut self, fd: OwnedFd, size: u32) -> std::io::Result<()> {
+        self.clear_keymap();
         // SAFETY: Wayland transfers ownership of a valid keymap fd and supplies its mapping size.
         let keymap = unsafe {
             xkb::Keymap::new_from_fd(
@@ -136,6 +141,13 @@ impl KeyboardState {
     fn update_modifiers(&mut self, depressed: u32, latched: u32, locked: u32, group: u32) {
         if let Some(state) = &mut self.state {
             state.update_mask(depressed, latched, locked, 0, 0, group);
+            let active = |name| state.mod_name_is_active(name, xkb::STATE_MODS_EFFECTIVE);
+            self.modifiers = Modifiers {
+                shift: active(xkb::MOD_NAME_SHIFT),
+                ctrl: active(xkb::MOD_NAME_CTRL),
+                alt: active(xkb::MOD_NAME_ALT),
+            };
+            self.logo = active(xkb::MOD_NAME_LOGO);
         }
         if let Some(state) = &mut self.shift_free_state {
             // Preserve other modifiers and the active layout when matching Shift shortcuts.
@@ -146,14 +158,7 @@ impl KeyboardState {
     }
 
     pub(in crate::state) fn modifiers(&self) -> Modifiers {
-        let Some(state) = &self.state else {
-            return Modifiers::default();
-        };
-        Modifiers {
-            shift: state.mod_name_is_active(xkb::MOD_NAME_SHIFT, xkb::STATE_MODS_EFFECTIVE),
-            ctrl: state.mod_name_is_active(xkb::MOD_NAME_CTRL, xkb::STATE_MODS_EFFECTIVE),
-            alt: state.mod_name_is_active(xkb::MOD_NAME_ALT, xkb::STATE_MODS_EFFECTIVE),
-        }
+        self.modifiers
     }
 
     fn chord(
@@ -165,8 +170,7 @@ impl KeyboardState {
         let state = self.state.as_ref()?;
         let keycode = (evdev_key + KEYCODE_OFFSET).into();
         let keysym = state.key_get_one_sym(keycode);
-        let modifiers = self.modifiers();
-        let logo = state.mod_name_is_active(xkb::MOD_NAME_LOGO, xkb::STATE_MODS_EFFECTIVE);
+        let (modifiers, logo) = (self.modifiers, self.logo);
         let bindings = if editing_text {
             &self.text_keybinds
         } else {
@@ -183,12 +187,19 @@ impl KeyboardState {
         let binding = bindings
             .lookup(keysym.raw(), shift_free_key, modifiers, logo, false)
             .or_else(|| {
-                editing_text
-                    .then(|| {
-                        self.keybinds
-                            .lookup(keysym.raw(), shift_free_key, modifiers, logo, true)
-                    })
-                    .flatten()
+                if !editing_text {
+                    return None;
+                }
+                // Keys that type text are not gestures while editing.
+                let text = state.key_get_utf8(keycode);
+                if !(modifiers.ctrl || modifiers.alt || logo)
+                    && !text.is_empty()
+                    && !text.chars().any(char::is_control)
+                {
+                    return None;
+                }
+                self.keybinds
+                    .lookup(keysym.raw(), shift_free_key, modifiers, logo, true)
             });
         let mut composed = false;
         let text = if binding.is_some() || !editing_text || modifiers.ctrl || modifiers.alt || logo
@@ -331,12 +342,12 @@ impl Dispatch<WlKeyboard, ()> for State {
             } => {
                 state.release_keyboard_gestures();
                 if let Err(error) = state.keyboard.set_keymap(fd, size) {
-                    eprintln!("vellum: failed to load XKB keymap: {error}");
+                    log::error!("failed to load XKB keymap: {error}");
                 }
             }
             Event::Keymap { .. } => {
                 state.release_keyboard_gestures();
-                state.keyboard.clear();
+                state.keyboard.clear_keymap();
             }
             Event::Modifiers {
                 mods_depressed,

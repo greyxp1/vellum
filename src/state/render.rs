@@ -7,6 +7,7 @@ use wayland_client::{Connection, Dispatch, Proxy, QueueHandle};
 
 use super::{State, output::Output};
 use crate::OutputId;
+use crate::render::GpuContext;
 
 // Acquisition may fail on an occluded surface. Back off without relying on a
 // frame callback that the compositor may withhold until the surface is visible.
@@ -62,6 +63,10 @@ impl State {
     }
 
     pub(crate) fn render_pending(&mut self) {
+        if let Some(error) = self.gpu.as_ref().and_then(GpuContext::lost) {
+            self.fatal_error = Some(error.clone());
+            return;
+        }
         if !std::mem::take(&mut self.render_requested) {
             return;
         }
