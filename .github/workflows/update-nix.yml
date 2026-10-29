@@ -18,11 +18,12 @@ jobs:
     outputs:
       changed: ${{ steps.update.outputs.changed }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
+          persist-credentials: false
 
-      - uses: DeterminateSystems/nix-installer-action@v23
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
         with:
           determinate: false
 
@@ -30,7 +31,7 @@ jobs:
         id: update
         run: |
           set -euo pipefail
-          nix flake update --accept-flake-config
+          nix flake update
           if git diff --quiet -- flake.lock; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
           else
@@ -53,32 +54,34 @@ jobs:
         runner: [ubuntu-24.04, ubuntu-24.04-arm]
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
+          persist-credentials: false
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: nix-inputs
 
-      - uses: DeterminateSystems/nix-installer-action@v23
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
         with:
           determinate: false
 
       - name: Check candidate
         run: |
           set -euo pipefail
-          nix flake check --no-update-lock-file --accept-flake-config --max-jobs 2 --cores 2
-          nix build .#default --no-link --no-update-lock-file --accept-flake-config --max-jobs 2 --cores 2
+          nix flake check --no-update-lock-file --max-jobs 2 --cores 2
+          nix build .#default --no-link --no-update-lock-file --max-jobs 2 --cores 2
 
   commit:
     needs: [prepare, build]
     if: needs.prepare.outputs.changed == 'true'
     runs-on: ubuntu-24.04
     permissions:
+      actions: write
       contents: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
 
@@ -96,3 +99,9 @@ jobs:
           git add flake.lock
           git commit -m "updated nix inputs"
           git push origin "HEAD:$UPDATE_BRANCH"
+
+      # Pushes with GITHUB_TOKEN do not trigger other workflows.
+      - name: Cache inputs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run cache.yml --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME"

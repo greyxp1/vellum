@@ -48,7 +48,7 @@ rustPlatform.buildRustPackage {
   ];
 
   postInstall = ''
-    mapfile -d "" outputDirs < <(find "$tmpDir/build" -type d -path '*/build/vellum-*/out' \
+    mapfile -d "" outputDirs < <(find target -type d -path "*/$cargoBuildType/build/vellum-*/out" \
       -exec test -f '{}/completions/vellum.bash' ';' -print0)
     if [ "''${#outputDirs[@]}" -ne 1 ]; then
       echo "Expected one Vellum documentation directory, found ''${#outputDirs[@]}" >&2
