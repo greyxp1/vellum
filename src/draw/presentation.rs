@@ -1,8 +1,6 @@
 //! Assembles visible annotations and transient decorations for an output.
 
-use super::decorations::{
-    text_caret, text_cursor_rectangle, text_preedit_span, tool_cursor_geometry,
-};
+use super::decorations::{text_cursor_rectangle, text_preedit_span, tool_cursor_geometry};
 use super::scene::{self, ElementKind};
 use super::{DrawState, Feedback, Point, TextInputSnapshot};
 use crate::OutputId;
@@ -43,6 +41,11 @@ impl DrawState {
         let items = {
             let mut items = Vec::with_capacity(elements.len());
             for element in elements {
+                // The element's bounds do not follow uncommitted edits.
+                if let Some(edit) = active_text.filter(|edit| edit.id == Some(element.id)) {
+                    items.push(SceneItem::Text(edit.spec()));
+                    continue;
+                }
                 let preview = active_canvas
                     .then(|| self.editor.resize_preview(element.id))
                     .flatten();
@@ -52,22 +55,23 @@ impl DrawState {
                     Point::default()
                 };
                 let bounds = preview.map_or(element.bounds, |current| current.bounds);
+                let (kind, style) = preview.map_or((&element.kind, element.style), |current| {
+                    (&current.kind, current.style)
+                });
+                // Layout bounds exclude glyph ink overhangs; allow one em around text.
+                let overhang = match kind {
+                    ElementKind::Text { scale, .. } => {
+                        style.size * scale[0].abs().max(scale[1].abs())
+                    }
+                    _ => 0.0,
+                };
                 let bounds = scene::Bounds {
                     min: bounds.min + offset,
                     max: bounds.max + offset,
                 };
-                // Layout bounds do not include all glyph ink overhangs; keep text conservative.
-                if !matches!(element.kind, ElementKind::Text { .. }) && !bounds.intersects(visible)
-                {
+                if !bounds.expanded(overhang).intersects(visible) {
                     continue;
                 }
-                if let Some(edit) = active_text.filter(|edit| edit.id == Some(element.id)) {
-                    items.push(SceneItem::Text(edit.spec()));
-                    continue;
-                }
-                let (kind, style) = preview.map_or((&element.kind, element.style), |current| {
-                    (&current.kind, current.style)
-                });
                 let ElementKind::Text {
                     origin,
                     content,
@@ -103,28 +107,25 @@ impl DrawState {
                 ..
             }) = self.feedback.as_ref().filter(|_| presentation.interactive)
             {
-                for [x, y] in [[15.0, 16.0], [17.0, 16.0], [16.0, 15.0], [16.0, 17.0]] {
+                const OUTLINE: [f32; 4] = [0.0, 0.0, 0.0, 0.9];
+                for ([x, y], color) in [
+                    ([15.0, 16.0], OUTLINE),
+                    ([17.0, 16.0], OUTLINE),
+                    ([16.0, 15.0], OUTLINE),
+                    ([16.0, 17.0], OUTLINE),
+                    ([16.0, 16.0], [1.0; 4]),
+                ] {
                     items.push(SceneItem::Text(TextSpec {
                         key: u64::MAX - 30,
                         content,
                         left: at.x + x,
                         top: at.y + y,
                         font_size: 18.0,
-                        color: [0.0, 0.0, 0.0, 0.9],
+                        color,
                         background_roundness: None,
                         scale: [1.0; 2],
                     }));
                 }
-                items.push(SceneItem::Text(TextSpec {
-                    key: u64::MAX - 30,
-                    content,
-                    left: at.x + 16.0,
-                    top: at.y + 16.0,
-                    font_size: 18.0,
-                    color: [1.0, 1.0, 1.0, 1.0],
-                    background_roundness: None,
-                    scale: [1.0; 2],
-                }));
             }
             items
         };
@@ -133,7 +134,6 @@ impl DrawState {
         let mut cursor_rectangle = None;
         if let Some(edit) = active_text.filter(|_| presentation.interactive) {
             let [scale_x, scale_y] = edit.scale;
-            let [x, y] = edit.cursor_position();
             cursor_rectangle = Some(text_cursor_rectangle(
                 edit.origin,
                 edit.ime_area(),
@@ -141,11 +141,7 @@ impl DrawState {
                 origin,
             ));
             if self.caret_visible && edit.shows_caret() {
-                self.previews.push(text_caret(
-                    edit.origin.x + x * scale_x,
-                    edit.origin.y + y * scale_y,
-                    edit.style.size * scale_y,
-                ));
+                self.previews.push(edit.caret());
             }
             edit.decoration_rectangles(|[x, y, width, height], style| {
                 self.previews.push(text_preedit_span(

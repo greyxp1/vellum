@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use rustix::fs::inotify::{self, CreateFlags, ReadFlags, WatchFlags};
 
-use super::{FileConfig, Settings, default_config_paths, read_config, read_first_config};
+use super::{Settings, default_config_paths, read_config, read_first_config};
 use crate::cli::Cli;
 
 pub(crate) struct Config {
@@ -42,8 +42,6 @@ impl Config {
     pub(crate) fn load(&self) -> Result<Settings, String> {
         let file = if self.required {
             read_config(&self.paths[0])?
-        } else if self.paths.is_empty() {
-            FileConfig::default()
         } else {
             read_first_config(self.paths.iter().cloned())?
         };
@@ -73,7 +71,9 @@ impl Config {
             Ok(false) => {}
             Err(error) => {
                 log::warn!("could not read config changes: {error}");
+                // Reloading rebuilds the watcher and catches missed changes.
                 self.watcher = None;
+                self.reload_at = Some(Instant::now() + Duration::from_secs(1));
             }
         }
     }
@@ -111,15 +111,19 @@ impl Watcher {
             let ancestors: Vec<_> = path.ancestors().collect();
             // Observe replacements before resolving descendants through symlinks.
             for (index, &ancestor) in ancestors.iter().enumerate().rev() {
-                let flags = WatchFlags::CLOSE_WRITE
-                    | WatchFlags::MODIFY
+                // Directories skip content events, so unrelated writes stay silent. Their
+                // ATTRIB events catch permission fixes on a config that could not be watched.
+                let flags = WatchFlags::DELETE_SELF
+                    | WatchFlags::MOVE_SELF
                     | WatchFlags::ATTRIB
-                    | WatchFlags::CREATE
-                    | WatchFlags::DELETE
-                    | WatchFlags::MOVED_FROM
-                    | WatchFlags::MOVED_TO
-                    | WatchFlags::DELETE_SELF
-                    | WatchFlags::MOVE_SELF;
+                    | if index == 0 {
+                        WatchFlags::CLOSE_WRITE | WatchFlags::MODIFY
+                    } else {
+                        WatchFlags::CREATE
+                            | WatchFlags::DELETE
+                            | WatchFlags::MOVED_FROM
+                            | WatchFlags::MOVED_TO
+                    };
                 match inotify::add_watch(&fd, ancestor, flags) {
                     Ok(wd) => {
                         let names = entries.entry(wd).or_default();

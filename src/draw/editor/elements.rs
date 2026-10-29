@@ -93,18 +93,13 @@ impl Editor {
             self.document.history.record(HistoryEntry::Clear(elements));
             return true;
         }
-        cancelled | self.remove_ids(&selected)
+        cancelled | self.remove_ids(&selected, false)
     }
 
-    fn remove_ids(&mut self, ids: &[ElementId]) -> bool {
+    fn remove_ids(&mut self, ids: &[ElementId], merge: bool) -> bool {
         let mut indices: Vec<_> = ids
             .iter()
-            .filter_map(|id| {
-                self.document
-                    .elements
-                    .binary_search_by_key(id, |element| element.id)
-                    .ok()
-            })
+            .filter_map(|&id| self.document.element_index(id))
             .collect();
         indices.sort_unstable();
         indices.dedup();
@@ -125,13 +120,14 @@ impl Editor {
             .zip(indices.iter().copied())
             .map(|(element, index)| (index, element))
             .collect();
-        self.document.history.record(HistoryEntry::Remove(removed));
-        self.selected.retain(|id| {
-            self.document
-                .elements
-                .binary_search_by_key(id, |element| element.id)
-                .is_ok()
-        });
+        let entry = HistoryEntry::Remove(removed);
+        if merge {
+            self.document.history.merge(entry);
+        } else {
+            self.document.history.record(entry);
+        }
+        self.selected
+            .retain(|&id| self.document.element_index(id).is_some());
         true
     }
 
@@ -148,10 +144,6 @@ impl Editor {
             .record(HistoryEntry::Insert(vec![index]));
     }
 
-    fn remove_id(&mut self, id: ElementId) -> bool {
-        self.remove_ids(&[id])
-    }
-
     pub(super) fn erase_between(&mut self, start: Point, end: Point) -> bool {
         let radius = self
             .properties(crate::tool::Tool::Eraser)
@@ -165,17 +157,17 @@ impl Editor {
             .filter(|element| element.erase_hit_test(start, end, radius))
             .map(|element| element.id)
             .collect::<Vec<_>>();
-        self.remove_ids(&hits)
+        self.remove_ids(&hits, true)
     }
 
     pub(super) fn commit_text(&mut self) -> bool {
-        if !self.is_editing_text() {
+        let Some(Interaction::EditingText(edit)) = self
+            .interaction
+            .take_if(|interaction| matches!(interaction, Interaction::EditingText(_)))
+        else {
             return false;
-        }
-        let Some(Interaction::EditingText(edit)) = self.interaction.take() else {
-            unreachable!("text editing was checked before taking the interaction");
         };
-        let content: String = edit.content().into_iter().collect();
+        let content = edit.finish();
         let TextEdit {
             id,
             origin,
@@ -184,7 +176,7 @@ impl Editor {
             ..
         } = edit;
         if content.is_empty() {
-            return id.is_none_or(|id| self.remove_id(id));
+            return id.is_none_or(|id| self.remove_ids(&[id], false));
         }
         let kind = ElementKind::Text {
             origin,
@@ -219,23 +211,19 @@ impl Editor {
             return false;
         };
         let edit = self.make_text_edit(Some(id), *origin, content.clone(), element.style, *scale);
+        // Multi-click editing skips cancel_interaction, which normally ends merged undo steps.
+        self.document.history.seal();
         self.interaction = Some(Interaction::EditingText(edit));
         true
     }
 
     pub(super) fn element(&self, id: ElementId) -> Option<&Element> {
-        self.document
-            .elements
-            .binary_search_by_key(&id, |element| element.id)
-            .ok()
-            .map(|index| &self.document.elements[index])
+        let index = self.document.element_index(id)?;
+        Some(&self.document.elements[index])
     }
 
     pub(super) fn element_mut(&mut self, id: ElementId) -> Option<&mut Element> {
-        self.document
-            .elements
-            .binary_search_by_key(&id, |element| element.id)
-            .ok()
-            .map(|index| &mut self.document.elements[index])
+        let index = self.document.element_index(id)?;
+        Some(&mut self.document.elements[index])
     }
 }

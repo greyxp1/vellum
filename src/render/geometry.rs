@@ -1,4 +1,4 @@
-use kurbo::{Affine, BezPath, ParamCurve, ParamCurveNearest, Shape, Stroke};
+use kurbo::{Affine, BezPath, ParamCurve, ParamCurveNearest, PathSeg, Rect, Shape, Stroke};
 use peniko::Fill;
 
 #[derive(Debug, Clone)]
@@ -112,7 +112,7 @@ impl Geometry {
             // An edge hit avoids scanning the entire outline for its winding.
             if slop_squared > 0.0
                 && path.segments().any(|segment| {
-                    let bounds = segment.bounding_box().inflate(slop, slop);
+                    let bounds = control_box(segment).inflate(slop, slop);
                     point.x >= bounds.x0
                         && point.x <= bounds.x1
                         && point.y >= bounds.y0
@@ -122,11 +122,7 @@ impl Geometry {
             {
                 return true;
             }
-            let winding = path.winding(point);
-            match fill_rule {
-                Fill::NonZero => winding != 0,
-                Fill::EvenOdd => winding % 2 != 0,
-            }
+            contains(path, *fill_rule, point)
         })
     }
 
@@ -146,7 +142,7 @@ impl Geometry {
             };
             let bounds = line.bounding_box().inflate(tolerance, tolerance);
             let hit_edge = path.segments().any(|segment| {
-                let other = segment.bounding_box();
+                let other = control_box(segment);
                 bounds.overlaps(other)
                     && if length == 0.0 {
                         segment.nearest(line.p0, 0.1).distance_sq <= tolerance * tolerance
@@ -170,14 +166,26 @@ impl Geometry {
                                 })
                     }
             });
-            hit_edge
-                || fill_rule.is_some_and(|rule| {
-                    let winding = path.winding(line.p0);
-                    match rule {
-                        Fill::NonZero => winding != 0,
-                        Fill::EvenOdd => winding % 2 != 0,
-                    }
-                })
+            hit_edge || fill_rule.is_some_and(|rule| contains(path, *rule, line.p0))
         })
+    }
+}
+
+fn contains(path: &BezPath, fill_rule: Fill, point: kurbo::Point) -> bool {
+    let winding = path.winding(point);
+    match fill_rule {
+        Fill::NonZero => winding != 0,
+        Fill::EvenOdd => winding % 2 != 0,
+    }
+}
+
+/// Contains the segment like its exact bounding box, without solving for extrema.
+fn control_box(segment: PathSeg) -> Rect {
+    match segment {
+        PathSeg::Line(line) => Rect::from_points(line.p0, line.p1),
+        PathSeg::Quad(quad) => Rect::from_points(quad.p0, quad.p2).union_pt(quad.p1),
+        PathSeg::Cubic(cubic) => Rect::from_points(cubic.p0, cubic.p3)
+            .union_pt(cubic.p1)
+            .union_pt(cubic.p2),
     }
 }

@@ -4,6 +4,7 @@ mod preview;
 mod properties;
 
 use self::interaction::Interaction;
+pub(super) use self::properties::Property;
 use self::properties::ToolPropertySet;
 use super::Modifiers;
 use super::history::{Entry as HistoryEntry, History};
@@ -22,6 +23,12 @@ struct Document {
 }
 
 impl Document {
+    fn element_index(&self, id: ElementId) -> Option<usize> {
+        self.elements
+            .binary_search_by_key(&id, |element| element.id)
+            .ok()
+    }
+
     fn clear(&mut self) -> bool {
         if self.elements.is_empty() {
             return false;
@@ -79,6 +86,8 @@ pub(super) struct Editor {
     palette: Vec<[f32; 4]>,
     cursor_visibility: Option<bool>,
     tool_cursor_visibility: std::collections::BTreeMap<Tool, bool>,
+    // Wheel adjustments of one property merge into one undo step.
+    adjusted: Option<Property>,
 }
 
 impl Editor {
@@ -152,6 +161,7 @@ impl Editor {
             remember_last_tool: settings.remember_last_tool,
             palette: settings.palette.clone(),
             cursor_visibility: settings.cursor.visible,
+            adjusted: None,
             tool_cursor_visibility: settings
                 .tool_defaults
                 .iter()
@@ -389,7 +399,7 @@ impl Editor {
         self.text_edit_mut().is_some_and(TextEdit::clear_preedit)
     }
 
-    pub(super) fn make_text_edit(
+    fn make_text_edit(
         &mut self,
         id: Option<ElementId>,
         origin: Point,
@@ -437,10 +447,7 @@ fn drawing_kind(tool: Tool, start: Point, current: Point, modifiers: Modifiers) 
         Tool::Ellipse => {
             let (min, max) =
                 selection::constrained_box(start, current, modifiers.shift, modifiers.alt);
-            ElementKind::Ellipse {
-                center: min.midpoint(max),
-                radii: Point::new((max.x - min.x) * 0.5, (max.y - min.y) * 0.5),
-            }
+            ElementKind::ellipse(min, max)
         }
         Tool::Pen | Tool::Text | Tool::Eraser | Tool::Select => unreachable!(),
     }

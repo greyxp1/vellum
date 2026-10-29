@@ -52,16 +52,15 @@ impl Tool {
         }
     }
 
-    pub(crate) fn default_roundness(self) -> Option<f32> {
-        match self {
-            Self::Pen
-            | Self::Line
-            | Self::Arrow
-            | Self::Triangle
-            | Self::Rectangle
-            | Self::Text => Some(self.initial_roundness()),
-            _ => None,
-        }
+    pub(crate) fn supports_opacity(self) -> bool {
+        !matches!(self, Self::Eraser | Self::Select)
+    }
+
+    pub(crate) fn supports_roundness(self) -> bool {
+        matches!(
+            self,
+            Self::Pen | Self::Line | Self::Arrow | Self::Triangle | Self::Rectangle | Self::Text
+        )
     }
 
     pub(super) fn initial_roundness(self) -> f32 {

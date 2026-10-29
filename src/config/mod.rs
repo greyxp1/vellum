@@ -11,6 +11,7 @@ pub(crate) use size::SizeRange;
 use size::{SizeRangeConfig, resolve_size_ranges};
 
 use crate::Rgba;
+pub(crate) use crate::cli::MIN_OPACITY;
 use crate::tool::Tool;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -172,26 +173,12 @@ pub(crate) struct Stops {
     pub(crate) roundness: Arc<[f32]>,
 }
 
-fn size_stops(name: &str, values: &[f32], range: &SizeRange) -> Result<Arc<[f32]>, String> {
-    if values.iter().any(|value| !range.contains(*value)) {
-        return Err(format!(
-            "{name} values must be between {} and {}",
-            range.min(),
-            range.max(),
-        ));
-    }
-    let mut values = values.to_vec();
-    values.sort_by(f32::total_cmp);
-    values.dedup();
-    Ok(Arc::from(values))
-}
-
-fn percent_stops(name: &str, values: &[f32], min: f32) -> Result<Arc<[f32]>, String> {
+fn stops(name: &str, values: &[f32], min: f32, max: f32) -> Result<Arc<[f32]>, String> {
     if values
         .iter()
-        .any(|value| !value.is_finite() || !(min..=1.0).contains(value))
+        .any(|value| !value.is_finite() || !(min..=max).contains(value))
     {
-        return Err(format!("{name} values must be between {min} and 1.0"));
+        return Err(format!("{name} values must be between {min} and {max}"));
     }
     let mut values = values.to_vec();
     values.sort_by(f32::total_cmp);
@@ -205,20 +192,23 @@ fn resolve_stops(
     global_size_range: &SizeRange,
     size_ranges: &BTreeMap<Tool, SizeRange>,
 ) -> Result<BTreeMap<Tool, Stops>, String> {
-    let global_size = size_stops(
+    let global_size = stops(
         "stops.size",
         global.size.as_deref().unwrap_or_default(),
-        global_size_range,
+        global_size_range.min(),
+        global_size_range.max(),
     )?;
-    let global_opacity = percent_stops(
+    let global_opacity = stops(
         "stops.opacity",
         global.opacity.as_deref().unwrap_or_default(),
-        0.05,
+        MIN_OPACITY,
+        1.0,
     )?;
-    let global_roundness = percent_stops(
+    let global_roundness = stops(
         "stops.roundness",
         global.roundness.as_deref().unwrap_or_default(),
         0.0,
+        1.0,
     )?;
     Tool::SIZED
         .into_iter()
@@ -228,9 +218,12 @@ fn resolve_stops(
                 .get(&tool)
                 .expect("adjustable tools have size ranges");
             let size = match configured.and_then(|stops| stops.size.as_deref()) {
-                Some(values) => {
-                    size_stops(&format!("tools.{}.stops.size", tool.name()), values, range)?
-                }
+                Some(values) => stops(
+                    &format!("tools.{}.stops.size", tool.name()),
+                    values,
+                    range.min(),
+                    range.max(),
+                )?,
                 None => Arc::from(
                     global_size
                         .iter()
@@ -240,18 +233,20 @@ fn resolve_stops(
                 ),
             };
             let opacity = match configured.and_then(|stops| stops.opacity.as_deref()) {
-                Some(values) => percent_stops(
+                Some(values) => stops(
                     &format!("tools.{}.stops.opacity", tool.name()),
                     values,
-                    0.05,
+                    MIN_OPACITY,
+                    1.0,
                 )?,
                 None => global_opacity.clone(),
             };
             let roundness = match configured.and_then(|stops| stops.roundness.as_deref()) {
-                Some(values) => percent_stops(
+                Some(values) => stops(
                     &format!("tools.{}.stops.roundness", tool.name()),
                     values,
                     0.0,
+                    1.0,
                 )?,
                 None => global_roundness.clone(),
             };
@@ -273,72 +268,61 @@ fn validate_tool_defaults(
 ) -> Result<(), String> {
     for (&tool, defaults) in tools {
         let prefix = format!("tools.{}", tool.name());
-        let supports_size = tool != Tool::Select;
-        if defaults.size_range.is_some() && !supports_size {
-            return Err(format!("{prefix}.size_range is not supported"));
+        let size = tool != Tool::Select;
+        let opacity = tool.supports_opacity();
+        let roundness = tool.supports_roundness();
+        let text = tool == Tool::Text;
+        let settings = [
+            ("size", defaults.size.is_some(), size),
+            ("size_range", defaults.size_range.is_some(), size),
+            ("steps.size", defaults.steps.size.is_some(), size),
+            ("stops.size", defaults.stops.size.is_some(), size),
+            ("opacity", defaults.opacity.is_some(), opacity),
+            ("steps.opacity", defaults.steps.opacity.is_some(), opacity),
+            ("stops.opacity", defaults.stops.opacity.is_some(), opacity),
+            ("roundness", defaults.roundness.is_some(), roundness),
+            (
+                "steps.roundness",
+                defaults.steps.roundness.is_some(),
+                roundness,
+            ),
+            (
+                "stops.roundness",
+                defaults.stops.roundness.is_some(),
+                roundness,
+            ),
+            ("filled", defaults.filled.is_some(), tool.supports_fill()),
+            ("background", defaults.background.is_some(), text),
+        ];
+        if let Some((name, ..)) = settings
+            .iter()
+            .find(|(_, set, supported)| *set && !supported)
+        {
+            return Err(format!("{prefix}.{name} is not supported"));
         }
-        if defaults.steps.size.is_some() && !supports_size {
-            return Err(format!("{prefix}.steps.size is not supported"));
+        if let Some(value) = defaults.size
+            && let Some(range) = size_ranges.get(&tool)
+            && !range.contains(value)
+        {
+            return Err(format!(
+                "{prefix}.size must be between {} and {}",
+                range.min(),
+                range.max(),
+            ));
         }
-        if defaults.stops.size.is_some() && !supports_size {
-            return Err(format!("{prefix}.stops.size is not supported"));
-        }
-        match defaults.size {
-            Some(_) if !supports_size => {
-                return Err(format!("{prefix}.size is not supported"));
-            }
-            Some(size)
-                if !size_ranges
-                    .get(&tool)
-                    .is_some_and(|range| range.contains(size)) =>
-            {
-                let size_range = size_ranges
-                    .get(&tool)
-                    .expect("tools with size defaults have size ranges");
-                return Err(format!(
-                    "{prefix}.size must be between {} and {}",
-                    size_range.min(),
-                    size_range.max(),
-                ));
-            }
-            _ => {}
-        }
-        match defaults.opacity {
-            Some(_) if matches!(tool, Tool::Eraser | Tool::Select) => {
-                return Err(format!("{prefix}.opacity is not supported"));
-            }
-            Some(value) if !value.is_finite() || !(0.05..=1.0).contains(&value) => {
-                return Err(format!("{prefix}.opacity must be between 0.05 and 1.0"));
-            }
-            _ => {}
-        }
-        if defaults.stops.opacity.is_some() && matches!(tool, Tool::Eraser | Tool::Select) {
-            return Err(format!("{prefix}.stops.opacity is not supported"));
-        }
-        if defaults.steps.opacity.is_some() && matches!(tool, Tool::Eraser | Tool::Select) {
-            return Err(format!("{prefix}.steps.opacity is not supported"));
-        }
-        if defaults.roundness.is_some() && tool.default_roundness().is_none() {
-            return Err(format!("{prefix}.roundness is not supported"));
-        }
-        if defaults.stops.roundness.is_some() && tool.default_roundness().is_none() {
-            return Err(format!("{prefix}.stops.roundness is not supported"));
-        }
-        if defaults.steps.roundness.is_some() && tool.default_roundness().is_none() {
-            return Err(format!("{prefix}.steps.roundness is not supported"));
+        if let Some(value) = defaults.opacity
+            && (!value.is_finite() || !(MIN_OPACITY..=1.0).contains(&value))
+        {
+            return Err(format!(
+                "{prefix}.opacity must be between {MIN_OPACITY} and 1"
+            ));
         }
         if let Some(value) = defaults.roundness
             && (!value.is_finite() || !(0.0..=1.0).contains(&value))
         {
-            return Err(format!("{prefix}.roundness must be between 0.0 and 1.0"));
+            return Err(format!("{prefix}.roundness must be between 0 and 1"));
         }
-        if defaults.filled.is_some() && !tool.supports_fill() {
-            return Err(format!("{prefix}.filled is not supported"));
-        }
-        if defaults.background.is_some() && tool != Tool::Text {
-            return Err(format!("{prefix}.background is not supported"));
-        }
-        if defaults.font.is_some() && tool != Tool::Text {
+        if defaults.font.is_some() && !text {
             return Err(format!("{prefix} does not support font settings"));
         }
     }
@@ -401,7 +385,14 @@ impl Settings {
         let palette = palette_text
             .iter()
             .enumerate()
-            .map(|(index, color)| parse_named_color(&format!("palette[{index}]"), color))
+            .map(|(index, color)| {
+                let name = format!("palette[{index}]");
+                let rgba = parse_named_color(&name, color)?;
+                if rgba[3] < MIN_OPACITY {
+                    return Err(format!("{name} opacity must be at least {MIN_OPACITY}"));
+                }
+                Ok(rgba)
+            })
             .collect::<Result<Vec<_>, _>>()?;
         let default_color = match file.default_color {
             Some(color) => {

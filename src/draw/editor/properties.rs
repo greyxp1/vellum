@@ -1,5 +1,5 @@
 use super::{Editor, HistoryEntry, Interaction};
-use crate::config::SizeRange;
+use crate::config::{MIN_OPACITY, SizeRange};
 use crate::draw::scene::{ElementKind, Style, tool_for};
 use crate::tool::Tool;
 
@@ -9,8 +9,6 @@ pub(in crate::draw) struct Adjustment {
     pub(in crate::draw) feedback: Option<String>,
     pub(in crate::draw) hit_stop: bool,
 }
-
-const MIN_OPACITY: f32 = 0.05;
 
 fn size_label(value: f32, default: f32) -> String {
     let suffix = if value == default { " · default" } else { "" };
@@ -28,24 +26,6 @@ fn fill_label(filled: bool) -> String {
 
 fn background_label(background: bool) -> String {
     format!("Background · {}", if background { "on" } else { "off" })
-}
-
-fn adjust_percent(
-    value: &mut f32,
-    default: f32,
-    steps: f32,
-    increment: f32,
-    min: f32,
-    stops: &[f32],
-) -> Adjustment {
-    let previous = *value;
-    let adjustment = stepped_with_stops(previous, default, steps, increment, min, 1.0, stops);
-    *value = adjustment.value;
-    Adjustment {
-        changed: *value != previous,
-        feedback: Some(percent_label(*value, default)),
-        hit_stop: adjustment.hit_stop,
-    }
 }
 
 fn stepped_value(value: f32, default: f32, steps: f32, increment: f32, min: f32, max: f32) -> f32 {
@@ -97,23 +77,37 @@ fn stepped_with_stops(
     }
 }
 
-fn stepped_size(
-    value: f32,
-    default: f32,
-    steps: f32,
-    increment: f32,
-    range: &SizeRange,
-    stops: &[f32],
-) -> StepAdjustment {
-    stepped_with_stops(
-        value,
-        default,
-        steps,
-        increment,
-        range.min(),
-        range.max(),
-        stops,
-    )
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(in crate::draw) enum Property {
+    Size,
+    Opacity,
+    Roundness,
+}
+
+impl Property {
+    fn supported(self, tool: Tool) -> bool {
+        match self {
+            Self::Size => tool != Tool::Select,
+            Self::Opacity => tool.supports_opacity(),
+            Self::Roundness => tool.supports_roundness(),
+        }
+    }
+
+    fn tool_value(self, properties: &mut ToolProperties) -> &mut f32 {
+        match self {
+            Self::Size => &mut properties.size,
+            Self::Opacity => &mut properties.opacity,
+            Self::Roundness => &mut properties.roundness,
+        }
+    }
+
+    fn style_value(self, style: &mut Style) -> &mut f32 {
+        match self {
+            Self::Size => &mut style.size,
+            Self::Opacity => &mut style.color[3],
+            Self::Roundness => &mut style.roundness,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -220,7 +214,7 @@ impl Editor {
                     .filter(|element| supports_fill(&element.kind))
                     .any(|element| !element.style.filled)
             };
-            return self.adjust_selected(|kind, style| {
+            return self.adjust_selected(false, |kind, style| {
                 supports_fill(kind).then(|| {
                     style.filled = enable;
                     if matches!(kind, ElementKind::Text { .. }) {
@@ -251,47 +245,20 @@ impl Editor {
         }
     }
 
-    pub(super) fn tool_fill(&self, tool: Tool) -> bool {
-        self.properties(tool)
-            .is_some_and(|properties| properties.filled)
-    }
-
-    pub(in crate::draw) fn adjust_size(&mut self, steps: f32) -> Adjustment {
+    pub(in crate::draw) fn adjust(&mut self, property: Property, steps: f32) -> Adjustment {
         if steps == 0.0 {
             return Adjustment::default();
         }
-        let default_text_size = self
-            .default_size(Tool::Text)
-            .expect("text must have an adjustable size");
-        let text_size_range = self
-            .size_ranges
-            .get(&Tool::Text)
-            .copied()
-            .expect("text must have a size range");
-        let text_step = self
-            .steps
-            .get(&Tool::Text)
-            .expect("text has size step")
-            .size;
-        let text_stops = self
-            .stops
-            .get(&Tool::Text)
-            .expect("text has size stops")
-            .size
-            .clone();
+        let step = self.property_stepper(property, steps);
         if let Some(edit) = self.text_edit_mut() {
-            let adjustment = stepped_size(
-                edit.style.size,
-                default_text_size,
-                steps,
-                text_step,
-                &text_size_range,
-                &text_stops,
-            );
-            let label = size_label(adjustment.value, default_text_size);
-            let changed = edit.style.size != adjustment.value;
+            let value = *property.style_value(&mut edit.style);
+            let (adjustment, label) = step(Tool::Text, value);
+            let changed = value != adjustment.value;
             if changed {
-                edit.set_size(adjustment.value);
+                match property {
+                    Property::Size => edit.set_size(adjustment.value),
+                    _ => *property.style_value(&mut edit.style) = adjustment.value,
+                }
             }
             return Adjustment {
                 changed,
@@ -300,78 +267,36 @@ impl Editor {
             };
         }
         if !self.selected.is_empty() {
-            let defaults = self.default_tool_properties;
-            let size_ranges = self.size_ranges.clone();
-            let step_sizes = self.steps.clone();
-            let stops = self.stops.clone();
+            if self.adjusted.replace(property) != Some(property) {
+                self.document.history.seal();
+            }
             let mut hit_stop = false;
-            let mut adjustment = self.adjust_selected(|kind, style| {
+            let mut adjustment = self.adjust_selected(true, |kind, style| {
                 let tool = tool_for(kind);
-                let default = defaults
-                    .properties(tool)
-                    .expect("element tools have adjustable properties")
-                    .size;
-                let size_range = size_ranges
-                    .get(&tool)
-                    .expect("element tools have size ranges");
-                let stop_values = &stops
-                    .get(&tool)
-                    .expect("element tools have size stops")
-                    .size;
-                let increment = step_sizes
-                    .get(&tool)
-                    .expect("element tools have size step")
-                    .size;
-                let adjustment = stepped_size(
-                    style.size,
-                    default,
-                    steps,
-                    increment,
-                    size_range,
-                    stop_values,
-                );
-                style.size = adjustment.value;
+                if !property.supported(tool) {
+                    return None;
+                }
+                let value = property.style_value(style);
+                let (adjustment, label) = step(tool, *value);
+                *value = adjustment.value;
                 hit_stop |= adjustment.hit_stop;
-                Some(size_label(style.size, default))
+                Some(label)
             });
             adjustment.hit_stop = hit_stop;
             return adjustment;
         }
         let tool = self.tool;
-        let Some(default) = self.default_size(tool) else {
+        if !property.supported(tool) {
             return Adjustment::default();
-        };
-        let size_range = self
-            .size_ranges
-            .get(&tool)
-            .copied()
-            .expect("adjustable tools have size ranges");
-        let increment = self
-            .steps
-            .get(&tool)
-            .expect("adjustable tools have size step")
-            .size;
-        let stops = self
-            .stops
-            .get(&tool)
-            .expect("adjustable tools have size stops")
-            .size
-            .clone();
+        }
         let properties = self
             .properties_mut(tool)
-            .expect("tools with a default size have adjustable properties");
-        let adjustment = stepped_size(
-            properties.size,
-            default,
-            steps,
-            increment,
-            &size_range,
-            &stops,
-        );
-        let label = size_label(adjustment.value, default);
-        let changed = adjustment.value != properties.size;
+            .expect("supported tools have adjustable properties");
+        let value = property.tool_value(properties);
+        let (adjustment, label) = step(tool, *value);
+        let changed = *value != adjustment.value;
         if changed {
-            properties.size = adjustment.value;
+            *value = adjustment.value;
             self.sync_active_style();
         }
         Adjustment {
@@ -381,190 +306,43 @@ impl Editor {
         }
     }
 
-    pub(in crate::draw) fn adjust_opacity(&mut self, steps: f32) -> Adjustment {
-        if steps == 0.0 {
-            return Adjustment::default();
-        }
-        let default_text_opacity = self.default_properties(Tool::Text).opacity;
-        let text_step = self
-            .steps
-            .get(&Tool::Text)
-            .expect("text has opacity step")
-            .opacity;
-        let text_stops = self
-            .stops
-            .get(&Tool::Text)
-            .expect("text has opacity stops")
-            .opacity
-            .clone();
-        if let Some(edit) = self.text_edit_mut() {
-            return adjust_percent(
-                &mut edit.style.color[3],
-                default_text_opacity,
-                steps,
-                text_step,
-                MIN_OPACITY,
-                &text_stops,
-            );
-        }
-        if self.selected.is_empty() {
-            if matches!(self.tool, Tool::Eraser | Tool::Select) {
-                return Adjustment::default();
-            }
-            let tool = self.tool;
-            let default = self.default_properties(tool).opacity;
-            let increment = self
-                .steps
-                .get(&tool)
-                .expect("tool has opacity step")
-                .opacity;
-            let stops = self
-                .stops
-                .get(&tool)
-                .expect("tool has opacity stops")
-                .opacity
-                .clone();
-            let Some(properties) = self.properties_mut(tool) else {
-                return Adjustment::default();
+    /// Steps a tool's property value without borrowing the editor.
+    fn property_stepper(
+        &self,
+        property: Property,
+        steps: f32,
+    ) -> impl Fn(Tool, f32) -> (StepAdjustment, String) + use<> {
+        let defaults = self.default_tool_properties;
+        let size_ranges = self.size_ranges.clone();
+        let increments = self.steps.clone();
+        let stop_sets = self.stops.clone();
+        move |tool, value| {
+            let mut properties = *defaults
+                .properties(tool)
+                .expect("adjustable tools have defaults");
+            let default = *property.tool_value(&mut properties);
+            let (increment, stops) = (&increments[&tool], &stop_sets[&tool]);
+            let (min, max, increment, stops) = match property {
+                Property::Size => {
+                    let range = &size_ranges[&tool];
+                    (range.min(), range.max(), increment.size, &stops.size)
+                }
+                Property::Opacity => (MIN_OPACITY, 1.0, increment.opacity, &stops.opacity),
+                Property::Roundness => (0.0, 1.0, increment.roundness, &stops.roundness),
             };
-            let adjustment = adjust_percent(
-                &mut properties.opacity,
-                default,
-                steps,
-                increment,
-                MIN_OPACITY,
-                &stops,
-            );
-            if adjustment.changed {
-                self.sync_active_style();
-            }
-            return adjustment;
+            let adjustment = stepped_with_stops(value, default, steps, increment, min, max, stops);
+            let label = if property == Property::Size {
+                size_label(adjustment.value, default)
+            } else {
+                percent_label(adjustment.value, default)
+            };
+            (adjustment, label)
         }
-        let defaults = self.default_tool_properties;
-        let step_sizes = self.steps.clone();
-        let stops = self.stops.clone();
-        let mut hit_stop = false;
-        let mut adjustment = self.adjust_selected(|kind, style| {
-            let tool = tool_for(kind);
-            let default = defaults
-                .properties(tool)
-                .expect("element tools have adjustable properties")
-                .opacity;
-            let stop_values = &stops.get(&tool).expect("tool has opacity stops").opacity;
-            let increment = step_sizes
-                .get(&tool)
-                .expect("tool has opacity step")
-                .opacity;
-            let adjustment = adjust_percent(
-                &mut style.color[3],
-                default,
-                steps,
-                increment,
-                MIN_OPACITY,
-                stop_values,
-            );
-            hit_stop |= adjustment.hit_stop;
-            adjustment.feedback
-        });
-        adjustment.hit_stop = hit_stop;
-        adjustment
-    }
-
-    pub(in crate::draw) fn adjust_roundness(&mut self, steps: f32) -> Adjustment {
-        if steps == 0.0 {
-            return Adjustment::default();
-        }
-        let default_text_roundness = self.default_properties(Tool::Text).roundness;
-        let text_step = self
-            .steps
-            .get(&Tool::Text)
-            .expect("text has roundness step")
-            .roundness;
-        let text_stops = self
-            .stops
-            .get(&Tool::Text)
-            .expect("text has roundness stops")
-            .roundness
-            .clone();
-        if let Some(edit) = self.text_edit_mut() {
-            return adjust_percent(
-                &mut edit.style.roundness,
-                default_text_roundness,
-                steps,
-                text_step,
-                0.0,
-                &text_stops,
-            );
-        }
-        if self.selected.is_empty() {
-            let tool = self.tool;
-            if tool.default_roundness().is_none() {
-                return Adjustment::default();
-            }
-            let default = self.default_properties(tool).roundness;
-            let increment = self
-                .steps
-                .get(&tool)
-                .expect("tool has roundness step")
-                .roundness;
-            let stops = self
-                .stops
-                .get(&tool)
-                .expect("tool has roundness stops")
-                .roundness
-                .clone();
-            let properties = self
-                .properties_mut(tool)
-                .expect("tools with roundness have adjustable properties");
-            let adjustment = adjust_percent(
-                &mut properties.roundness,
-                default,
-                steps,
-                increment,
-                0.0,
-                &stops,
-            );
-            if adjustment.changed {
-                self.sync_active_style();
-            }
-            return adjustment;
-        }
-        let defaults = self.default_tool_properties;
-        let step_sizes = self.steps.clone();
-        let stops = self.stops.clone();
-        let mut hit_stop = false;
-        let mut adjustment = self.adjust_selected(|kind, style| {
-            let tool = tool_for(kind);
-            tool.default_roundness()?;
-            let default = defaults
-                .properties(tool)
-                .expect("element tools have adjustable properties")
-                .roundness;
-            let stop_values = &stops
-                .get(&tool)
-                .expect("tool has roundness stops")
-                .roundness;
-            let increment = step_sizes
-                .get(&tool)
-                .expect("tool has roundness step")
-                .roundness;
-            let adjustment = adjust_percent(
-                &mut style.roundness,
-                default,
-                steps,
-                increment,
-                0.0,
-                stop_values,
-            );
-            hit_stop |= adjustment.hit_stop;
-            adjustment.feedback
-        });
-        adjustment.hit_stop = hit_stop;
-        adjustment
     }
 
     fn adjust_selected(
         &mut self,
+        merge: bool,
         mut adjust: impl FnMut(&ElementKind, &mut Style) -> Option<String>,
     ) -> Adjustment {
         if let Some(Interaction::Resizing {
@@ -608,7 +386,12 @@ impl Editor {
         }
         let changed = !updates.is_empty();
         if changed {
-            self.document.history.record(HistoryEntry::Update(updates));
+            let entry = HistoryEntry::Update(updates);
+            if merge {
+                self.document.history.merge(entry);
+            } else {
+                self.document.history.record(entry);
+            }
         }
         Adjustment {
             changed,
@@ -634,7 +417,7 @@ impl Editor {
             return changed;
         }
         changed |= self
-            .adjust_selected(|_, style| {
+            .adjust_selected(false, |_, style| {
                 style.color = rgba;
                 None
             })
@@ -648,18 +431,6 @@ impl Editor {
 
     fn properties_mut(&mut self, tool: Tool) -> Option<&mut ToolProperties> {
         self.tool_properties.properties_mut(tool)
-    }
-
-    fn default_size(&self, tool: Tool) -> Option<f32> {
-        self.default_tool_properties
-            .properties(tool)
-            .map(|properties| properties.size)
-    }
-
-    fn default_properties(&self, tool: Tool) -> &ToolProperties {
-        self.default_tool_properties
-            .properties(tool)
-            .expect("tools with adjustable properties have defaults")
     }
 
     pub(super) fn style_for(&self, tool: Tool) -> Style {

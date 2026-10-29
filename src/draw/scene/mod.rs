@@ -5,13 +5,13 @@ mod shapes;
 use shapes::pixel_aligned_segment;
 pub(super) use shapes::{
     append_rounded_contour, bounds_for, geometry, pixel_aligned_point, pixel_aligned_points,
-    rendered_segment_endpoints, rounded_corner, text_bounds,
+    rendered_segment_endpoints, rounded_corner, rounded_tip, text_bounds,
 };
 
 use crate::render::Geometry;
 use peniko::Fill;
 
-pub(super) const HIT_SLOP: f32 = 5.0;
+const HIT_SLOP: f32 = 5.0;
 
 pub type ElementId = u64;
 
@@ -26,7 +26,7 @@ impl Point {
         Self { x, y }
     }
 
-    pub(super) fn distance_squared(self, other: Self) -> f32 {
+    pub(crate) fn distance_squared(self, other: Self) -> f32 {
         (self.x - other.x).powi(2) + (self.y - other.y).powi(2)
     }
 
@@ -81,7 +81,7 @@ pub struct Bounds {
 }
 
 impl Bounds {
-    fn from_points(points: impl IntoIterator<Item = Point>) -> Self {
+    pub(super) fn from_points(points: impl IntoIterator<Item = Point>) -> Self {
         let mut points = points.into_iter();
         let Some(first) = points.next() else {
             return Self::default();
@@ -157,6 +157,13 @@ pub enum ElementKind {
 }
 
 impl ElementKind {
+    pub(in crate::draw) fn ellipse(min: Point, max: Point) -> Self {
+        Self::Ellipse {
+            center: min.midpoint(max),
+            radii: (max - min) * 0.5,
+        }
+    }
+
     pub(super) fn translated(&self, delta: Point) -> Self {
         let mut translated = self.clone();
         match &mut translated {
@@ -255,11 +262,10 @@ impl Element {
     }
 
     pub(super) fn hit_test(&self, point: Point) -> bool {
-        let slop = HIT_SLOP;
-        if !self.bounds.expanded(slop).contains(point) {
+        if !self.bounds.expanded(HIT_SLOP).contains(point) {
             return false;
         }
-        let tolerance = self.style.size * 0.5 + slop;
+        let tolerance = self.style.size * 0.5 + HIT_SLOP;
         match &self.kind {
             ElementKind::Segment {
                 points: [start, end],
@@ -273,7 +279,7 @@ impl Element {
             | ElementKind::Rectangle { .. }
             | ElementKind::Triangle { .. } => self
                 .geometry
-                .fill_hit_test(kurbo_point(point), f64::from(slop)),
+                .fill_hit_test(kurbo_point(point), f64::from(HIT_SLOP)),
             ElementKind::Ellipse { center, radii } => {
                 let local = point - *center;
                 (self.style.filled
@@ -328,7 +334,7 @@ fn ellipse_distance(point: Point, radii: Point) -> f32 {
     (x - nearest_x).hypot(y - nearest_y) as f32
 }
 
-fn kurbo_point(point: Point) -> kurbo::Point {
+pub(super) fn kurbo_point(point: Point) -> kurbo::Point {
     kurbo::Point::new(f64::from(point.x), f64::from(point.y))
 }
 

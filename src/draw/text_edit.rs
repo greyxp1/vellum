@@ -6,8 +6,9 @@ use parley::{
 };
 use unicode_segmentation::UnicodeSegmentation;
 
+use super::decorations::text_caret;
 use super::scene::{Bounds, ElementId, Point, Style, text_bounds};
-use crate::render::TextSpec;
+use crate::render::{Geometry, TextSpec};
 use crate::text::{text_styles, with_text_context};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,8 +106,9 @@ impl TextEdit {
         }
     }
 
-    pub(super) fn content(&self) -> SplitString<'_> {
-        self.editor.text()
+    /// Accepts any composition, so committing never drops composed text.
+    pub(super) fn finish(&self) -> String {
+        self.editor.raw_text().to_owned()
     }
 
     pub(super) fn layout(&self) -> &Layout<()> {
@@ -161,8 +163,8 @@ impl TextEdit {
         self.external_edit(|driver| driver.extend_selection_to_point(x, y))
     }
 
-    pub(super) fn end_drag(&mut self, point: Point) -> bool {
-        let changed = self.drag(point);
+    pub(super) fn end_drag(&mut self, point: Option<Point>) -> bool {
+        let changed = point.is_some_and(|point| self.drag(point));
         self.drag_point = None;
         changed
     }
@@ -271,12 +273,14 @@ impl TextEdit {
 
     pub(super) fn apply_text_input(&mut self, batch: TextInputBatch) -> bool {
         let generation = self.editor.generation();
-        let preedit = batch.preedit.filter(|preedit| !preedit.text.is_empty());
         self.preedit_hints.clear();
         with_text_context(|fonts, layouts| {
             let mut driver = self.editor.driver(fonts, layouts);
             // Pure preedit updates replace the composition in place, shaping only once.
-            if preedit.is_none() || batch.commit.is_some() || batch.delete_surrounding.is_some() {
+            if batch.preedit.is_none()
+                || batch.commit.is_some()
+                || batch.delete_surrounding.is_some()
+            {
                 driver.clear_compose();
             }
             if let Some((before, after)) = batch.delete_surrounding {
@@ -297,7 +301,7 @@ impl TextEdit {
             if let Some(commit) = batch.commit {
                 driver.insert_or_replace_selection(&commit);
             }
-            if let Some(preedit) = preedit {
+            if let Some(preedit) = batch.preedit {
                 driver.set_compose(&preedit.text, preedit.cursor);
                 self.preedit_hints = preedit.spans;
             }
@@ -309,12 +313,17 @@ impl TextEdit {
         self.editor.raw_selection().is_collapsed() && self.editor.cursor_geometry(1.0).is_some()
     }
 
-    pub(super) fn cursor_position(&self) -> [f32; 2] {
+    pub(super) fn caret(&self) -> Geometry {
         let rect = self
             .editor
             .cursor_geometry(1.0)
             .unwrap_or_else(|| self.editor.ime_cursor_area());
-        [rect.x0 as f32, rect.y0 as f32]
+        let [scale_x, scale_y] = self.scale;
+        text_caret(
+            self.origin.x + rect.x0 as f32 * scale_x,
+            self.origin.y + rect.y0 as f32 * scale_y,
+            self.style.size * scale_y,
+        )
     }
 
     pub(super) fn ime_area(&self) -> parley::BoundingBox {

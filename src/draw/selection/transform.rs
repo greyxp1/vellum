@@ -13,7 +13,7 @@ pub(in crate::draw) fn resize(
     equal_side_anchor: &mut Option<usize>,
 ) -> ElementKind {
     match (original, handle) {
-        (ElementKind::Triangle { vertices }, Handle::Vertex(index)) if index < vertices.len() => {
+        (ElementKind::Triangle { vertices }, Handle::Vertex(index)) => {
             let mut vertices = *vertices;
             let target = crate::draw::triangle::dragged_vertex(&vertices, index, delta, roundness);
             vertices[index] =
@@ -41,15 +41,13 @@ pub(in crate::draw) fn resize(
             let min = Point::new(center.x - radii.x, center.y - radii.y);
             let max = Point::new(center.x + radii.x, center.y + radii.y);
             let (min, max) = resized_box(min, max, handle, delta, modifiers);
-            ElementKind::Ellipse {
-                center: min.midpoint(max),
-                radii: Point::new((max.x - min.x) * 0.5, (max.y - min.y) * 0.5),
-            }
+            ElementKind::ellipse(min, max)
         }
         _ => original.clone(),
     }
 }
 
+/// Returns None when the drag leaves the text unchanged, avoiding float rounding on a click.
 pub(in crate::draw) fn resize_text(
     original: &ElementKind,
     original_style: Style,
@@ -58,18 +56,11 @@ pub(in crate::draw) fn resize_text(
     delta: Point,
     modifiers: Modifiers,
     font_size_range: [f32; 2],
-) -> (ElementKind, Style, Bounds) {
-    let ElementKind::Text {
-        origin: _,
-        content,
-        scale,
-    } = original
-    else {
-        return (original.clone(), original_style, original_bounds);
+) -> Option<(ElementKind, Style, Bounds)> {
+    let ElementKind::Text { content, scale, .. } = original else {
+        return None;
     };
-    let Some(direction) = resize_direction(handle) else {
-        return (original.clone(), original_style, original_bounds);
-    };
+    let direction = resize_direction(handle)?;
     let original_size = Point::new(
         (original_bounds.max.x - original_bounds.min.x).max(f32::EPSILON),
         (original_bounds.max.y - original_bounds.min.y).max(f32::EPSILON),
@@ -79,6 +70,9 @@ pub(in crate::draw) fn resize_text(
         original_size.x + delta.x * direction.x * multiplier,
         original_size.y + delta.y * direction.y * multiplier,
     );
+    if dragged_size == original_size && !modifiers.shift {
+        return None;
+    }
     let (scale, mut size, factor) = if modifiers.shift {
         let intrinsic = Point::new(
             original_size.x / scale[0].abs().max(f32::EPSILON),
@@ -138,7 +132,7 @@ pub(in crate::draw) fn resize_text(
         [0.0, 0.0]
     };
     let origin = text_origin(bounds, scale, padding);
-    (
+    Some((
         ElementKind::Text {
             origin,
             content: content.clone(),
@@ -146,7 +140,7 @@ pub(in crate::draw) fn resize_text(
         },
         style,
         bounds,
-    )
+    ))
 }
 
 fn resize_direction(handle: Handle) -> Option<Point> {

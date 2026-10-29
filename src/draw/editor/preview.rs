@@ -1,7 +1,7 @@
 use super::interaction::ResizeSnapshot;
 use super::{Editor, Interaction, drawing_kind};
-use crate::draw::picker::{ShapeFills, picker_geometry};
-use crate::draw::scene::{ElementId, ElementKind, Point, geometry};
+use crate::draw::picker::picker_geometry;
+use crate::draw::scene::{Bounds, ElementId, ElementKind, Point, geometry};
 use crate::draw::selection;
 use crate::render::Geometry;
 use crate::tool::Tool;
@@ -32,23 +32,16 @@ impl Editor {
             return;
         }
         if self.selected.len() > 1 {
-            let mut bounds: Option<(Point, Point)> = None;
-            for id in &self.selected {
-                let Some(element) = self.element(*id) else {
-                    continue;
-                };
-                let offset = self.moving_offset(*id).unwrap_or_default();
-                let (min, max) = (element.bounds.min + offset, element.bounds.max + offset);
-                bounds = Some(bounds.map_or((min, max), |(current_min, current_max)| {
-                    (
-                        Point::new(current_min.x.min(min.x), current_min.y.min(min.y)),
-                        Point::new(current_max.x.max(max.x), current_max.y.max(max.y)),
-                    )
-                }));
-            }
-            if let Some((min, max)) = bounds {
-                output.push(selection::outline(min, max));
-            }
+            let bounds = Bounds::from_points(
+                self.selected
+                    .iter()
+                    .filter_map(|&id| {
+                        let offset = self.moving_offset(id).unwrap_or_default();
+                        Some((self.element(id)?.bounds, offset))
+                    })
+                    .flat_map(|(bounds, offset)| [bounds.min + offset, bounds.max + offset]),
+            );
+            output.push(selection::outline(bounds.min, bounds.max));
             return;
         }
         let Some(&id) = self.selected.first() else {
@@ -90,10 +83,9 @@ impl Editor {
             picker.hovered,
             active,
             self.current_color(),
-            ShapeFills {
-                triangle: self.tool_fill(Tool::Triangle),
-                rectangle: self.tool_fill(Tool::Rectangle),
-                ellipse: self.tool_fill(Tool::Ellipse),
+            |tool| {
+                self.properties(tool)
+                    .is_some_and(|properties| properties.filled)
             },
             &self.palette,
             viewport,

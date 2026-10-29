@@ -11,7 +11,7 @@ mod selection;
 mod text_edit;
 mod triangle;
 
-use self::decorations::{text_caret, tool_cursor_geometry};
+use self::decorations::tool_cursor_geometry;
 use crate::render::Geometry;
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 use crate::OutputId;
 
 pub(crate) use self::editor::Action;
-use self::editor::{Editor, EditorEffect};
+use self::editor::{Editor, EditorEffect, Property};
 pub(crate) use self::scene::Point;
 pub(crate) use self::selection::CursorHint;
 use self::text_edit::TextEdit;
@@ -327,11 +327,11 @@ impl DrawState {
 
     pub(crate) fn adjust(&mut self, steps: f32, at: Point, modifiers: Modifiers) -> bool {
         let adjustment = if modifiers.shift {
-            self.editor.adjust_roundness(steps)
+            self.editor.adjust(Property::Roundness, steps)
         } else if modifiers.ctrl {
-            self.editor.adjust_opacity(steps)
+            self.editor.adjust(Property::Opacity, steps)
         } else {
-            self.editor.adjust_size(steps)
+            self.editor.adjust(Property::Size, steps)
         };
         self.record(adjustment.changed || adjustment.feedback.is_some());
         if let Some(text) = adjustment.feedback {
@@ -436,14 +436,7 @@ impl DrawState {
         let feedback_expired = changed;
         if self.caret_until.is_some_and(|until| now >= until) {
             if let Some(edit) = self.editor.text_edit() {
-                let [x, y] = edit.cursor_position();
-                let [sx, sy] = edit.scale;
-                let caret = text_caret(
-                    edit.origin.x + x * sx,
-                    edit.origin.y + y * sy,
-                    edit.style.size * sy,
-                );
-                if let Some(bounds) = caret.bounds() {
+                if let Some(bounds) = edit.caret().bounds() {
                     self.damage_region(bounds);
                 }
                 self.caret_visible = !self.caret_visible;

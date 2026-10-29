@@ -335,14 +335,15 @@ impl Keybinds {
             modifiers,
             logo,
         };
-        // Prefer explicit symbols, then match the key without Shift.
-        self.0
-            .iter()
-            .find(|entry| {
+        let explicit = |chord: Keybind| {
+            self.0.iter().find(move |entry| {
                 !entry.automatic_selection
                     && entry.key == chord
                     && (!gestures_only || entry.action.pointer_gesture())
             })
+        };
+        // Prefer explicit symbols, then match the key without Shift.
+        explicit(chord)
             .or_else(|| {
                 let selection = Keybind {
                     key: Input::Keyboard(normalize(shift_free_key?)),
@@ -350,6 +351,19 @@ impl Keybinds {
                 };
                 self.0.iter().find(|entry| {
                     entry.key == selection && (!gestures_only || entry.action.pointer_gesture())
+                })
+            })
+            .or_else(|| {
+                // Shift produced the symbol, as with plus on US layouts.
+                if normalize(shift_free_key?) == normalize(key) {
+                    return None;
+                }
+                explicit(Keybind {
+                    modifiers: Modifiers {
+                        shift: false,
+                        ..modifiers
+                    },
+                    ..chord
                 })
             })
             .or_else(|| {

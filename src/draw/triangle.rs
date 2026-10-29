@@ -46,36 +46,20 @@ fn outline(vertices: &[Point; 3], width: f32, roundness: f32, filled: bool) -> B
 }
 
 fn add_contour(path: &mut BezPath, vertices: &[kurbo::Point; 3], roundness: f64) {
-    let corners = vertices.iter().enumerate().map(|(index, vertex)| {
-        let (before, after) = rounded_corner(vertices, index, roundness);
-        [before, *vertex, after]
+    let corners = vertices.iter().enumerate().map(|(index, &vertex)| {
+        let (before, after) = super::scene::rounded_corner(
+            vertices[(index + 2) % 3],
+            vertex,
+            vertices[(index + 1) % 3],
+            roundness,
+        );
+        [before, vertex, after]
     });
     super::scene::append_rounded_contour(path, corners);
 }
 
-fn rounded_corner(
-    vertices: &[kurbo::Point; 3],
-    index: usize,
-    roundness: f64,
-) -> (kurbo::Point, kurbo::Point) {
-    super::scene::rounded_corner(
-        vertices[(index + 2) % 3],
-        vertices[index],
-        vertices[(index + 1) % 3],
-        roundness,
-    )
-}
-
 pub(super) fn rendered_vertices(vertices: &[Point; 3], roundness: f32) -> [Point; 3] {
-    let vertices = vertices.map(|point| kurbo::Point::new(point.x as f64, point.y as f64));
-    std::array::from_fn(|index| {
-        let (before, after) = rounded_corner(&vertices, index, roundness.clamp(0.0, 1.0) as f64);
-        let vertex = vertices[index];
-        Point::new(
-            ((before.x + vertex.x * 2.0 + after.x) * 0.25) as f32,
-            ((before.y + vertex.y * 2.0 + after.y) * 0.25) as f32,
-        )
-    })
+    std::array::from_fn(|index| super::scene::rounded_tip(vertices, index, roundness))
 }
 
 pub(super) fn dragged_vertex(

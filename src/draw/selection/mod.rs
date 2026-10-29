@@ -13,7 +13,12 @@ const OUTLINE_HIT_RADIUS: f32 = 5.0;
 const VISUAL_RADIUS: f32 = 4.5;
 const SELECTION_WIDTH: f32 = 1.5;
 const GAP: f32 = 4.0;
-const COLOR: [f32; 4] = [0.1, 0.75, 1.0, 0.8];
+const STYLE: Style = Style {
+    size: SELECTION_WIDTH,
+    color: [0.1, 0.75, 1.0, 0.8],
+    roundness: 0.0,
+    filled: false,
+};
 const HANDLE_FILL: [f32; 4] = [0.04, 0.04, 0.04, 1.0];
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Handle {
@@ -105,12 +110,7 @@ pub(super) fn outline(min: Point, max: Point) -> Geometry {
             min: Point::new(min.x - GAP, min.y - GAP),
             max: Point::new(max.x + GAP, max.y + GAP),
         },
-        Style {
-            size: SELECTION_WIDTH,
-            color: COLOR,
-            roundness: 0.0,
-            filled: false,
-        },
+        STYLE,
     )
 }
 
@@ -188,12 +188,7 @@ fn endpoint_geometry(center: Point) -> Geometry {
             center,
             radii: Point::new(radius, radius),
         },
-        Style {
-            size: SELECTION_WIDTH,
-            color: COLOR,
-            roundness: 0.0,
-            filled: false,
-        },
+        STYLE,
     ));
     output
 }

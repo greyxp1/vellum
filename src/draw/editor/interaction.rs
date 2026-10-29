@@ -182,27 +182,23 @@ impl Editor {
                     }
                     return previous;
                 }
-                let changed = hit.is_none_or(|id| !self.selected.contains(&id));
-                if let Some(id) = hit {
-                    if changed {
-                        self.selected.clear();
-                        self.selected.push(id);
-                    }
-                    let mut ids = self.selected.clone();
-                    ids.sort_unstable();
-                    self.interaction = Some(Interaction::Moving {
-                        ids,
-                        start: point,
-                        current: point,
-                    });
-                } else {
+                let Some(id) = hit else {
+                    let changed = !self.selected.is_empty();
                     self.selected.clear();
+                    return previous | changed;
+                };
+                if !self.selected.contains(&id) {
+                    self.selected.clear();
+                    self.selected.push(id);
                 }
-                if hit.is_some() {
-                    true
-                } else {
-                    previous | changed
-                }
+                let mut ids = self.selected.clone();
+                ids.sort_unstable();
+                self.interaction = Some(Interaction::Moving {
+                    ids,
+                    start: point,
+                    current: point,
+                });
+                true
             }
             Tool::Eraser => unreachable!(),
         }
@@ -275,7 +271,7 @@ impl Editor {
 
     pub(in crate::draw) fn pointer_up(&mut self, point: Point, modifiers: Modifiers) -> bool {
         if let Some(edit) = self.text_edit_mut() {
-            return edit.end_drag(point);
+            return edit.end_drag(Some(point));
         }
         let text_size_range = self.text_size_range();
         match self.interaction.take() {
@@ -290,7 +286,13 @@ impl Editor {
                 true
             }
             Some(Interaction::Drawing { tool, start, .. }) => {
-                self.insert_kind(drawing_kind(tool, start, point, modifiers), self.style);
+                // Without a drag, only rectangles and filled ellipses leave a visible dot.
+                if point != start
+                    || tool == Tool::Rectangle
+                    || (tool == Tool::Ellipse && self.style.filled)
+                {
+                    self.insert_kind(drawing_kind(tool, start, point, modifiers), self.style);
+                }
                 true
             }
             Some(Interaction::Moving { ids, start, .. }) => {
@@ -304,9 +306,7 @@ impl Editor {
                         let (kind, style) = element.replace(after, style);
                         elements.push((id, kind, style));
                     }
-                    if !elements.is_empty() {
-                        self.document.history.record(HistoryEntry::Update(elements));
-                    }
+                    self.document.history.record(HistoryEntry::Update(elements));
                 }
                 true
             }
@@ -462,6 +462,8 @@ impl Editor {
     }
 
     pub(super) fn cancel_interaction(&mut self) -> bool {
+        // Every interaction or selection change ends a merged undo step.
+        self.document.history.seal();
         self.interaction.take().is_some()
     }
 
@@ -470,7 +472,10 @@ impl Editor {
         point: Option<Point>,
         modifiers: Modifiers,
     ) -> bool {
-        if self.is_editing_text() || self.interaction.is_none() {
+        if let Some(edit) = self.text_edit_mut() {
+            return edit.end_drag(point);
+        }
+        if self.interaction.is_none() {
             return false;
         }
         match point {
@@ -498,7 +503,7 @@ fn resize_element(
     properties: Style,
 ) -> ResizeSnapshot {
     if matches!(original.kind, ElementKind::Text { .. }) {
-        let (kind, style, bounds) = selection::resize_text(
+        let mut resized = selection::resize_text(
             &original.kind,
             original.style,
             original.bounds,
@@ -506,13 +511,16 @@ fn resize_element(
             delta,
             modifiers,
             text_size_range,
+        )
+        .map_or_else(
+            || original.clone(),
+            |(kind, style, bounds)| ResizeSnapshot {
+                kind,
+                style,
+                bounds,
+            },
         );
-        let mut resized = ResizeSnapshot {
-            kind,
-            style,
-            bounds,
-        };
-        let size = (style.size + (properties.size - original.style.size))
+        let size = (resized.style.size + (properties.size - original.style.size))
             .clamp(text_size_range[0], text_size_range[1]);
         resized.set_style(Style { size, ..properties });
         return resized;

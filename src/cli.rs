@@ -39,6 +39,7 @@ pub(crate) enum Command {
         /// CSS color, such as `red`, `#00ffff`, or `oklab(0.5 0.2 0)`
         ///
         /// Quote colors containing #, spaces, or parentheses.
+        #[arg(value_parser = visible_color)]
         color: DynamicColor,
     },
     /// Report whether drawing mode is active
@@ -93,6 +94,18 @@ pub(crate) fn opaque_color(value: &str) -> Result<DynamicColor, String> {
         .map_err(|error| format!("invalid color: {error}"))?;
     if color.components[3] != 1.0 {
         return Err("whiteboard color must be opaque".into());
+    }
+    Ok(color)
+}
+
+pub(crate) const MIN_OPACITY: f32 = 0.05;
+
+pub(crate) fn visible_color(value: &str) -> Result<DynamicColor, String> {
+    let color: DynamicColor = value
+        .parse()
+        .map_err(|error| format!("invalid color: {error}"))?;
+    if color.components[3] < MIN_OPACITY {
+        return Err(format!("color opacity must be at least {MIN_OPACITY}"));
     }
     Ok(color)
 }

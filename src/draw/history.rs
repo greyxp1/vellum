@@ -13,6 +13,7 @@ pub(super) enum Entry {
 pub(super) struct History {
     undo: Vec<Entry>,
     redo: Vec<Entry>,
+    merging: bool,
 }
 
 impl History {
@@ -35,6 +36,37 @@ impl History {
     }
 
     pub(super) fn record(&mut self, entry: Entry) {
+        self.merging = false;
+        self.push(entry);
+    }
+
+    /// Folds consecutive merged entries of the same change into one undo step.
+    pub(super) fn merge(&mut self, entry: Entry) {
+        let merging = std::mem::replace(&mut self.merging, true);
+        match (self.undo.last_mut(), entry) {
+            (Some(Entry::Remove(previous)), Entry::Remove(mut removed)) if merging => {
+                // Undo reinserts sequentially, so later removals come first.
+                removed.append(previous);
+                *previous = removed;
+            }
+            (Some(Entry::Update(previous)), Entry::Update(updates)) if merging => {
+                // Keep each element's state from before its first merged change.
+                for update in updates {
+                    if !previous.iter().any(|(id, ..)| *id == update.0) {
+                        previous.push(update);
+                    }
+                }
+            }
+            (_, entry) => self.push(entry),
+        }
+    }
+
+    /// Makes the next merged entry start a new undo step.
+    pub(super) fn seal(&mut self) {
+        self.merging = false;
+    }
+
+    fn push(&mut self, entry: Entry) {
         if self.undo.len() == LIMIT {
             self.undo.remove(0);
         }
@@ -43,6 +75,7 @@ impl History {
     }
 
     pub(super) fn undo(&mut self, elements: &mut Vec<Element>) -> bool {
+        self.merging = false;
         let Some(entry) = self.undo.pop() else {
             return false;
         };
@@ -51,6 +84,7 @@ impl History {
     }
 
     pub(super) fn redo(&mut self, elements: &mut Vec<Element>) -> bool {
+        self.merging = false;
         let Some(entry) = self.redo.pop() else {
             return false;
         };

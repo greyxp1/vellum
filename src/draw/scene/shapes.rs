@@ -67,9 +67,6 @@ fn pixel_aligned_rectangle(min: Point, max: Point, width: f32) -> (Point, Point)
 }
 
 pub(in crate::draw) fn bounds_for(kind: &ElementKind, style: Style) -> Bounds {
-    if let ElementKind::Triangle { vertices } = kind {
-        return crate::draw::triangle::bounds(vertices, style);
-    }
     let width = style.size;
     let bounds = match kind {
         ElementKind::Segment {
@@ -90,7 +87,9 @@ pub(in crate::draw) fn bounds_for(kind: &ElementKind, style: Style) -> Bounds {
         ElementKind::Freehand { points } => {
             Bounds::from_points(pixel_aligned_points(points, width).iter().copied())
         }
-        ElementKind::Triangle { .. } => unreachable!(),
+        ElementKind::Triangle { vertices } => {
+            return crate::draw::triangle::bounds(vertices, style);
+        }
         ElementKind::Rectangle { min, max } => {
             let (min, max) = pixel_aligned_rectangle(*min, *max, width);
             Bounds { min, max }
@@ -219,7 +218,11 @@ pub(in crate::draw) fn rendered_segment_endpoints(
     };
     let (start, end) = pixel_aligned_segment(*first, *last, style.size);
     let end = if *arrow {
-        arrow_head(start, end, style.size).rendered_tip(style.roundness)
+        rounded_tip(
+            &arrow_head(start, end, style.size).vertices,
+            0,
+            style.roundness,
+        )
     } else {
         end
     };
@@ -285,13 +288,6 @@ struct ArrowHead {
     normal: Point,
     radius: f32,
     shaft_length: f32,
-}
-
-impl ArrowHead {
-    fn rendered_tip(self, roundness: f32) -> Point {
-        let (before, after) = rounded_polygon_corner(&self.vertices, 0, roundness);
-        (before + self.vertices[0] * 2.0 + after) * 0.25
-    }
 }
 
 fn arrow_head(start: Point, end: Point, width: f32) -> ArrowHead {
@@ -449,6 +445,12 @@ fn rounded_polygon_corner(vertices: &[Point], index: usize, roundness: f32) -> (
         Point::new(before.x as f32, before.y as f32),
         Point::new(after.x as f32, after.y as f32),
     )
+}
+
+/// Midpoint of a rounded corner's curve, where it passes closest to the vertex.
+pub(in crate::draw) fn rounded_tip(vertices: &[Point], index: usize, roundness: f32) -> Point {
+    let (before, after) = rounded_polygon_corner(vertices, index, roundness);
+    (before + vertices[index] * 2.0 + after) * 0.25
 }
 
 pub(in crate::draw) fn rounded_corner(
