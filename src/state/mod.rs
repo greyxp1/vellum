@@ -117,6 +117,10 @@ impl State {
         self.draw.is_editing_text()
     }
 
+    pub(crate) fn is_whiteboard(&self) -> bool {
+        self.mode == Mode::Whiteboard
+    }
+
     pub(crate) fn set_input_active(&mut self, active: bool) {
         if !active {
             self.deactivate();

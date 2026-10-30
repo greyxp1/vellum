@@ -104,6 +104,7 @@ impl Command {
             Self::IsActive => "is_active".into(),
             Self::SetColor { color } => format!("set_color={color}").into(),
             Self::IsTextEditing => "is_text_editing".into(),
+            Self::IsWhiteboard => "is_whiteboard".into(),
             Self::Exit => "exit".into(),
             Self::Annotations { command } => match command {
                 VisibilityCommand::Show => "annotations_show".into(),
@@ -129,6 +130,7 @@ impl Command {
             b"clear_and_deactivate" => Ok(Self::ClearAndDeactivate),
             b"is_active" => Ok(Self::IsActive),
             b"is_text_editing" => Ok(Self::IsTextEditing),
+            b"is_whiteboard" => Ok(Self::IsWhiteboard),
             b"exit" => Ok(Self::Exit),
             b"annotations_show" => Ok(Self::Annotations {
                 command: VisibilityCommand::Show,

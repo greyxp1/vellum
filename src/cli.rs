@@ -46,6 +46,8 @@ pub(crate) enum Command {
     IsActive,
     /// Report whether text is being edited
     IsTextEditing,
+    /// Report whether the whiteboard is active
+    IsWhiteboard,
     /// Manage the whiteboard
     Whiteboard {
         #[command(subcommand)]
