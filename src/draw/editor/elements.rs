@@ -83,7 +83,7 @@ impl Editor {
     }
 
     pub(super) fn delete_selection(&mut self) -> bool {
-        let selected = std::mem::take(&mut self.selected);
+        let mut selected = std::mem::take(&mut self.selected);
         if selected.is_empty() {
             return false;
         }
@@ -93,33 +93,34 @@ impl Editor {
             self.document.history.record(HistoryEntry::Clear(elements));
             return true;
         }
-        cancelled | self.remove_ids(&selected, false)
+        selected.sort_unstable();
+        let start = self.document.element_index(selected[0]).unwrap();
+        let end = self
+            .document
+            .element_index(*selected.last().unwrap())
+            .unwrap();
+        cancelled
+            | self.remove_elements(
+                start..=end,
+                |element| selected.binary_search(&element.id).is_ok(),
+                false,
+            )
     }
 
-    fn remove_ids(&mut self, ids: &[ElementId], merge: bool) -> bool {
-        let mut indices: Vec<_> = ids
-            .iter()
-            .filter_map(|&id| self.document.element_index(id))
-            .collect();
-        indices.sort_unstable();
-        indices.dedup();
-        if indices.is_empty() {
-            return false;
-        }
-        let mut next = indices.iter().copied().peekable();
-        let mut index = indices[0];
-        let end = indices[indices.len() - 1] + 1;
-        let removed = self
+    fn remove_elements(
+        &mut self,
+        range: impl std::ops::RangeBounds<usize>,
+        mut remove: impl FnMut(&Element) -> bool,
+        merge: bool,
+    ) -> bool {
+        let removed: Vec<_> = self
             .document
             .elements
-            .extract_if(index..end, |_| {
-                let remove = next.next_if_eq(&index).is_some();
-                index += 1;
-                remove
-            })
-            .zip(indices.iter().copied())
-            .map(|(element, index)| (index, element))
+            .extract_if(range, |element| remove(element))
             .collect();
+        if removed.is_empty() {
+            return false;
+        }
         let entry = HistoryEntry::Remove(removed);
         if merge {
             self.document.history.merge(entry);
@@ -137,11 +138,9 @@ impl Editor {
 
     pub(super) fn insert_element(&mut self, element: Element) {
         self.next_id += 1;
-        let index = self.document.elements.len();
+        let id = element.id;
         self.document.elements.push(element);
-        self.document
-            .history
-            .record(HistoryEntry::Insert(vec![index]));
+        self.document.history.record(HistoryEntry::Insert(vec![id]));
     }
 
     pub(super) fn erase_between(&mut self, start: Point, end: Point) -> bool {
@@ -150,14 +149,11 @@ impl Editor {
             .expect("eraser has adjustable properties")
             .size
             * 0.5;
-        let hits = self
-            .document
-            .elements
-            .iter()
-            .filter(|element| element.erase_hit_test(start, end, radius))
-            .map(|element| element.id)
-            .collect::<Vec<_>>();
-        self.remove_ids(&hits, true)
+        self.remove_elements(
+            ..,
+            |element| element.erase_hit_test(start, end, radius),
+            true,
+        )
     }
 
     pub(super) fn commit_text(&mut self) -> bool {
@@ -176,7 +172,11 @@ impl Editor {
             ..
         } = edit;
         if content.is_empty() {
-            return id.is_none_or(|id| self.remove_ids(&[id], false));
+            return id.is_none_or(|id| {
+                self.document
+                    .element_index(id)
+                    .is_some_and(|index| self.remove_elements(index..=index, |_| true, false))
+            });
         }
         let kind = ElementKind::Text {
             origin,

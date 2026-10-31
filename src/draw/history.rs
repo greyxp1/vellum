@@ -3,8 +3,8 @@ use super::scene::{Element, ElementId, ElementKind, Style};
 const LIMIT: usize = 256;
 
 pub(super) enum Entry {
-    Insert(Vec<usize>),
-    Remove(Vec<(usize, Element)>),
+    Insert(Vec<ElementId>),
+    Remove(Vec<Element>),
     Update(Vec<(ElementId, ElementKind, Style)>),
     Clear(Vec<Element>),
 }
@@ -20,12 +20,7 @@ impl History {
     pub(super) fn refresh_text_bounds(&mut self) {
         for entry in self.undo.iter_mut().chain(&mut self.redo) {
             match entry {
-                Entry::Remove(elements) => {
-                    for (_, element) in elements {
-                        element.refresh_text_bounds();
-                    }
-                }
-                Entry::Clear(elements) => {
+                Entry::Remove(elements) | Entry::Clear(elements) => {
                     for element in elements {
                         element.refresh_text_bounds();
                     }
@@ -45,17 +40,13 @@ impl History {
         let merging = std::mem::replace(&mut self.merging, true);
         match (self.undo.last_mut(), entry) {
             (Some(Entry::Remove(previous)), Entry::Remove(mut removed)) if merging => {
-                // Undo reinserts sequentially, so later removals come first.
-                removed.append(previous);
-                *previous = removed;
+                previous.append(&mut removed);
             }
             (Some(Entry::Update(previous)), Entry::Update(updates)) if merging => {
                 // Keep each element's state from before its first merged change.
-                for update in updates {
-                    if !previous.iter().any(|(id, ..)| *id == update.0) {
-                        previous.push(update);
-                    }
-                }
+                previous.extend(updates);
+                previous.sort_by_key(|(id, ..)| *id);
+                previous.dedup_by_key(|(id, ..)| *id);
             }
             (_, entry) => self.push(entry),
         }
@@ -95,20 +86,28 @@ impl History {
 
 fn apply(entry: Entry, elements: &mut Vec<Element>) -> Entry {
     match entry {
-        Entry::Insert(inserted) => {
-            let mut removed = Vec::with_capacity(inserted.len());
-            for index in inserted.into_iter().rev() {
-                removed.push((index, elements.remove(index)));
-            }
-            removed.reverse();
-            Entry::Remove(removed)
+        Entry::Insert(inserted) if elements.last().is_some_and(|last| inserted == [last.id]) => {
+            Entry::Remove(vec![elements.pop().unwrap()])
+        }
+        Entry::Insert(mut inserted) => {
+            inserted.sort_unstable();
+            let start = elements.partition_point(|element| element.id < inserted[0]);
+            let end = elements.partition_point(|element| element.id <= *inserted.last().unwrap());
+            Entry::Remove(
+                elements
+                    .extract_if(start..end, |element| {
+                        inserted.binary_search(&element.id).is_ok()
+                    })
+                    .collect(),
+            )
         }
         Entry::Remove(removed) => {
-            let mut inserted = Vec::with_capacity(removed.len());
-            for (index, element) in removed {
-                elements.insert(index, element);
-                inserted.push(index);
-            }
+            let inserted: Vec<_> = removed.iter().map(|element| element.id).collect();
+            let first = *inserted.iter().min().unwrap();
+            let start = elements.partition_point(|element| element.id < first);
+            elements.extend(removed);
+            // IDs preserve drawing order across eraser motions and canvas switches.
+            elements[start..].sort_unstable_by_key(|element| element.id);
             Entry::Insert(inserted)
         }
         Entry::Update(updates) => Entry::Update(
