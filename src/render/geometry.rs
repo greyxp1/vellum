@@ -99,33 +99,6 @@ impl Geometry {
         }
     }
 
-    pub fn fill_hit_test(&self, point: kurbo::Point, slop: f64) -> bool {
-        let slop = slop.max(0.0);
-        let slop_squared = slop.powi(2);
-        self.commands.iter().any(|command| {
-            let DrawCommand::Fill {
-                path, fill_rule, ..
-            } = command
-            else {
-                return false;
-            };
-            // An edge hit avoids scanning the entire outline for its winding.
-            if slop_squared > 0.0
-                && path.segments().any(|segment| {
-                    let bounds = control_box(segment).inflate(slop, slop);
-                    point.x >= bounds.x0
-                        && point.x <= bounds.x1
-                        && point.y >= bounds.y0
-                        && point.y <= bounds.y1
-                        && segment.nearest(point, 0.1).distance_sq <= slop_squared
-                })
-            {
-                return true;
-            }
-            contains(path, *fill_rule, point)
-        })
-    }
-
     pub fn swept_hit_test(&self, line: kurbo::Line, radius: f64) -> bool {
         let delta = line.p1 - line.p0;
         let length = delta.hypot();

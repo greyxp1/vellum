@@ -277,9 +277,10 @@ impl Element {
             ElementKind::Freehand { .. }
             | ElementKind::Segment { arrow: true, .. }
             | ElementKind::Rectangle { .. }
-            | ElementKind::Triangle { .. } => self
-                .geometry
-                .fill_hit_test(kurbo_point(point), f64::from(HIT_SLOP)),
+            | ElementKind::Triangle { .. } => self.geometry.swept_hit_test(
+                kurbo::Line::new(kurbo_point(point), kurbo_point(point)),
+                f64::from(HIT_SLOP),
+            ),
             ElementKind::Ellipse { center, radii } => {
                 let local = point - *center;
                 (self.style.filled
