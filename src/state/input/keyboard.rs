@@ -184,6 +184,7 @@ impl KeyboardState {
                     .map(|state| state.key_get_one_sym(keycode).raw())
             })
             .flatten();
+        let mut key_text = None;
         let binding = bindings
             .lookup(keysym.raw(), shift_free_key, modifiers, logo, false)
             .or_else(|| {
@@ -191,7 +192,7 @@ impl KeyboardState {
                     return None;
                 }
                 // Keys that type text are not gestures while editing.
-                let text = state.key_get_utf8(keycode);
+                let text = key_text.insert(state.key_get_utf8(keycode));
                 if !(modifiers.ctrl || modifiers.alt || logo)
                     && !text.is_empty()
                     && !text.chars().any(char::is_control)
@@ -207,7 +208,7 @@ impl KeyboardState {
             self.reset_compose();
             String::new()
         } else {
-            let mut text = state.key_get_utf8(keycode);
+            let mut text = key_text.unwrap_or_else(|| state.key_get_utf8(keycode));
             if compose_enabled && let Some(compose) = &mut self.compose {
                 compose.feed(keysym);
                 match compose.status() {

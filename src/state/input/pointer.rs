@@ -554,8 +554,7 @@ impl State {
                 }
             }
         }
-        let sequence = std::mem::take(&mut self.pointer.event_sequence);
-        self.pointer_sequence(sequence);
+        self.flush_pointer_motion();
         drop(pending_events);
         self.pointer.events = events;
     }

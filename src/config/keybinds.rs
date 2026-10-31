@@ -330,8 +330,9 @@ impl Keybinds {
             let name = xkb::keysym_get_name(key.into());
             xkb::keysym_from_name(&name, xkb::KEYSYM_CASE_INSENSITIVE).raw()
         };
+        let key = normalize(key);
         let chord = Keybind {
-            key: Input::Keyboard(normalize(key)),
+            key: Input::Keyboard(key),
             modifiers,
             logo,
         };
@@ -343,10 +344,14 @@ impl Keybinds {
             })
         };
         // Prefer explicit symbols, then match the key without Shift.
-        explicit(chord)
-            .or_else(|| {
+        if let Some(entry) = explicit(chord) {
+            return Some(entry.action);
+        }
+        let shift_free_key = shift_free_key.map(normalize);
+        shift_free_key
+            .and_then(|key| {
                 let selection = Keybind {
-                    key: Input::Keyboard(normalize(shift_free_key?)),
+                    key: Input::Keyboard(key),
                     ..chord
                 };
                 self.0.iter().find(|entry| {
@@ -355,7 +360,7 @@ impl Keybinds {
             })
             .or_else(|| {
                 // Shift produced the symbol, as with plus on US layouts.
-                if normalize(shift_free_key?) == normalize(key) {
+                if shift_free_key? == key {
                     return None;
                 }
                 explicit(Keybind {
@@ -368,7 +373,7 @@ impl Keybinds {
             })
             .or_else(|| {
                 let plain = Keybind {
-                    key: Input::Keyboard(normalize(shift_free_key.unwrap_or(key))),
+                    key: Input::Keyboard(shift_free_key.unwrap_or(key)),
                     modifiers: Modifiers::default(),
                     logo: false,
                 };
