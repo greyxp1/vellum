@@ -44,7 +44,9 @@ fn run() -> Result<ExitCode, String> {
     }
     if let Some(subcommand) = &arguments.command {
         let truthy_value = match subcommand {
-            Command::IsActive | Command::IsTextEditing => ipc::query(subcommand)?,
+            Command::IsActive | Command::IsTextEditing | Command::IsWhiteboard => {
+                ipc::query(subcommand)?
+            }
             _ => {
                 ipc::send_command(subcommand)?;
                 return Ok(ExitCode::SUCCESS);

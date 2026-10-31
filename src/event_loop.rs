@@ -152,6 +152,7 @@ pub(crate) fn run(mut settings: Settings, mut config: Config) -> Result<(), Stri
                     Command::Annotations { command } => state.annotations(command),
                     Command::IsActive => reply(state.is_active()),
                     Command::IsTextEditing => reply(state.is_text_editing()),
+                    Command::IsWhiteboard => reply(state.is_whiteboard()),
                     Command::Exit => return Ok(()),
                 }
             }
