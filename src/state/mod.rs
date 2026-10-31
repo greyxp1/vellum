@@ -161,9 +161,6 @@ impl State {
             }
         }
         if self.is_active() {
-            if !was_active {
-                self.draw.activate();
-            }
             if self
                 .keyboard_output
                 .is_none_or(|id| !self.wayland.outputs.contains_key(&id))
@@ -171,6 +168,7 @@ impl State {
                 self.keyboard_output = self.wayland.outputs.keys().next().copied();
             }
         } else {
+            self.draw.reset_tools();
             self.pointer.restore_cursor();
             self.tablet.restore_cursors();
         }

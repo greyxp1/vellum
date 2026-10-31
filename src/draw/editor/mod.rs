@@ -76,6 +76,7 @@ pub(super) struct Editor {
     next_text_session: u64,
     picker: Option<Picker>,
     default_tool: Tool,
+    default_style: Style,
     last_non_eraser_tool: Tool,
     tool_properties: ToolPropertySet,
     default_tool_properties: ToolPropertySet,
@@ -83,6 +84,7 @@ pub(super) struct Editor {
     steps: std::sync::Arc<std::collections::BTreeMap<Tool, crate::config::Steps>>,
     stops: std::sync::Arc<std::collections::BTreeMap<Tool, crate::config::Stops>>,
     remember_last_tool: bool,
+    remember_tool_properties: bool,
     palette: Vec<[f32; 4]>,
     cursor_visibility: Option<bool>,
     tool_cursor_visibility: std::collections::BTreeMap<Tool, bool>,
@@ -131,14 +133,15 @@ impl Editor {
         let active = active.unwrap_or(fallback);
         let mut color = settings.default_color;
         color[3] = active.opacity;
+        let style = Style {
+            size: active.size,
+            color,
+            roundness: active.roundness,
+            filled: active.filled,
+        };
         Self {
             tool: settings.default_tool,
-            style: Style {
-                size: active.size,
-                color,
-                roundness: active.roundness,
-                filled: active.filled,
-            },
+            style,
             document: Document::default(),
             other_document: Document::default(),
             canvas: super::Canvas::Desktop,
@@ -148,6 +151,7 @@ impl Editor {
             next_text_session: 1,
             picker: None,
             default_tool: settings.default_tool,
+            default_style: style,
             last_non_eraser_tool: if settings.default_tool == Tool::Eraser {
                 Tool::Pen
             } else {
@@ -159,6 +163,7 @@ impl Editor {
             steps: settings.steps.clone(),
             stops: settings.stops.clone(),
             remember_last_tool: settings.remember_last_tool,
+            remember_tool_properties: settings.remember_tool_properties,
             palette: settings.palette.clone(),
             cursor_visibility: settings.cursor.visible,
             adjusted: None,
@@ -184,10 +189,12 @@ impl Editor {
             &settings.size_ranges,
         );
         self.default_tool_properties = next.default_tool_properties;
+        self.default_style = next.default_style;
         self.size_ranges = next.size_ranges;
         self.steps = next.steps;
         self.stops = next.stops;
         self.remember_last_tool = next.remember_last_tool;
+        self.remember_tool_properties = next.remember_tool_properties;
         self.palette = next.palette;
         self.cursor_visibility = next.cursor_visibility;
         self.tool_cursor_visibility = next.tool_cursor_visibility;
@@ -210,18 +217,32 @@ impl Editor {
         }
     }
 
-    pub(in crate::draw) fn activate(&mut self) -> bool {
-        if self.remember_last_tool || self.tool == self.default_tool {
-            return false;
-        }
-        self.switch_tool(self.default_tool)
-    }
-
     pub(in crate::draw) fn deactivate(&mut self) -> bool {
         let changed = self.finish_interaction();
         let clear_preview =
             !std::mem::take(&mut self.selected).is_empty() | self.picker.take().is_some();
         changed | clear_preview
+    }
+
+    pub(in crate::draw) fn reset_tools(&mut self) -> bool {
+        if self.remember_last_tool && self.remember_tool_properties {
+            return false;
+        }
+        if !self.remember_last_tool {
+            self.tool = self.default_tool;
+            self.last_non_eraser_tool = if self.default_tool == Tool::Eraser {
+                Tool::Pen
+            } else {
+                self.default_tool
+            };
+        }
+        if !self.remember_tool_properties {
+            self.style = self.default_style;
+            self.tool_properties = self.default_tool_properties;
+        }
+        self.sync_active_style();
+        self.adjusted = None;
+        true
     }
 
     pub(in crate::draw) fn is_editing_text(&self) -> bool {

@@ -34,6 +34,7 @@ struct FileConfig {
     draw_on: Option<DrawOn>,
     default_tool: Option<String>,
     remember_last_tool: Option<bool>,
+    remember_tool_properties: Option<bool>,
     stroke_size: Option<f32>,
     #[serde(default)]
     size_range: SizeRangeConfig,
@@ -340,6 +341,7 @@ pub(super) struct Settings {
     pub(super) default_color: Rgba,
     pub(super) default_tool: Tool,
     pub(super) remember_last_tool: bool,
+    pub(super) remember_tool_properties: bool,
     pub(super) palette: Vec<Rgba>,
     pub(super) feedback_duration: Duration,
     pub(super) clear_on_cancel: bool,
@@ -441,6 +443,7 @@ impl Settings {
             default_color,
             default_tool,
             remember_last_tool: file.remember_last_tool.unwrap_or(true),
+            remember_tool_properties: file.remember_tool_properties.unwrap_or(true),
             palette,
             feedback_duration: Duration::from_millis(feedback_duration_ms),
             clear_on_cancel: file.clear_on_cancel.unwrap_or(false),

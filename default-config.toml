@@ -2,6 +2,7 @@
 draw_on = "all" # "all" monitors or "current" only.
 default_tool = "pen" # Tools: pen, line, arrow, triangle, rectangle, ellipse, text, eraser, select.
 remember_last_tool = true # Keep the selected tool between drawing sessions.
+remember_tool_properties = true # Keep color, size, opacity, roundness, fill and text background between drawing sessions.
 clear_on_cancel = false # Clear drawings when exiting with cancel.
 freeze_on_activate = false # Freeze the screen when drawing starts.
 annotations_visible = true # Show annotations when drawing mode is off.

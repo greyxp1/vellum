@@ -174,11 +174,6 @@ impl DrawState {
         self.record(true);
     }
 
-    pub(crate) fn activate(&mut self) -> bool {
-        let changed = self.editor.activate();
-        self.record(changed)
-    }
-
     pub(crate) fn deactivate(&mut self) -> bool {
         let mut changed = self.editor.deactivate();
         if self.feedback.take().is_some() | self.tool_cursor.take().is_some() {
@@ -186,6 +181,11 @@ impl DrawState {
         }
         self.caret_until = None;
         self.record(changed)
+    }
+
+    pub(crate) fn reset_tools(&mut self) {
+        let changed = self.editor.reset_tools();
+        self.record(changed);
     }
 
     pub(crate) fn is_editing_text(&self) -> bool {
