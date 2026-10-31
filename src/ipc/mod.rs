@@ -6,14 +6,15 @@ use std::borrow::Cow;
 use std::fs::File;
 use std::io::IoSliceMut;
 use std::mem::MaybeUninit;
-use std::os::unix::net::UnixDatagram;
+use std::os::linux::net::SocketAddrExt;
+use std::os::unix::net::{SocketAddr, UnixDatagram};
 use std::path::PathBuf;
 
 use rustix::net::{RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, SocketAddrAny};
 
 use crate::cli::{Command, VisibilityCommand, WhiteboardCommand};
 
-fn control_socket_path() -> Result<PathBuf, String> {
+fn control_socket_addresses() -> Result<[SocketAddr; 2], String> {
     use std::os::unix::ffi::OsStrExt;
     let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR")
         .filter(|dir| !dir.is_empty())
@@ -30,48 +31,60 @@ fn control_socket_path() -> Result<PathBuf, String> {
         .fold(0xcbf29ce484222325_u64, |hash, byte| {
             (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
         });
-    Ok(runtime_dir.join(format!("vellum-{hash:016x}.sock")))
+    let path = runtime_dir.join(format!("vellum-{hash:016x}.sock"));
+    let legacy_name = format!("vellum-{}-{hash:016x}", rustix::process::geteuid().as_raw());
+    let address_error = |error| format!("invalid control socket address: {error}");
+    Ok([
+        SocketAddr::from_pathname(path).map_err(address_error)?,
+        SocketAddr::from_abstract_name(legacy_name).map_err(address_error)?,
+    ])
 }
 
 pub(crate) struct ControlSocket {
-    pub socket: UnixDatagram,
+    pub sockets: [UnixDatagram; 2],
     path: PathBuf,
     _lock: File,
 }
 
 impl ControlSocket {
     pub(crate) fn bind() -> Result<Self, String> {
-        let path = control_socket_path()?;
+        let addresses = control_socket_addresses()?;
+        let path = addresses[0].as_pathname().unwrap().to_owned();
         // Holding the lock makes any existing socket a leftover from an unclean exit.
         let lock = File::create(path.with_extension("lock"))
             .map_err(|error| format!("could not create control socket lock: {error}"))?;
         rustix::fs::flock(&lock, rustix::fs::FlockOperation::NonBlockingLockExclusive)
             .map_err(|_| "another instance is already running")?;
         let _ = std::fs::remove_file(&path);
-        let socket = UnixDatagram::bind(&path)
+        // Older installed clients use the abstract address. Bind it first so an
+        // older daemon also prevents a second instance from starting.
+        let legacy = UnixDatagram::bind_addr(&addresses[1])
+            .map_err(|error| format!("could not bind control socket: {error}"))?;
+        let socket = UnixDatagram::bind_addr(&addresses[0])
             .map_err(|error| format!("could not bind control socket: {error}"))?;
         let control = Self {
-            socket,
+            sockets: [socket, legacy],
             path,
             _lock: lock,
         };
-        rustix::net::sockopt::set_socket_passcred(&control.socket, true)
-            .map_err(|error| format!("could not enable control socket credentials: {error}"))?;
-        control
-            .socket
-            .set_nonblocking(true)
-            .map_err(|error| format!("could not configure control socket: {error}"))?;
+        for socket in &control.sockets {
+            rustix::net::sockopt::set_socket_passcred(socket, true)
+                .map_err(|error| format!("could not enable control socket credentials: {error}"))?;
+            socket
+                .set_nonblocking(true)
+                .map_err(|error| format!("could not configure control socket: {error}"))?;
+        }
         Ok(control)
     }
 
     pub(crate) fn recv(
-        &self,
+        socket: &UnixDatagram,
         message: &mut [u8],
     ) -> std::io::Result<Option<(usize, Option<SocketAddrAny>)>> {
         let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmCredentials(1))];
         let mut ancillary = RecvAncillaryBuffer::new(&mut space);
         let received = rustix::net::recvmsg(
-            &self.socket,
+            socket,
             &mut [IoSliceMut::new(message)],
             &mut ancillary,
             RecvFlags::CMSG_CLOEXEC,

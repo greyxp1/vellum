@@ -9,11 +9,13 @@ use crate::ipc::ControlSocket;
 use crate::{state, text};
 
 const MAX_SOCKET_MESSAGE: usize = 4096;
+// Yield to drawing, input and the other endpoint even when a queue stays full.
+const MAX_SOCKET_BATCH: usize = 32;
 
 pub(crate) fn run(mut settings: Settings, mut config: Config) -> Result<(), String> {
     text::set_text_font(settings.text_font.clone());
     let control = ControlSocket::bind()?;
-    let socket = &control.socket;
+    let sockets = &control.sockets;
 
     let (mut state, mut event_queue) = state::State::setup_wayland(&settings)?;
     let mut pending_settings = None;
@@ -75,9 +77,10 @@ pub(crate) fn run(mut settings: Settings, mut config: Config) -> Result<(), Stri
                             PollFlags::empty()
                         },
                 ),
-                PollFd::new(socket, PollFlags::IN),
+                PollFd::new(&sockets[0], PollFlags::IN),
+                PollFd::new(&sockets[1], PollFlags::IN),
                 config.fd().map_or_else(
-                    || PollFd::new(socket, PollFlags::empty()),
+                    || PollFd::new(&sockets[0], PollFlags::empty()),
                     |fd| PollFd::new(fd, PollFlags::IN),
                 ),
             ];
@@ -89,8 +92,8 @@ pub(crate) fn run(mut settings: Settings, mut config: Config) -> Result<(), Stri
             }
             (
                 fds[0].revents().contains(PollFlags::IN),
-                fds[1].revents().contains(PollFlags::IN),
-                fds[2].revents().contains(PollFlags::IN),
+                [1, 2].map(|index| fds[index].revents().contains(PollFlags::IN)),
+                fds[3].revents().contains(PollFlags::IN),
             )
         };
         if wayland_ready {
@@ -105,10 +108,13 @@ pub(crate) fn run(mut settings: Settings, mut config: Config) -> Result<(), Stri
             config.changed();
         }
 
-        if socket_ready {
+        for (socket, ready) in sockets.iter().zip(socket_ready) {
+            if !ready {
+                continue;
+            }
             let mut message = [0; MAX_SOCKET_MESSAGE + 1];
-            loop {
-                let (size, sender) = match control.recv(&mut message) {
+            for _ in 0..MAX_SOCKET_BATCH {
+                let (size, sender) = match ControlSocket::recv(socket, &mut message) {
                     Ok(Some(message)) => message,
                     Ok(None) => continue,
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
