@@ -7,9 +7,14 @@ use clap_complete_nushell::Nushell;
 #[path = "src/cli.rs"]
 mod cli;
 
+#[path = "src/tool.rs"]
+#[allow(dead_code)]
+mod tool;
+
 fn main() -> std::io::Result<()> {
     println!("cargo:rerun-if-changed=Cargo.toml");
     println!("cargo:rerun-if-changed=src/cli.rs");
+    println!("cargo:rerun-if-changed=src/tool.rs");
 
     let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").ok_or(std::io::ErrorKind::NotFound)?);
     let man_dir = out_dir.join("man");

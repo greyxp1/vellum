@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use crate::tool::Tool;
 use color::DynamicColor;
 
 #[derive(clap::Parser)]
@@ -24,6 +25,21 @@ pub(super) struct Cli {
 
 #[derive(clap::Subcommand)]
 pub(crate) enum Command {
+    /// Show drawing status
+    Status {
+        /// Show one field. Unsupported properties return null.
+        #[arg(value_enum)]
+        field: Option<StatusField>,
+        /// Show settings for a tool
+        #[arg(long, value_enum)]
+        tool: Option<Tool>,
+        /// Output JSON
+        #[arg(long)]
+        json: bool,
+        /// Test silently: 0=true, 1=false or Vellum not running, 2=error
+        #[arg(long, requires = "field", conflicts_with = "json")]
+        check: bool,
+    },
     /// Toggle drawing mode
     Toggle,
     /// Activate drawing mode
@@ -42,12 +58,6 @@ pub(crate) enum Command {
         #[arg(value_parser = visible_color)]
         color: DynamicColor,
     },
-    /// Report whether drawing mode is active
-    IsActive,
-    /// Report whether text is being edited
-    IsTextEditing,
-    /// Report whether the whiteboard is active
-    IsWhiteboard,
     /// Manage the whiteboard
     Whiteboard {
         #[command(subcommand)]
@@ -60,6 +70,34 @@ pub(crate) enum Command {
     },
     /// Stop Vellum
     Exit,
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+pub(crate) enum StatusField {
+    /// Drawing is active
+    Active,
+    /// Drawing mode: inactive, desktop or whiteboard
+    Mode,
+    /// Whiteboard is active
+    Whiteboard,
+    /// Tool name
+    Tool,
+    /// Drawing color (sRGB)
+    Color,
+    /// Size in logical pixels
+    Size,
+    /// Opacity (0 to 1)
+    Opacity,
+    /// Roundness (0 to 1)
+    Roundness,
+    /// Shape fill or text background
+    Filled,
+    /// Editing a text annotation
+    TextEditing,
+    /// Keep annotations visible when inactive
+    AnnotationsVisible,
+    /// Whiteboard background color (sRGB)
+    WhiteboardColor,
 }
 
 #[derive(clap::Subcommand)]

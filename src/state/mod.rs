@@ -4,6 +4,7 @@ mod freeze;
 mod input;
 mod output;
 mod render;
+mod status;
 mod wayland;
 
 use color::DynamicColor;

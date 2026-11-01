@@ -93,6 +93,11 @@ pub(super) struct Editor {
 }
 
 impl Editor {
+    pub(in crate::draw) fn tool_style(&self, tool: Option<Tool>) -> (Tool, Style) {
+        let tool = tool.unwrap_or(self.tool);
+        (tool, self.style_for(tool))
+    }
+
     pub(in crate::draw) fn switch_canvas(&mut self, canvas: super::Canvas) {
         if self.canvas != canvas {
             std::mem::swap(&mut self.document, &mut self.other_document);

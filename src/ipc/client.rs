@@ -34,7 +34,7 @@ pub(crate) fn send_command(command: &Command) -> Result<(), String> {
     Ok(())
 }
 
-pub(crate) fn query(request: &Command) -> Result<bool, String> {
+pub(crate) fn query(request: &Command) -> Result<Option<String>, String> {
     let addresses = control_socket_addresses()?;
     let socket = UnixDatagram::unbound().map_err(|error| error.to_string())?;
     // Credentials make the kernel autobind a unique address for the reply.
@@ -45,7 +45,7 @@ pub(crate) fn query(request: &Command) -> Result<bool, String> {
             error.kind(),
             ErrorKind::ConnectionRefused | ErrorKind::NotFound
         ) {
-            return Ok(false);
+            return Ok(None);
         }
         return Err(format!("could not connect to the overlay: {error}"));
     }
@@ -55,23 +55,23 @@ pub(crate) fn query(request: &Command) -> Result<bool, String> {
     let request = request.serialize();
     if let Err(error) = socket.send(request.as_bytes()) {
         if error.kind() == ErrorKind::ConnectionRefused {
-            return Ok(false);
+            return Ok(None);
         }
         return Err(format!("could not send command: {error}"));
     }
 
-    let mut response = [0; 5];
+    let mut response = [0; 4096];
     let size = match socket.recv(&mut response) {
         Ok(size) => size,
         Err(error) if error.kind() == ErrorKind::ConnectionRefused => {
-            return Ok(false);
+            return Ok(None);
         }
         Err(error) => return Err(format!("could not receive overlay status: {error}")),
     };
-    let active = match &response[..size] {
-        b"true" => true,
-        b"false" => false,
-        _ => return Err("invalid overlay status".into()),
-    };
-    Ok(active)
+    if size == response.len() {
+        return Err("overlay status is too large".into());
+    }
+    String::from_utf8(response[..size].to_vec())
+        .map(Some)
+        .map_err(|_| "invalid overlay status".into())
 }

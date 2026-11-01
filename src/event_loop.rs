@@ -131,8 +131,7 @@ pub(crate) fn run(mut settings: Settings, mut config: Config) -> Result<(), Stri
                         continue;
                     }
                 };
-                let reply = |active: bool| {
-                    let response: &[u8] = if active { b"true" } else { b"false" };
+                let reply = |response: &[u8]| {
                     if let Some(sender) = &sender
                         && let Err(error) = rustix::net::sendto(
                             socket,
@@ -156,9 +155,14 @@ pub(crate) fn run(mut settings: Settings, mut config: Config) -> Result<(), Stri
                     Command::SetColor { color } => state.set_current_color(color),
                     Command::Whiteboard { command } => state.whiteboard(command),
                     Command::Annotations { command } => state.annotations(command),
-                    Command::IsActive => reply(state.is_active()),
-                    Command::IsTextEditing => reply(state.is_text_editing()),
-                    Command::IsWhiteboard => reply(state.is_whiteboard()),
+                    Command::Status {
+                        field, tool, json, ..
+                    } => {
+                        let response = state
+                            .status_reply(field, tool, json)
+                            .map_err(|error| format!("could not format status: {error}"))?;
+                        reply(response.as_bytes());
+                    }
                     Command::Exit => return Ok(()),
                 }
             }

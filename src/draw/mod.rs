@@ -20,7 +20,7 @@ use crate::OutputId;
 
 pub(crate) use self::editor::Action;
 use self::editor::{Editor, EditorEffect, Property};
-pub(crate) use self::scene::Point;
+pub(crate) use self::scene::{Point, Style};
 pub(crate) use self::selection::CursorHint;
 use self::text_edit::TextEdit;
 pub(crate) use self::text_edit::{
@@ -137,6 +137,10 @@ pub(crate) struct DrawState {
 }
 
 impl DrawState {
+    pub(crate) fn tool_style(&self, tool: Option<Tool>) -> (Tool, Style) {
+        self.editor.tool_style(tool)
+    }
+
     pub(crate) fn switch_canvas(&mut self, canvas: Canvas) {
         self.editor.switch_canvas(canvas);
         self.record(true);

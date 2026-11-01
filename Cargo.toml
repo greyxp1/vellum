@@ -18,6 +18,7 @@ color = "0.3.3"
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 toml = { version = "0.9", default-features = false, features = ["std", "serde", "parse"] }
 
 clap.workspace = true
@@ -59,6 +60,7 @@ kurbo = "0.13.1"
 perfect_freehand = "0.1.1"
 
 [build-dependencies]
+serde = { version = "1.0", features = ["derive"] }
 clap.workspace = true
 clap_complete = "4.6.9"
 clap_complete_nushell = "4.6.2"

@@ -2013,6 +2013,7 @@ dependencies = [
  "pollster",
  "rustix",
  "serde",
+ "serde_json",
  "skrifa",
  "toml",
  "unicode-segmentation",

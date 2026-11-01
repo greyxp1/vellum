@@ -109,15 +109,31 @@ impl Drop for ControlSocket {
 impl Command {
     fn serialize(&self) -> Cow<'static, str> {
         match self {
+            Self::Status {
+                field, tool, json, ..
+            } => {
+                let name = if *json { "status_json" } else { "status" };
+                let name: Cow<'_, str> = match tool {
+                    Some(tool) => format!("{name}@{}", tool.name()).into(),
+                    None => Cow::Borrowed(name),
+                };
+                match field {
+                    None => name,
+                    Some(field) => format!(
+                        "{name}={}",
+                        clap::ValueEnum::to_possible_value(field)
+                            .unwrap()
+                            .get_name()
+                    )
+                    .into(),
+                }
+            }
             Self::Toggle => "toggle".into(),
             Self::Activate => "activate".into(),
             Self::Deactivate => "deactivate".into(),
             Self::Clear => "clear".into(),
             Self::ClearAndDeactivate => "clear_and_deactivate".into(),
-            Self::IsActive => "is_active".into(),
             Self::SetColor { color } => format!("set_color={color}").into(),
-            Self::IsTextEditing => "is_text_editing".into(),
-            Self::IsWhiteboard => "is_whiteboard".into(),
             Self::Exit => "exit".into(),
             Self::Annotations { command } => match command {
                 VisibilityCommand::Show => "annotations_show".into(),
@@ -136,14 +152,46 @@ impl Command {
 
     pub(crate) fn deserialize(message: &[u8]) -> Result<Self, &'static str> {
         match message {
+            _ if message.starts_with(b"status") => {
+                let message = std::str::from_utf8(message).map_err(|_| "invalid status request")?;
+                let (target, field) = message
+                    .split_once('=')
+                    .map_or((message, None), |(target, field)| (target, Some(field)));
+                let (name, tool) = target
+                    .split_once('@')
+                    .map_or((target, None), |(name, tool)| (name, Some(tool)));
+                let json = match name {
+                    "status" => false,
+                    "status_json" => true,
+                    _ => return Err("invalid status request"),
+                };
+                let tool = tool
+                    .map(|tool| {
+                        clap::ValueEnum::from_str(tool, false).map_err(|_| "invalid status tool")
+                    })
+                    .transpose()?;
+                let field = field
+                    .map(|field| {
+                        clap::ValueEnum::from_str(field, false).map_err(|_| "invalid status field")
+                    })
+                    .transpose()?;
+                if tool.is_some()
+                    && field.is_some_and(|field: crate::cli::StatusField| !field.is_tool_field())
+                {
+                    return Err("tool target requires a tool property");
+                }
+                Ok(Self::Status {
+                    field,
+                    tool,
+                    json,
+                    check: false,
+                })
+            }
             b"toggle" => Ok(Self::Toggle),
             b"activate" => Ok(Self::Activate),
             b"deactivate" => Ok(Self::Deactivate),
             b"clear" => Ok(Self::Clear),
             b"clear_and_deactivate" => Ok(Self::ClearAndDeactivate),
-            b"is_active" => Ok(Self::IsActive),
-            b"is_text_editing" => Ok(Self::IsTextEditing),
-            b"is_whiteboard" => Ok(Self::IsWhiteboard),
             b"exit" => Ok(Self::Exit),
             b"annotations_show" => Ok(Self::Annotations {
                 command: VisibilityCommand::Show,

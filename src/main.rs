@@ -43,21 +43,34 @@ fn run() -> Result<ExitCode, String> {
         return Ok(ExitCode::SUCCESS);
     }
     if let Some(subcommand) = &arguments.command {
-        let truthy_value = match subcommand {
-            Command::IsActive | Command::IsTextEditing | Command::IsWhiteboard => {
-                ipc::query(subcommand)?
+        match subcommand {
+            Command::Status {
+                field, tool, check, ..
+            } => {
+                if tool.is_some() && field.is_some_and(|field| !field.is_tool_field()) {
+                    return Err("--tool requires a tool property".into());
+                }
+                if *check && field.is_none_or(|field| !field.is_boolean()) {
+                    return Err("--check requires a boolean field".into());
+                }
+                let response = ipc::query(subcommand)?;
+                if *check {
+                    return match response.as_deref() {
+                        Some("true") => Ok(ExitCode::SUCCESS),
+                        Some("false") | None => Ok(ExitCode::from(1)),
+                        Some("null") => Err("field is not applicable to this tool".into()),
+                        _ => Err("invalid boolean status response".into()),
+                    };
+                }
+                let response = response.ok_or("overlay is not running")?;
+                print!("{response}");
+                if !response.ends_with('\n') {
+                    println!();
+                }
             }
-            _ => {
-                ipc::send_command(subcommand)?;
-                return Ok(ExitCode::SUCCESS);
-            }
-        };
-        println!("{truthy_value}");
-        return Ok(if truthy_value {
-            ExitCode::SUCCESS
-        } else {
-            ExitCode::from(1)
-        });
+            _ => ipc::send_command(subcommand)?,
+        }
+        return Ok(ExitCode::SUCCESS);
     }
     let mut config = config::Config::new(arguments)?;
     let started = Instant::now();
