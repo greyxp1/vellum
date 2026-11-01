@@ -102,7 +102,9 @@ impl LiveStroke {
         }
     }
 
-    pub fn update_style(&mut self, style: Style) {
+    pub fn update_style(&mut self, update: impl FnOnce(&mut Style)) {
+        let mut style = self.style;
+        update(&mut style);
         if self.style == style {
             return;
         }

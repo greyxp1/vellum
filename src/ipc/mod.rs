@@ -12,7 +12,7 @@ use std::path::PathBuf;
 
 use rustix::net::{RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, SocketAddrAny};
 
-use crate::cli::{Command, VisibilityCommand, WhiteboardCommand};
+use crate::cli::{Command, ToolSetting, VisibilityCommand, WhiteboardCommand};
 
 fn control_socket_addresses() -> Result<[SocketAddr; 2], String> {
     use std::os::unix::ffi::OsStrExt;
@@ -109,6 +109,18 @@ impl Drop for ControlSocket {
 impl Command {
     fn serialize(&self) -> Cow<'static, str> {
         match self {
+            Self::Use { tool } => format!("use={}", tool.name()).into(),
+            Self::Set { tool, setting } => {
+                let (property, value) = match setting {
+                    ToolSetting::Size { value } => ("size", value.to_string()),
+                    ToolSetting::Opacity { value } => ("opacity", value.to_string()),
+                    ToolSetting::Roundness { value } => ("roundness", value.to_string()),
+                    ToolSetting::Filled { value } => ("filled", value.to_string()),
+                    ToolSetting::Color { value } => ("color", value.to_string()),
+                };
+                let target = tool.map_or(String::new(), |tool| format!("@{}", tool.name()));
+                format!("set{target}={property}={value}").into()
+            }
             Self::Status {
                 field, tool, json, ..
             } => {
@@ -131,9 +143,8 @@ impl Command {
             Self::Toggle => "toggle".into(),
             Self::Activate => "activate".into(),
             Self::Deactivate => "deactivate".into(),
-            Self::Clear => "clear".into(),
-            Self::ClearAndDeactivate => "clear_and_deactivate".into(),
-            Self::SetColor { color } => format!("set_color={color}").into(),
+            Self::Clear { deactivate: false } => "clear".into(),
+            Self::Clear { deactivate: true } => "clear_and_deactivate".into(),
             Self::Exit => "exit".into(),
             Self::Annotations { command } => match command {
                 VisibilityCommand::Show => "annotations_show".into(),
@@ -152,6 +163,41 @@ impl Command {
 
     pub(crate) fn deserialize(message: &[u8]) -> Result<Self, &'static str> {
         match message {
+            _ if let Some(tool) = message.strip_prefix(b"use=") => {
+                let tool = std::str::from_utf8(tool).map_err(|_| "invalid tool")?;
+                Ok(Self::Use {
+                    tool: clap::ValueEnum::from_str(tool, false).map_err(|_| "invalid tool")?,
+                })
+            }
+            _ if message.starts_with(b"set=") || message.starts_with(b"set@") => {
+                let message = std::str::from_utf8(message).map_err(|_| "invalid setter request")?;
+                let (target, setting) = message.split_once('=').ok_or("missing setting")?;
+                let tool = target
+                    .strip_prefix("set@")
+                    .map(|tool| clap::ValueEnum::from_str(tool, false).map_err(|_| "invalid tool"))
+                    .transpose()?;
+                let (property, value) = setting.split_once('=').ok_or("missing value")?;
+                use crate::cli::{opacity, positive_size, roundness, visible_color};
+                let setting = match property {
+                    "size" => ToolSetting::Size {
+                        value: positive_size(value).map_err(|_| "invalid size")?,
+                    },
+                    "opacity" => ToolSetting::Opacity {
+                        value: opacity(value).map_err(|_| "invalid opacity")?,
+                    },
+                    "roundness" => ToolSetting::Roundness {
+                        value: roundness(value).map_err(|_| "invalid roundness")?,
+                    },
+                    "filled" => ToolSetting::Filled {
+                        value: value.parse().map_err(|_| "invalid fill")?,
+                    },
+                    "color" => ToolSetting::Color {
+                        value: visible_color(value).map_err(|_| "invalid color")?,
+                    },
+                    _ => return Err("invalid tool property"),
+                };
+                Ok(Self::Set { tool, setting })
+            }
             _ if message.starts_with(b"status") => {
                 let message = std::str::from_utf8(message).map_err(|_| "invalid status request")?;
                 let (target, field) = message
@@ -190,8 +236,8 @@ impl Command {
             b"toggle" => Ok(Self::Toggle),
             b"activate" => Ok(Self::Activate),
             b"deactivate" => Ok(Self::Deactivate),
-            b"clear" => Ok(Self::Clear),
-            b"clear_and_deactivate" => Ok(Self::ClearAndDeactivate),
+            b"clear" => Ok(Self::Clear { deactivate: false }),
+            b"clear_and_deactivate" => Ok(Self::Clear { deactivate: true }),
             b"exit" => Ok(Self::Exit),
             b"annotations_show" => Ok(Self::Annotations {
                 command: VisibilityCommand::Show,
@@ -221,10 +267,6 @@ impl Command {
                     command: WhiteboardCommand::SetColor { color },
                 })
             }
-            _ if let Some(color) = message.strip_prefix(b"set_color=") => Ok(Self::SetColor {
-                color: crate::cli::visible_color(color_str(color)?)
-                    .map_err(|_| "invalid or transparent color")?,
-            }),
             _ => Err("invalid command"),
         }
     }

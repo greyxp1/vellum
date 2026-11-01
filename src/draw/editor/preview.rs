@@ -12,12 +12,13 @@ impl Editor {
             Some(Interaction::Freehand(stroke)) => output.push(stroke.tail_geometry()),
             Some(Interaction::Drawing {
                 tool,
+                style,
                 start,
                 current,
                 modifiers,
             }) => output.push(geometry(
                 &drawing_kind(*tool, *start, *current, *modifiers),
-                self.style,
+                *style,
             )),
             _ => {}
         }

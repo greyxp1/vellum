@@ -137,6 +137,21 @@ pub(crate) struct DrawState {
 }
 
 impl DrawState {
+    pub(crate) fn select_tool(&mut self, tool: Tool) -> bool {
+        let changed = self.editor.switch_tool(tool);
+        self.record(changed)
+    }
+
+    pub(crate) fn set_tool_setting(
+        &mut self,
+        tool: Option<Tool>,
+        setting: crate::cli::ToolSetting,
+    ) -> Result<bool, String> {
+        let changed = self.editor.set_tool_setting(tool, setting)?;
+        self.record(changed && self.editor.picker_active());
+        Ok(changed)
+    }
+
     pub(crate) fn tool_style(&self, tool: Option<Tool>) -> (Tool, Style) {
         self.editor.tool_style(tool)
     }
@@ -216,15 +231,6 @@ impl DrawState {
         }
         self.record(effect.changed);
         effect
-    }
-
-    pub(crate) fn set_current_color(&mut self, rgba: [f32; 4]) -> bool {
-        let mut changed = self.editor.apply_rgba(rgba);
-        if let Some((_, cursor)) = &mut self.tool_cursor {
-            changed |= cursor.color != rgba;
-            cursor.color = rgba;
-        }
-        self.record(changed)
     }
 
     pub(crate) fn pointer_down(

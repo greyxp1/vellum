@@ -41,6 +41,7 @@ pub(super) enum Interaction {
     Freehand(freehand::LiveStroke),
     Drawing {
         tool: Tool,
+        style: Style,
         start: Point,
         current: Point,
         modifiers: Modifiers,
@@ -63,6 +64,7 @@ pub(super) enum Interaction {
     EditingText(TextEdit),
     Erasing {
         previous: Point,
+        size: f32,
     },
 }
 
@@ -121,8 +123,12 @@ impl Editor {
         let previous = self.finish_interaction();
         let effective_tool = tool_override.effective_tool(self.tool);
         if effective_tool == Tool::Eraser {
-            self.interaction = Some(Interaction::Erasing { previous: point });
-            return previous | self.erase_between(point, point);
+            let size = self.style_for(Tool::Eraser).size;
+            self.interaction = Some(Interaction::Erasing {
+                previous: point,
+                size,
+            });
+            return previous | self.erase_between(point, point, size);
         }
 
         match effective_tool {
@@ -136,6 +142,7 @@ impl Editor {
             Tool::Line | Tool::Arrow | Tool::Triangle | Tool::Rectangle | Tool::Ellipse => {
                 self.interaction = Some(Interaction::Drawing {
                     tool: effective_tool,
+                    style: self.style,
                     start: point,
                     current: point,
                     modifiers,
@@ -243,9 +250,10 @@ impl Editor {
                 *current_point = point;
                 true
             }
-            Some(Interaction::Erasing { previous }) => {
+            Some(Interaction::Erasing { previous, size }) => {
                 let start = std::mem::replace(previous, point);
-                self.erase_between(start, point)
+                let size = *size;
+                self.erase_between(start, point, size)
             }
             Some(Interaction::Freehand(_)) | None => false,
         }
@@ -285,13 +293,15 @@ impl Editor {
                 ));
                 true
             }
-            Some(Interaction::Drawing { tool, start, .. }) => {
+            Some(Interaction::Drawing {
+                tool, style, start, ..
+            }) => {
                 // Without a drag, only rectangles and filled ellipses leave a visible dot.
                 if point != start
                     || tool == Tool::Rectangle
-                    || (tool == Tool::Ellipse && self.style.filled)
+                    || (tool == Tool::Ellipse && style.filled)
                 {
-                    self.insert_kind(drawing_kind(tool, start, point, modifiers), self.style);
+                    self.insert_kind(drawing_kind(tool, start, point, modifiers), style);
                 }
                 true
             }
@@ -340,7 +350,9 @@ impl Editor {
                 }
                 true
             }
-            Some(Interaction::Erasing { previous }) => self.erase_between(previous, point),
+            Some(Interaction::Erasing { previous, size }) => {
+                self.erase_between(previous, point, size)
+            }
             interaction => {
                 self.interaction = interaction;
                 false
@@ -452,7 +464,12 @@ impl Editor {
     }
 
     fn tool_cursor(&self, tool: Tool) -> Cursor {
-        let style = self.style_for(tool);
+        let mut style = self.style_for(tool);
+        if tool == Tool::Eraser
+            && let Some(Interaction::Erasing { size, .. }) = &self.interaction
+        {
+            style.size = *size;
+        }
         Cursor::Tool(ToolCursor {
             tool,
             size: style.size,

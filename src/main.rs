@@ -44,11 +44,20 @@ fn run() -> Result<ExitCode, String> {
     }
     if let Some(subcommand) = &arguments.command {
         match subcommand {
+            Command::Set { .. } | Command::Use { .. } => {
+                let response = ipc::query(subcommand)?.ok_or("overlay is not running")?;
+                if let Some(error) = response.strip_prefix("error:") {
+                    return Err(error.into());
+                }
+                if response != "ok" {
+                    return Err("invalid command response".into());
+                }
+            }
             Command::Status {
                 field, tool, check, ..
             } => {
                 if tool.is_some() && field.is_some_and(|field| !field.is_tool_field()) {
-                    return Err("--tool requires a tool property".into());
+                    return Err("--target requires a tool property".into());
                 }
                 if *check && field.is_none_or(|field| !field.is_boolean()) {
                     return Err("--check requires a boolean field".into());

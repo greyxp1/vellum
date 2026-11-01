@@ -124,13 +124,6 @@ pub(crate) fn run(mut settings: Settings, mut config: Config) -> Result<(), Stri
                     log::warn!("socket message exceeded {MAX_SOCKET_MESSAGE} bytes");
                     continue;
                 }
-                let command = match Command::deserialize(&message[..size]) {
-                    Ok(command) => command,
-                    Err(error) => {
-                        log::warn!("ignored socket message: {error}");
-                        continue;
-                    }
-                };
                 let reply = |response: &[u8]| {
                     if let Some(sender) = &sender
                         && let Err(error) = rustix::net::sendto(
@@ -140,19 +133,35 @@ pub(crate) fn run(mut settings: Settings, mut config: Config) -> Result<(), Stri
                             sender,
                         )
                     {
-                        log::warn!("could not send status: {error}");
+                        log::warn!("could not send response: {error}");
+                    }
+                };
+                let command = match Command::deserialize(&message[..size]) {
+                    Ok(command) => command,
+                    Err(error) => {
+                        log::warn!("ignored socket message: {error}");
+                        reply(format!("error:{error}").as_bytes());
+                        continue;
                     }
                 };
                 match command {
+                    Command::Use { tool } => match state.select_tool(tool) {
+                        Ok(()) => reply(b"ok"),
+                        Err(error) => reply(format!("error:{error}").as_bytes()),
+                    },
+                    Command::Set { tool, setting } => match state.set_tool_setting(tool, setting) {
+                        Ok(()) => reply(b"ok"),
+                        Err(error) => reply(format!("error:{error}").as_bytes()),
+                    },
                     Command::Toggle => state.toggle_input(),
                     Command::Activate => state.set_input_active(true),
                     Command::Deactivate => state.set_input_active(false),
-                    Command::Clear => state.clear(),
-                    Command::ClearAndDeactivate => {
+                    Command::Clear { deactivate } => {
                         state.clear();
-                        state.set_input_active(false);
+                        if deactivate {
+                            state.set_input_active(false);
+                        }
                     }
-                    Command::SetColor { color } => state.set_current_color(color),
                     Command::Whiteboard { command } => state.whiteboard(command),
                     Command::Annotations { command } => state.annotations(command),
                     Command::Status {

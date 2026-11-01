@@ -7,7 +7,6 @@ mod render;
 mod status;
 mod wayland;
 
-use color::DynamicColor;
 use wayland_client::QueueHandle;
 
 use crate::OutputId;
@@ -258,13 +257,29 @@ impl State {
         self.apply_action(Action::Clear);
     }
 
-    pub(crate) fn set_current_color(&mut self, color: DynamicColor) {
-        let rgba = crate::color_to_srgb(color);
-        let render = self.draw.set_current_color(rgba);
-        if render {
+    pub(crate) fn select_tool(&mut self, tool: crate::tool::Tool) -> Result<(), String> {
+        if tool != self.draw.tool_style(None).0
+            && (self.pointer.input_grab_active() || self.tablet.input_grab_active())
+        {
+            return Err("finish the current gesture before selecting a tool".into());
+        }
+        if self.draw.select_tool(tool) {
+            self.refresh_cursor();
             self.request_render();
         }
-        self.refresh_cursor();
+        Ok(())
+    }
+
+    pub(crate) fn set_tool_setting(
+        &mut self,
+        tool: Option<crate::tool::Tool>,
+        setting: crate::cli::ToolSetting,
+    ) -> Result<(), String> {
+        if self.draw.set_tool_setting(tool, setting)? {
+            self.refresh_cursor();
+            self.request_render();
+        }
+        Ok(())
     }
 
     pub(crate) fn next_wakeup(&self) -> Option<std::time::Instant> {

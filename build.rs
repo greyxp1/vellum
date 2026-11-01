@@ -26,7 +26,17 @@ fn main() -> std::io::Result<()> {
         std::fs::create_dir_all(output)?;
     }
     let mut command = cli::Cli::command();
-    clap_mangen::generate_to(command.clone(), &man_dir)?;
+    // Man pages need native value lists instead of the terminal's multiline help.
+    let man_command = command.clone().mut_subcommands(|command| {
+        command.mut_args(|arg| {
+            if arg.get_id() == "tool" {
+                arg.long_help(None).hide_possible_values(false)
+            } else {
+                arg
+            }
+        })
+    });
+    clap_mangen::generate_to(man_command, &man_dir)?;
     for &shell in Shell::value_variants() {
         generate_to(shell, &mut command, "vellum", &completions_dir)?;
     }

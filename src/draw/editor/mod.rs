@@ -211,7 +211,7 @@ impl Editor {
             self.switch_tool(settings.default_tool);
         }
         self.default_tool = settings.default_tool;
-        self.sync_active_style();
+        self.style = self.style_for(self.tool);
         if settings.text_font != previous.text_font {
             for document in [&mut self.document, &mut self.other_document] {
                 for element in &mut document.elements {
@@ -245,7 +245,7 @@ impl Editor {
             self.style = self.default_style;
             self.tool_properties = self.default_tool_properties;
         }
-        self.sync_active_style();
+        self.style = self.style_for(self.tool);
         self.adjusted = None;
         true
     }
@@ -438,17 +438,18 @@ impl Editor {
         TextEdit::new(session, id, origin, content, style, scale)
     }
 
-    fn switch_tool(&mut self, tool: Tool) -> bool {
+    pub(in crate::draw) fn switch_tool(&mut self, tool: Tool) -> bool {
         if self.tool == tool {
             return false;
         }
+        self.picker = None;
         self.finish_interaction();
         self.selected.clear();
         self.tool = tool;
         if tool != Tool::Eraser {
             self.last_non_eraser_tool = tool;
         }
-        self.sync_active_style();
+        self.style = self.style_for(self.tool);
         true
     }
 }

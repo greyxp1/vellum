@@ -143,12 +143,8 @@ impl Editor {
         self.document.history.record(HistoryEntry::Insert(vec![id]));
     }
 
-    pub(super) fn erase_between(&mut self, start: Point, end: Point) -> bool {
-        let radius = self
-            .properties(crate::tool::Tool::Eraser)
-            .expect("eraser has adjustable properties")
-            .size
-            * 0.5;
+    pub(super) fn erase_between(&mut self, start: Point, end: Point, size: f32) -> bool {
+        let radius = size * 0.5;
         self.remove_elements(
             ..,
             |element| element.erase_hit_test(start, end, radius),

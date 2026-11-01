@@ -66,12 +66,12 @@ pub(crate) fn query(request: &Command) -> Result<Option<String>, String> {
         Err(error) if error.kind() == ErrorKind::ConnectionRefused => {
             return Ok(None);
         }
-        Err(error) => return Err(format!("could not receive overlay status: {error}")),
+        Err(error) => return Err(format!("could not receive overlay response: {error}")),
     };
     if size == response.len() {
-        return Err("overlay status is too large".into());
+        return Err("overlay response is too large".into());
     }
     String::from_utf8(response[..size].to_vec())
         .map(Some)
-        .map_err(|_| "invalid overlay status".into())
+        .map_err(|_| "invalid overlay response".into())
 }

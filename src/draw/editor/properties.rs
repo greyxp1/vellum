@@ -1,4 +1,5 @@
 use super::{Editor, HistoryEntry, Interaction};
+use crate::cli::ToolSetting;
 use crate::config::{MIN_OPACITY, SizeRange};
 use crate::draw::scene::{ElementKind, Style, tool_for};
 use crate::tool::Tool;
@@ -195,6 +196,56 @@ impl ToolPropertySet {
 }
 
 impl Editor {
+    pub(in crate::draw) fn set_tool_setting(
+        &mut self,
+        target: Option<Tool>,
+        setting: ToolSetting,
+    ) -> Result<bool, String> {
+        let tool = target.unwrap_or(self.tool);
+        let supported = match setting {
+            ToolSetting::Size { .. } => Property::Size.supported(tool),
+            ToolSetting::Opacity { .. } | ToolSetting::Color { .. } => {
+                Property::Opacity.supported(tool)
+            }
+            ToolSetting::Roundness { .. } => Property::Roundness.supported(tool),
+            ToolSetting::Filled { .. } => tool.supports_fill() || tool == Tool::Text,
+        };
+        if !supported {
+            return Err(format!("property is not applicable to {}", tool.name()));
+        }
+        let before = (self.style, self.style_for(tool));
+        match setting {
+            ToolSetting::Size { value } => {
+                let range = &self.size_ranges[&tool];
+                if !range.contains(value) {
+                    return Err(format!(
+                        "{} size must be between {} and {}",
+                        tool.name(),
+                        range.min(),
+                        range.max()
+                    ));
+                }
+                self.properties_mut(tool).unwrap().size = value;
+            }
+            ToolSetting::Opacity { value } => self.properties_mut(tool).unwrap().opacity = value,
+            ToolSetting::Roundness { value } => {
+                self.properties_mut(tool).unwrap().roundness = value
+            }
+            ToolSetting::Filled { value } => self.properties_mut(tool).unwrap().filled = value,
+            ToolSetting::Color { value } => {
+                let rgba = crate::color_to_srgb(value);
+                if !rgba.iter().all(|value| value.is_finite()) {
+                    return Err("color components must be finite".into());
+                }
+                self.properties_mut(tool).unwrap().opacity = rgba[3];
+                self.style.color[..3].copy_from_slice(&rgba[..3]);
+            }
+        }
+        // Refresh future defaults without restyling an in-progress stroke or text edit.
+        self.style = self.style_for(self.tool);
+        Ok(before != (self.style, self.style_for(tool)))
+    }
+
     pub(super) fn toggle_fill(&mut self) -> Adjustment {
         if let Some(edit) = self.text_edit_mut() {
             edit.style.filled = !edit.style.filled;
@@ -228,12 +279,14 @@ impl Editor {
         if !self.tool.supports_fill() && self.tool != Tool::Text {
             return Adjustment::default();
         }
+        let tool = self.tool;
         let properties = self
-            .properties_mut(self.tool)
+            .properties_mut(tool)
             .expect("fillable tools have adjustable properties");
         let filled = !properties.filled;
         properties.filled = filled;
-        self.sync_active_style();
+        self.style = self.style_for(tool);
+        self.update_live_style(tool, |style| style.filled = filled);
         Adjustment {
             changed: true,
             feedback: Some(if self.tool == Tool::Text {
@@ -297,7 +350,10 @@ impl Editor {
         let changed = *value != adjustment.value;
         if changed {
             *value = adjustment.value;
-            self.sync_active_style();
+            self.style = self.style_for(tool);
+            self.update_live_style(tool, |style| {
+                *property.style_value(style) = adjustment.value;
+            });
         }
         Adjustment {
             changed,
@@ -407,7 +463,6 @@ impl Editor {
             properties.opacity = rgba[3];
         }
         self.style.color = rgba;
-        self.update_live_stroke_style();
         if let Some(edit) = self.text_edit_mut() {
             changed |= edit.style.color != rgba;
             edit.style.color = rgba;
@@ -445,15 +500,23 @@ impl Editor {
         style
     }
 
-    pub(super) fn sync_active_style(&mut self) {
-        self.style = self.style_for(self.tool);
-        self.update_live_stroke_style();
-    }
-
-    fn update_live_stroke_style(&mut self) {
-        let style = self.style_for(Tool::Pen);
-        if let Some(Interaction::Freehand(stroke)) = &mut self.interaction {
-            stroke.update_style(style);
+    fn update_live_style(&mut self, tool: Tool, update: impl FnOnce(&mut Style)) {
+        let mut eraser = self.style;
+        match &mut self.interaction {
+            Some(Interaction::Freehand(stroke)) if tool == Tool::Pen => {
+                stroke.update_style(update);
+            }
+            Some(Interaction::Drawing {
+                tool: current,
+                style,
+                ..
+            }) if *current == tool => update(style),
+            Some(Interaction::Erasing { size, .. }) if tool == Tool::Eraser => {
+                eraser.size = *size;
+                update(&mut eraser);
+                *size = eraser.size;
+            }
+            _ => {}
         }
     }
 }
