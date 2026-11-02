@@ -181,7 +181,7 @@ impl State {
             self.keyboard.cancel_repeat();
             self.pointer.suppress_gesture();
             self.tablet.suppress_gestures();
-            self.draw.deactivate();
+            self.draw.deactivate(false);
             self.sync_text_input();
         }
         let pointer_position = self.pointer.remove_output(id);

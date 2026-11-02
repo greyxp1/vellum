@@ -70,6 +70,7 @@ pub(super) struct Editor {
     document: Document,
     other_document: Document,
     pub(in crate::draw) canvas: super::Canvas,
+    pub(in crate::draw) presentation: bool,
     selected: Vec<ElementId>,
     interaction: Option<Interaction>,
     next_id: ElementId,
@@ -150,6 +151,7 @@ impl Editor {
             document: Document::default(),
             other_document: Document::default(),
             canvas: super::Canvas::Desktop,
+            presentation: false,
             selected: Vec::new(),
             interaction: None,
             next_id: 1,
@@ -222,10 +224,10 @@ impl Editor {
         }
     }
 
-    pub(in crate::draw) fn deactivate(&mut self) -> bool {
+    pub(in crate::draw) fn deactivate(&mut self, preserve_picker: bool) -> bool {
         let changed = self.finish_interaction();
-        let clear_preview =
-            !std::mem::take(&mut self.selected).is_empty() | self.picker.take().is_some();
+        let clear_preview = !std::mem::take(&mut self.selected).is_empty()
+            | (!preserve_picker && self.picker.take().is_some());
         changed | clear_preview
     }
 

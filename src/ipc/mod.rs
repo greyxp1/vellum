@@ -12,7 +12,7 @@ use std::path::PathBuf;
 
 use rustix::net::{RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, SocketAddrAny};
 
-use crate::cli::{Command, ToolSetting, VisibilityCommand, WhiteboardCommand};
+use crate::cli::{Command, PresentationCommand, ToolSetting, VisibilityCommand, WhiteboardCommand};
 
 fn control_socket_addresses() -> Result<[SocketAddr; 2], String> {
     use std::os::unix::ffi::OsStrExt;
@@ -151,6 +151,11 @@ impl Command {
                 VisibilityCommand::Hide => "annotations_hide".into(),
                 VisibilityCommand::Toggle => "annotations_toggle".into(),
             },
+            Self::Presentation { command } => match command {
+                PresentationCommand::Show => "presentation_show".into(),
+                PresentationCommand::Hide => "presentation_hide".into(),
+                PresentationCommand::Toggle => "presentation_toggle".into(),
+            },
             Self::Whiteboard { command } => match command {
                 WhiteboardCommand::Show => "whiteboard_show".into(),
                 WhiteboardCommand::Hide => "whiteboard_hide".into(),
@@ -247,6 +252,15 @@ impl Command {
             }),
             b"annotations_toggle" => Ok(Self::Annotations {
                 command: VisibilityCommand::Toggle,
+            }),
+            b"presentation_show" => Ok(Self::Presentation {
+                command: PresentationCommand::Show,
+            }),
+            b"presentation_hide" => Ok(Self::Presentation {
+                command: PresentationCommand::Hide,
+            }),
+            b"presentation_toggle" => Ok(Self::Presentation {
+                command: PresentationCommand::Toggle,
             }),
             b"whiteboard_show" => Ok(Self::Whiteboard {
                 command: WhiteboardCommand::Show,

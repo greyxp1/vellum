@@ -136,6 +136,7 @@ impl Editor {
                 self.interaction = Some(Interaction::Freehand(freehand::LiveStroke::new(
                     point,
                     self.style_for(effective_tool),
+                    self.presentation,
                 )));
                 true
             }
@@ -284,13 +285,8 @@ impl Editor {
         let text_size_range = self.text_size_range();
         match self.interaction.take() {
             Some(Interaction::Freehand(stroke)) => {
-                let (points, style, geometry) = stroke.finish(point, modifiers.shift);
-                self.insert_element(Element::with_geometry(
-                    self.next_id,
-                    ElementKind::Freehand { points },
-                    style,
-                    geometry,
-                ));
+                let (kind, style, geometry) = stroke.finish(point, modifiers.shift);
+                self.insert_element(Element::with_geometry(self.next_id, kind, style, geometry));
                 true
             }
             Some(Interaction::Drawing {

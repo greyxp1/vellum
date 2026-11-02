@@ -87,6 +87,11 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: WhiteboardCommand,
     },
+    /// Manage presentation mode
+    Presentation {
+        #[command(subcommand)]
+        command: PresentationCommand,
+    },
     /// Manage desktop annotations
     Annotations {
         #[command(subcommand)]
@@ -164,10 +169,12 @@ pub(crate) fn roundness(value: &str) -> Result<f32, String> {
 pub(crate) enum StatusField {
     /// Drawing is active
     Active,
-    /// Drawing mode: inactive, desktop or whiteboard
+    /// Drawing mode
     Mode,
     /// Whiteboard is active
     Whiteboard,
+    /// Presentation mode is active
+    Presentation,
     /// Tool name
     Tool,
     /// Drawing color (sRGB)
@@ -195,6 +202,16 @@ pub(crate) enum VisibilityCommand {
     /// Hide desktop annotations when inactive
     Hide,
     /// Toggle desktop annotations when inactive
+    Toggle,
+}
+
+#[derive(clap::Subcommand)]
+pub(crate) enum PresentationCommand {
+    /// Enable temporary marks
+    Show,
+    /// Disable temporary marks
+    Hide,
+    /// Toggle temporary marks
     Toggle,
 }
 

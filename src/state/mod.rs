@@ -10,7 +10,7 @@ mod wayland;
 use wayland_client::QueueHandle;
 
 use crate::OutputId;
-use crate::cli::{VisibilityCommand, WhiteboardCommand};
+use crate::cli::{PresentationCommand, VisibilityCommand, WhiteboardCommand};
 use crate::config::DrawOn;
 use crate::draw::{self, Action, Canvas, Presentation};
 use crate::render::GpuContext;
@@ -26,10 +26,9 @@ enum Mode {
 
 impl Mode {
     fn canvas(self) -> Canvas {
-        if self == Self::Whiteboard {
-            Canvas::Whiteboard
-        } else {
-            Canvas::Desktop
+        match self {
+            Self::Whiteboard => Canvas::Whiteboard,
+            Self::Inactive | Self::Desktop => Canvas::Desktop,
         }
     }
 }
@@ -44,6 +43,7 @@ pub(crate) struct State {
     input_output: Option<OutputId>,
     keyboard_output: Option<OutputId>,
     clear_on_cancel: bool,
+    remember_presentation: bool,
     freeze: freeze::Freeze,
     pending_pen_motion: PendingPenMotion,
     render_requested: bool,
@@ -88,6 +88,7 @@ impl State {
             self.whiteboard_color = settings.whiteboard_color;
         }
         self.clear_on_cancel = settings.clear_on_cancel;
+        self.remember_presentation = settings.presentation.remember;
         self.freeze.on_activate = settings.freeze_on_activate;
         self.keyboard
             .reload(settings.keybinds.clone(), settings.text_keybinds.clone());
@@ -138,17 +139,20 @@ impl State {
             return;
         }
         let was_active = self.is_active();
+        let preserve_picker = was_active && mode != Mode::Inactive && self.draw.picker_active();
         self.stop_freeze(true);
         self.pending_pen_motion.reset(None);
         self.keyboard.cancel_repeat();
-        if was_active && mode != Mode::Inactive {
-            self.pointer.suppress_gesture();
-            self.tablet.suppress_gestures();
-        } else {
-            self.pointer.cancel_gesture();
-            self.tablet.cancel_gesture();
+        if !preserve_picker {
+            if was_active && mode != Mode::Inactive {
+                self.pointer.suppress_gesture();
+                self.tablet.suppress_gestures();
+            } else {
+                self.pointer.cancel_gesture();
+                self.tablet.cancel_gesture();
+            }
         }
-        self.draw.deactivate();
+        self.draw.deactivate(preserve_picker);
         self.sync_text_input();
         self.draw.switch_canvas(mode.canvas());
         self.mode = mode;
@@ -168,6 +172,9 @@ impl State {
                 self.keyboard_output = self.wayland.outputs.keys().next().copied();
             }
         } else {
+            if !self.remember_presentation {
+                self.draw.set_presentation(false);
+            }
             self.draw.reset_tools();
             self.pointer.restore_cursor();
             self.tablet.restore_cursors();
@@ -214,6 +221,37 @@ impl State {
         } else {
             Mode::Whiteboard
         });
+    }
+
+    pub(crate) fn set_presentation(&mut self, command: PresentationCommand) {
+        let enabled = match command {
+            PresentationCommand::Show => true,
+            PresentationCommand::Hide => false,
+            PresentationCommand::Toggle => !self.draw.is_presenting(),
+        };
+        if enabled && !self.is_active() {
+            self.set_mode(Mode::Desktop);
+        }
+        if enabled == self.draw.is_presenting() {
+            return;
+        }
+        let preserve_picker = self.draw.picker_active();
+        self.flush_pen_motion();
+        self.pending_pen_motion.reset(None);
+        self.keyboard.cancel_repeat();
+        if !preserve_picker {
+            self.pointer.suppress_gesture();
+            self.tablet.suppress_gestures();
+        }
+        self.draw.deactivate(preserve_picker);
+        self.sync_text_input();
+        self.draw.set_presentation(enabled);
+        self.damage_presentation();
+        self.refresh_cursor();
+    }
+
+    fn toggle_presentation(&mut self) {
+        self.set_presentation(PresentationCommand::Toggle);
     }
 
     pub(crate) fn annotations(&mut self, command: VisibilityCommand) {

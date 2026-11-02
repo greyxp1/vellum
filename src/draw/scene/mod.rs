@@ -133,6 +133,7 @@ pub struct Style {
 pub enum ElementKind {
     Freehand {
         points: Vec<Point>,
+        timing: Vec<(f32, f32)>,
     },
     Segment {
         points: [Point; 2],
@@ -167,7 +168,7 @@ impl ElementKind {
     pub(super) fn translated(&self, delta: Point) -> Self {
         let mut translated = self.clone();
         match &mut translated {
-            Self::Freehand { points } => {
+            Self::Freehand { points, .. } => {
                 points.iter_mut().for_each(|point| *point = *point + delta);
             }
             Self::Segment { points, .. } => {
@@ -194,6 +195,7 @@ pub struct Element {
     pub style: Style,
     pub bounds: Bounds,
     pub geometry: Geometry,
+    pub fade_started_at: Option<std::time::Instant>,
 }
 
 impl Element {
@@ -221,10 +223,12 @@ impl Element {
             style,
             bounds,
             geometry,
+            fade_started_at: None,
         }
     }
 
     pub(super) fn replace(&mut self, kind: ElementKind, style: Style) -> (ElementKind, Style) {
+        self.restart_fade();
         let same_shape = self.kind == kind
             && self.style.size == style.size
             && self.style.roundness == style.roundness
@@ -238,6 +242,10 @@ impl Element {
             self.geometry = geometry(&self.kind, self.style);
         }
         (kind, style)
+    }
+
+    pub(super) fn restart_fade(&mut self) {
+        self.fade_started_at = self.fade_started_at.map(|_| std::time::Instant::now());
     }
 
     pub(super) fn erase_hit_test(&self, start: Point, end: Point, radius: f32) -> bool {

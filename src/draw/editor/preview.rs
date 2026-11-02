@@ -80,8 +80,7 @@ impl Editor {
         let picker = self.picker?;
         let active = self.color_tool();
         picker_geometry(
-            picker.center,
-            picker.hovered,
+            picker,
             active,
             self.current_color(),
             |tool| {
@@ -90,6 +89,7 @@ impl Editor {
             },
             &self.palette,
             viewport,
+            self.presentation,
         )
     }
 

@@ -22,6 +22,7 @@ impl StatusField {
             self,
             Self::Active
                 | Self::Whiteboard
+                | Self::Presentation
                 | Self::TextEditing
                 | Self::AnnotationsVisible
                 | Self::Filled
@@ -33,6 +34,7 @@ impl StatusField {
             Self::Active => ("active", "Active"),
             Self::Mode => ("mode", "Mode"),
             Self::Whiteboard => ("whiteboard", "Whiteboard"),
+            Self::Presentation => ("presentation", "Presentation"),
             Self::Tool => ("tool", "Tool"),
             Self::Color => ("color", "Tool color"),
             Self::Size => ("size", "Tool size"),
@@ -99,6 +101,7 @@ impl State {
                 Mode::Whiteboard => "whiteboard",
             }),
             StatusField::Whiteboard => Value::Boolean(self.is_whiteboard()),
+            StatusField::Presentation => Value::Boolean(self.draw.is_presenting()),
             StatusField::TextEditing => Value::Boolean(self.is_text_editing()),
             StatusField::AnnotationsVisible => Value::Boolean(self.annotations_visible),
             StatusField::WhiteboardColor => Value::Color(self.whiteboard_color),

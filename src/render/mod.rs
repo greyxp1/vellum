@@ -6,7 +6,7 @@ mod text;
 
 use geometry::DrawCommand;
 pub(crate) use geometry::{Geometry, LocalGeometry};
-pub(crate) use text::TextSpec;
+pub(crate) use text::{TextSpec, contrasting_color};
 
 use kurbo::Affine;
 use picker::PickerState;
@@ -21,9 +21,15 @@ pub(crate) struct Viewport {
 }
 
 pub(crate) enum SceneItem<'a> {
-    Geometry(Cow<'a, Geometry>, [f32; 2]),
-    Text(TextSpec<'a>),
+    Geometry(Cow<'a, Geometry>, [f32; 2], f32),
+    Text(TextSpec<'a>, f32),
     Feedback(TextSpec<'a>),
+}
+
+pub(crate) struct Previews<'a> {
+    pub annotations: &'a [Geometry],
+    pub decorations: &'a [Geometry],
+    pub cursor: Option<Geometry>,
 }
 
 pub(crate) struct WgpuState {
@@ -185,7 +191,7 @@ impl WgpuState {
     pub(crate) fn render(
         &mut self,
         items: &[SceneItem<'_>],
-        previews: (&[Geometry], &[Geometry]),
+        previews: Previews<'_>,
         picker: Option<&LocalGeometry>,
         viewport: Viewport,
         active_text: Option<(u64, &parley::Layout<()>)>,
@@ -234,12 +240,14 @@ impl WgpuState {
             is_srgb: target_is_srgb,
         };
         for item in items {
-            let shadow = shadows && !matches!(item, SceneItem::Feedback(_));
-            if shadow {
-                push_shadow(target.scene);
-            }
+            let layer = match item {
+                SceneItem::Geometry(_, _, opacity) | SceneItem::Text(_, opacity) => {
+                    annotation_layer(target.scene, *opacity, shadows)
+                }
+                SceneItem::Feedback(_) => false,
+            };
             match item {
-                SceneItem::Geometry(geometry, offset) => {
+                SceneItem::Geometry(geometry, offset, _) => {
                     if *offset != [0.0; 2] {
                         target.scene.set_transform(
                             scene_transform
@@ -251,26 +259,38 @@ impl WgpuState {
                         target.scene.set_transform(scene_transform);
                     }
                 }
-                SceneItem::Text(spec) | SceneItem::Feedback(spec) => {
+                SceneItem::Text(spec, _) | SceneItem::Feedback(spec) => {
                     self.text.append_to_scene(&mut target, spec, active_text)
                 }
             }
-            if shadow {
+            if layer {
                 target.scene.pop_layer();
             }
         }
         self.text.finish_frame(&mut target);
-        for geometry in previews.0 {
-            if shadows {
-                push_shadow(&mut self.main_scene);
+        for (geometries, shadow) in [
+            (previews.annotations, shadows),
+            (previews.decorations, false),
+        ] {
+            for geometry in geometries {
+                let layer = annotation_layer(&mut self.main_scene, 1.0, shadow);
+                replay_geometry(&mut self.main_scene, geometry, target_is_srgb);
+                if layer {
+                    self.main_scene.pop_layer();
+                }
             }
-            replay_geometry(&mut self.main_scene, geometry, target_is_srgb);
+        }
+        if let Some(cursor) = &previews.cursor {
+            if shadows {
+                let bounds = cursor.bounds().unwrap_or_default();
+                let radius = (bounds.width().min(bounds.height()) as f32 * 0.2).clamp(0.25, 2.0);
+                self.main_scene
+                    .push_layer(None, None, None, None, Some(shadow_filter(radius)));
+            }
+            replay_geometry(&mut self.main_scene, cursor, target_is_srgb);
             if shadows {
                 self.main_scene.pop_layer();
             }
-        }
-        for geometry in previews.1 {
-            replay_geometry(&mut self.main_scene, geometry, target_is_srgb);
         }
 
         if let Some(picker) = picker {
@@ -323,16 +343,30 @@ impl WgpuState {
     }
 }
 
-fn push_shadow(scene: &mut vello_hybrid::Scene) {
+fn annotation_layer(scene: &mut vello_hybrid::Scene, opacity: f32, shadow: bool) -> bool {
+    if !shadow && opacity == 1.0 {
+        return false;
+    }
+    scene.push_layer(
+        None,
+        None,
+        Some(opacity),
+        None,
+        shadow.then(|| shadow_filter(2.0)),
+    );
+    true
+}
+
+fn shadow_filter(radius: f32) -> vello_common::filter_effects::Filter {
     use vello_common::filter_effects::{EdgeMode, Filter, FilterPrimitive};
 
-    scene.push_filter_layer(Filter::from_primitive(FilterPrimitive::DropShadow {
+    Filter::from_primitive(FilterPrimitive::DropShadow {
         dx: 0.0,
-        dy: 2.0,
-        std_deviation: 2.0,
+        dy: radius,
+        std_deviation: radius,
         color: peniko::Color::new([0.0, 0.0, 0.0, 0.5]),
         edge_mode: EdgeMode::None,
-    }));
+    })
 }
 
 fn checked_target_size(

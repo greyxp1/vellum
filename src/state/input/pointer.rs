@@ -491,6 +491,7 @@ impl State {
                             }
                             match binding {
                                 BindingAction::ToggleWhiteboard => self.toggle_whiteboard(),
+                                BindingAction::TogglePresentation => self.toggle_presentation(),
                                 BindingAction::ToggleFreeze => self.toggle_freeze(),
                                 _ => {
                                     if let Some(action) = binding.action(pending.modifiers.shift) {

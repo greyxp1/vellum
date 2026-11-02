@@ -19,6 +19,7 @@ pub(crate) enum BindingAction {
     ToggleFill,
     ToggleEraser,
     ToggleWhiteboard,
+    TogglePresentation,
     ToggleFreeze,
     CommitText,
     Newline,
@@ -44,7 +45,11 @@ impl BindingAction {
     pub(crate) fn repeatable(self) -> bool {
         !matches!(
             self,
-            Self::ToggleFill | Self::ToggleEraser | Self::ToggleWhiteboard | Self::ToggleFreeze
+            Self::ToggleFill
+                | Self::ToggleEraser
+                | Self::ToggleWhiteboard
+                | Self::TogglePresentation
+                | Self::ToggleFreeze
         )
     }
 
@@ -256,6 +261,7 @@ impl Keybinds {
                 (Redo, &["Ctrl+Shift+z", "Ctrl+y", "MouseForward"]),
                 (ToggleFill, &["f"]),
                 (ToggleWhiteboard, &["w"]),
+                (TogglePresentation, &["p"]),
                 (ToggleFreeze, &["space"]),
             ]
         };

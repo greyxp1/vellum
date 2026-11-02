@@ -163,6 +163,7 @@ pub(crate) fn run(mut settings: Settings, mut config: Config) -> Result<(), Stri
                         }
                     }
                     Command::Whiteboard { command } => state.whiteboard(command),
+                    Command::Presentation { command } => state.set_presentation(command),
                     Command::Annotations { command } => state.annotations(command),
                     Command::Status {
                         field, tool, json, ..

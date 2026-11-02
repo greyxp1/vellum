@@ -134,6 +134,8 @@ pub(crate) struct DrawState {
     caret_until: Option<Instant>,
     tool_cursor: Option<(Point, ToolCursor)>,
     previews: Vec<Geometry>,
+    presentation_settings: crate::config::PresentationSettings,
+    fade_frame: Option<Instant>,
     shadows: bool,
 }
 
@@ -162,6 +164,16 @@ impl DrawState {
         self.record(true);
     }
 
+    pub(crate) fn is_presenting(&self) -> bool {
+        self.editor.presentation
+    }
+
+    pub(crate) fn set_presentation(&mut self, enabled: bool) {
+        let changed = self.editor.presentation != enabled;
+        self.editor.presentation = enabled;
+        self.record(changed);
+    }
+
     pub(crate) fn clear_whiteboard(&mut self) -> bool {
         let changed = self.editor.clear_whiteboard();
         self.record(changed)
@@ -179,6 +191,8 @@ impl DrawState {
             caret_until: None,
             tool_cursor: None,
             previews: Vec::new(),
+            presentation_settings: settings.presentation,
+            fade_frame: None,
             shadows: settings.annotation_shadows,
         }
     }
@@ -190,14 +204,15 @@ impl DrawState {
     ) {
         self.editor.reload(settings, previous);
         self.feedback_duration = settings.feedback_duration;
+        self.presentation_settings = settings.presentation;
         self.shadows = settings.annotation_shadows;
         self.feedback = None;
         self.tool_cursor = None;
         self.record(true);
     }
 
-    pub(crate) fn deactivate(&mut self) -> bool {
-        let mut changed = self.editor.deactivate();
+    pub(crate) fn deactivate(&mut self, preserve_picker: bool) -> bool {
+        let mut changed = self.editor.deactivate(preserve_picker);
         if self.feedback.take().is_some() | self.tool_cursor.take().is_some() {
             changed = true;
         }
@@ -305,7 +320,8 @@ impl DrawState {
         }
         for (point, cursor) in [self.tool_cursor, cursor].into_iter().flatten() {
             if let Some(bounds) = tool_cursor_geometry(point, cursor).bounds() {
-                self.damage_region(bounds);
+                let margin = if self.shadows { 10.0 } else { 0.0 };
+                self.damage_region(bounds.inflate(margin, margin));
             }
         }
         self.tool_cursor = cursor;
@@ -419,6 +435,10 @@ impl DrawState {
 
     fn record(&mut self, changed: bool) -> bool {
         if changed {
+            self.fade_frame = self
+                .editor
+                .next_fade(Instant::now(), self.presentation_settings.hold)
+                .map(|next| self.fade_frame.map_or(next, |current| current.min(next)));
             for output in self.outputs.values_mut() {
                 output.dirty = true;
             }
@@ -430,6 +450,7 @@ impl DrawState {
         [
             self.feedback.as_ref().map(|feedback| feedback.until),
             self.caret_until,
+            self.fade_frame,
         ]
         .into_iter()
         .flatten()
@@ -437,7 +458,13 @@ impl DrawState {
     }
 
     pub(crate) fn handle_timeouts(&mut self, now: Instant) -> bool {
-        let mut changed = false;
+        let fading = self.fade_frame.is_some_and(|until| now >= until);
+        if fading {
+            self.fade_frame = None;
+            self.editor
+                .expire_annotations(now, self.presentation_settings);
+        }
+        let mut changed = fading;
         if self
             .feedback
             .as_ref()
@@ -446,7 +473,7 @@ impl DrawState {
             self.feedback = None;
             changed = true;
         }
-        let feedback_expired = changed;
+        let full_damage = changed;
         if self.caret_until.is_some_and(|until| now >= until) {
             if let Some(edit) = self.editor.text_edit() {
                 if let Some(bounds) = edit.caret().bounds() {
@@ -459,7 +486,7 @@ impl DrawState {
                 self.caret_until = None;
             }
         }
-        if feedback_expired {
+        if full_damage {
             self.record(true);
         }
         changed

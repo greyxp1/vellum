@@ -53,6 +53,8 @@ struct FileConfig {
     default_fill_shapes: Option<bool>,
     annotation_shadows: Option<bool>,
     #[serde(default)]
+    presentation: PresentationConfig,
+    #[serde(default)]
     cursor: CursorVisibility,
     #[serde(default)]
     tools: ToolDefaults,
@@ -62,6 +64,97 @@ struct FileConfig {
 #[serde(deny_unknown_fields)]
 struct WhiteboardConfig {
     color: Option<String>,
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PresentationConfig {
+    remember: Option<bool>,
+    hold_ms: Option<u64>,
+    fade_duration_ms: Option<u64>,
+    #[serde(default)]
+    pen_effect: PenEffect,
+    #[serde(default)]
+    erase_duration_ms: EraseDuration,
+    #[serde(default)]
+    erase_pace: ErasePace,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(
+    untagged,
+    expecting = "\"drawn\" or an integer duration in milliseconds"
+)]
+enum EraseDuration {
+    Fixed(u64),
+    Drawn(DrawnDuration),
+}
+
+impl Default for EraseDuration {
+    fn default() -> Self {
+        Self::Drawn(DrawnDuration::Drawn)
+    }
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum DrawnDuration {
+    Drawn,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum ErasePace {
+    Constant,
+    #[default]
+    Recorded,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct PresentationSettings {
+    pub remember: bool,
+    pub hold: Duration,
+    pub fade_duration: Duration,
+    pub pen_effect: PenEffect,
+    pub erase_duration: Option<Duration>,
+    pub erase_pace: ErasePace,
+}
+
+impl PresentationConfig {
+    fn resolve(self) -> Result<PresentationSettings, String> {
+        let hold_ms = self.hold_ms.unwrap_or(3000);
+        if hold_ms > 60_000 {
+            return Err("presentation.hold_ms must not exceed 60000".into());
+        }
+        let fade_duration_ms = self.fade_duration_ms.unwrap_or(1000);
+        let erase_duration_ms = match self.erase_duration_ms {
+            EraseDuration::Fixed(ms) => Some(ms),
+            EraseDuration::Drawn(_) => None,
+        };
+        for (name, ms) in std::iter::once(("fade_duration_ms", fade_duration_ms))
+            .chain(erase_duration_ms.map(|ms| ("erase_duration_ms", ms)))
+        {
+            if !(1..=60_000).contains(&ms) {
+                return Err(format!("presentation.{name} must be between 1 and 60000"));
+            }
+        }
+        Ok(PresentationSettings {
+            remember: self.remember.unwrap_or(true),
+            hold: Duration::from_millis(hold_ms),
+            fade_duration: Duration::from_millis(fade_duration_ms),
+            pen_effect: self.pen_effect,
+            erase_duration: erase_duration_ms.map(Duration::from_millis),
+            erase_pace: self.erase_pace,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum PenEffect {
+    #[default]
+    Fade,
+    Erase,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize)]
@@ -345,6 +438,7 @@ pub(super) struct Settings {
     pub(super) remember_tool_properties: bool,
     pub(super) palette: Vec<Rgba>,
     pub(super) feedback_duration: Duration,
+    pub(super) presentation: PresentationSettings,
     pub(super) annotation_shadows: bool,
     pub(super) clear_on_cancel: bool,
     pub(super) freeze_on_activate: bool,
@@ -448,6 +542,7 @@ impl Settings {
             remember_tool_properties: file.remember_tool_properties.unwrap_or(true),
             palette,
             feedback_duration: Duration::from_millis(feedback_duration_ms),
+            presentation: file.presentation.resolve()?,
             annotation_shadows: file.annotation_shadows.unwrap_or(true),
             clear_on_cancel: file.clear_on_cancel.unwrap_or(false),
             freeze_on_activate: file.freeze_on_activate.unwrap_or(false),

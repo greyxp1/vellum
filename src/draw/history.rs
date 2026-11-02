@@ -17,6 +17,31 @@ pub(super) struct History {
 }
 
 impl History {
+    pub(super) fn forget(&mut self, expired: &[ElementId]) {
+        for entries in [&mut self.undo, &mut self.redo] {
+            entries.retain_mut(|entry| match entry {
+                Entry::Insert(ids) => {
+                    ids.retain(|id| expired.binary_search(id).is_err());
+                    !ids.is_empty()
+                }
+                Entry::Update(updates) => {
+                    updates.retain(|(id, ..)| expired.binary_search(id).is_err());
+                    !updates.is_empty()
+                }
+                Entry::Remove(elements) => {
+                    elements.retain(|element| expired.binary_search(&element.id).is_err());
+                    !elements.is_empty()
+                }
+                Entry::Clear(elements) => {
+                    elements.retain(|element| expired.binary_search(&element.id).is_err());
+                    // An empty snapshot still clears the current canvas on redo.
+                    true
+                }
+            });
+        }
+        self.merging = false;
+    }
+
     pub(super) fn refresh_text_bounds(&mut self) {
         for entry in self.undo.iter_mut().chain(&mut self.redo) {
             match entry {
@@ -101,7 +126,10 @@ fn apply(entry: Entry, elements: &mut Vec<Element>) -> Entry {
                     .collect(),
             )
         }
-        Entry::Remove(removed) => {
+        Entry::Remove(mut removed) => {
+            for element in &mut removed {
+                element.restart_fade();
+            }
             let inserted: Vec<_> = removed.iter().map(|element| element.id).collect();
             let first = *inserted.iter().min().unwrap();
             let start = elements.partition_point(|element| element.id < first);
@@ -125,6 +153,9 @@ fn apply(entry: Entry, elements: &mut Vec<Element>) -> Entry {
         ),
         Entry::Clear(mut previous) => {
             std::mem::swap(elements, &mut previous);
+            for element in elements {
+                element.restart_fade();
+            }
             Entry::Clear(previous)
         }
     }

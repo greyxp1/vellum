@@ -1,7 +1,7 @@
 use std::ops::Range;
 
 use super::scene::Point;
-use crate::render::{Geometry, LocalGeometry};
+use crate::render::{Geometry, LocalGeometry, contrasting_color};
 use crate::tool::Tool;
 use kurbo::{Arc, BezPath, Circle, Shape};
 use peniko::Fill;
@@ -86,7 +86,7 @@ fn push_disc(output: &mut Geometry, center: Point, radius: f32, color: [f32; 4])
     );
 }
 
-fn push_color_preview(output: &mut Geometry, center: Point, color: [f32; 4]) {
+fn push_color_preview(output: &mut Geometry, center: Point, color: [f32; 4], presentation: bool) {
     let preview_radius = CENTER_RADIUS - WHEEL_BORDER_WIDTH;
     push_disc(output, center, CENTER_RADIUS, GAP_LINE_COLOR);
     push_disc(
@@ -94,6 +94,21 @@ fn push_color_preview(output: &mut Geometry, center: Point, color: [f32; 4]) {
         center,
         preview_radius - PREVIEW_BORDER_WIDTH,
         opaque(color),
+    );
+    if !presentation {
+        return;
+    }
+    let center = kurbo::Point::new(f64::from(center.x), f64::from(center.y));
+    let mut path = Circle::new(center, 8.0).to_path(0.02);
+    path.move_to(center + (0.0, -4.0));
+    path.line_to(center);
+    path.line_to(center + (3.0, 2.0));
+    output.push_stroke(
+        path,
+        kurbo::Stroke::new(1.8)
+            .with_caps(kurbo::Cap::Round)
+            .with_join(kurbo::Join::Round),
+        contrasting_color(opaque(color)),
     );
 }
 
@@ -180,14 +195,15 @@ fn push_palette(
 }
 
 pub(super) fn picker_geometry(
-    center: Point,
-    hovered: Option<Choice>,
+    picker: Picker,
     active: Tool,
     current_color: [f32; 4],
     tool_fill: impl Fn(Tool) -> bool,
     palette: &[[f32; 4]],
     viewport: kurbo::Rect,
+    presentation: bool,
 ) -> Option<LocalGeometry> {
+    let Picker { center, hovered } = picker;
     let origin = [
         (center.x - PICKER_LAYER_SIZE as f32 * 0.5).floor(),
         (center.y - PICKER_LAYER_SIZE as f32 * 0.5).floor(),
@@ -201,7 +217,7 @@ pub(super) fn picker_geometry(
     }
     let mut output = Geometry::default();
     let local_center = Point::new(center.x - origin[0], center.y - origin[1]);
-    push_color_preview(&mut output, local_center, current_color);
+    push_color_preview(&mut output, local_center, current_color, presentation);
     let step = std::f32::consts::TAU / TOOL_CHOICES.len() as f32;
     for (index, tool) in TOOL_CHOICES.iter().copied().enumerate() {
         let is_hovered = hovered == Some(Choice::Tool(tool));

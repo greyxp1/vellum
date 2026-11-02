@@ -391,6 +391,11 @@ impl Dispatch<WlKeyboard, ()> for State {
                     state.toggle_whiteboard();
                     return;
                 }
+                if binding == Some(BindingAction::TogglePresentation) {
+                    state.keyboard.cancel_repeat();
+                    state.toggle_presentation();
+                    return;
+                }
                 if binding == Some(BindingAction::ToggleFreeze) {
                     state.keyboard.cancel_repeat();
                     state.toggle_freeze();

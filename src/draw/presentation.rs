@@ -4,7 +4,7 @@ use super::decorations::{text_cursor_rectangle, text_preedit_span, tool_cursor_g
 use super::scene::{self, ElementKind};
 use super::{DrawState, Feedback, Point, TextInputSnapshot};
 use crate::OutputId;
-use crate::render::{SceneItem, TextSpec, Viewport, WgpuState};
+use crate::render::{Previews, SceneItem, TextSpec, Viewport, WgpuState};
 
 impl DrawState {
     pub fn render(
@@ -40,10 +40,17 @@ impl DrawState {
             .unwrap_or_default();
         let items = {
             let mut items = Vec::with_capacity(elements.len());
+            let now = std::time::Instant::now();
             for element in elements {
+                let remaining =
+                    self.editor
+                        .annotation_remaining(element, now, self.presentation_settings);
+                if remaining <= 0.0 {
+                    continue;
+                }
                 // The element's bounds do not follow uncommitted edits.
                 if let Some(edit) = active_text.filter(|edit| edit.id == Some(element.id)) {
-                    items.push(SceneItem::Text(edit.spec()));
+                    items.push(SceneItem::Text(edit.spec(), 1.0));
                     continue;
                 }
                 let preview = active_canvas
@@ -78,28 +85,55 @@ impl DrawState {
                     scale,
                 } = kind
                 else {
-                    items.push(SceneItem::Geometry(
-                        preview
-                            .map(|current| scene::geometry(&current.kind, current.style))
-                            .map(std::borrow::Cow::Owned)
-                            .unwrap_or(std::borrow::Cow::Borrowed(&element.geometry)),
-                        [offset.x, offset.y],
-                    ));
+                    let (geometry, opacity) = match kind {
+                        ElementKind::Freehand { points, timing }
+                            if self.presentation_settings.pen_effect
+                                == crate::config::PenEffect::Erase
+                                && remaining < 1.0 =>
+                        {
+                            (
+                                std::borrow::Cow::Owned(super::freehand::erasing_geometry(
+                                    points,
+                                    if self.presentation_settings.erase_pace
+                                        == crate::config::ErasePace::Recorded
+                                    {
+                                        timing
+                                    } else {
+                                        &[]
+                                    },
+                                    style,
+                                    remaining,
+                                )),
+                                1.0,
+                            )
+                        }
+                        _ => (
+                            preview
+                                .map(|current| scene::geometry(&current.kind, current.style))
+                                .map(std::borrow::Cow::Owned)
+                                .unwrap_or(std::borrow::Cow::Borrowed(&element.geometry)),
+                            remaining,
+                        ),
+                    };
+                    items.push(SceneItem::Geometry(geometry, [offset.x, offset.y], opacity));
                     continue;
                 };
-                items.push(SceneItem::Text(TextSpec {
-                    key: element.id,
-                    content,
-                    left: origin.x + offset.x,
-                    top: origin.y + offset.y,
-                    font_size: style.size,
-                    color: style.color,
-                    background_roundness: style.filled.then_some(style.roundness),
-                    scale: *scale,
-                }));
+                items.push(SceneItem::Text(
+                    TextSpec {
+                        key: element.id,
+                        content,
+                        left: origin.x + offset.x,
+                        top: origin.y + offset.y,
+                        font_size: style.size,
+                        color: style.color,
+                        background_roundness: style.filled.then_some(style.roundness),
+                        scale: *scale,
+                    },
+                    remaining,
+                ));
             }
             if let Some(edit) = active_text.filter(|edit| edit.id.is_none()) {
-                items.push(SceneItem::Text(edit.spec()));
+                items.push(SceneItem::Text(edit.spec(), 1.0));
             }
             if let Some(Feedback {
                 text: content,
@@ -165,18 +199,21 @@ impl DrawState {
         if presentation.interactive {
             self.editor
                 .append_selection_geometry(self.feedback.is_none(), &mut self.previews);
-            if let Some((point, cursor)) = self.tool_cursor {
-                self.previews.push(tool_cursor_geometry(point, cursor));
-            }
         }
 
         let picker = presentation
             .interactive
             .then(|| self.editor.picker_geometry(viewport))
             .flatten();
+        let (annotations, decorations) = self.previews.split_at(annotation_previews);
+        let cursor = self.tool_cursor.filter(|_| presentation.interactive);
         if wgpu.render(
             &items,
-            self.previews.split_at(annotation_previews),
+            Previews {
+                annotations,
+                decorations,
+                cursor: cursor.map(|(point, cursor)| tool_cursor_geometry(point, cursor)),
+            },
             picker.as_ref(),
             Viewport {
                 background: presentation.background,

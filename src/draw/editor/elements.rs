@@ -1,8 +1,84 @@
+use std::time::{Duration, Instant};
+
 use super::{Editor, HistoryEntry, Interaction};
+use crate::config::{PenEffect, PresentationSettings};
 use crate::draw::scene::{Element, ElementId, ElementKind, Point, Style};
 use crate::draw::text_edit::TextEdit;
 
 impl Editor {
+    fn protected_from_fading(&self, id: ElementId) -> bool {
+        self.selected.contains(&id) || self.text_edit().is_some_and(|edit| edit.id == Some(id))
+    }
+
+    pub(in crate::draw) fn annotation_remaining(
+        &self,
+        element: &Element,
+        now: Instant,
+        settings: PresentationSettings,
+    ) -> f32 {
+        let Some(started) = element.fade_started_at else {
+            return 1.0;
+        };
+        if self.protected_from_fading(element.id) {
+            return 1.0;
+        }
+        let elapsed = now.saturating_duration_since(started);
+        let duration = match &element.kind {
+            ElementKind::Freehand { timing, .. } if settings.pen_effect == PenEffect::Erase => {
+                match (settings.erase_duration, timing.last()) {
+                    (Some(duration), _) => duration.as_secs_f32(),
+                    (None, Some(&(duration, _))) => duration,
+                    _ => settings.fade_duration.as_secs_f32(),
+                }
+            }
+            _ => settings.fade_duration.as_secs_f32(),
+        };
+        1.0 - (elapsed.saturating_sub(settings.hold).as_secs_f32() / duration).min(1.0)
+    }
+
+    pub(in crate::draw) fn next_fade(&self, now: Instant, hold: Duration) -> Option<Instant> {
+        [&self.document, &self.other_document]
+            .into_iter()
+            .flat_map(|document| &document.elements)
+            .filter(|element| !self.protected_from_fading(element.id))
+            .filter_map(|element| element.fade_started_at)
+            .map(|started| {
+                let start = started + hold;
+                if start > now {
+                    start
+                } else {
+                    now + Duration::from_millis(16)
+                }
+            })
+            .min()
+    }
+
+    pub(in crate::draw) fn expire_annotations(
+        &mut self,
+        now: Instant,
+        settings: PresentationSettings,
+    ) {
+        let mut expired: Vec<_> = [&self.document, &self.other_document]
+            .into_iter()
+            .flat_map(|document| &document.elements)
+            .filter(|element| self.annotation_remaining(element, now, settings) <= 0.0)
+            .map(|element| element.id)
+            .collect();
+        if expired.is_empty() {
+            return;
+        }
+        expired.sort_unstable();
+        for document in [&mut self.document, &mut self.other_document] {
+            let previous_len = document.elements.len();
+            document
+                .elements
+                .retain(|element| expired.binary_search(&element.id).is_err());
+            if document.elements.len() != previous_len {
+                document.history.forget(&expired);
+            }
+        }
+    }
+
     /// Returns None for a miss, or Some(changed) when the text edit handles the click.
     pub(in crate::draw) fn text_click_at(&mut self, point: Point, clicks: u8) -> Option<bool> {
         if let Some(edit) = self.text_edit_mut() {
@@ -136,7 +212,8 @@ impl Editor {
         self.insert_element(Element::new(self.next_id, kind, style));
     }
 
-    pub(super) fn insert_element(&mut self, element: Element) {
+    pub(super) fn insert_element(&mut self, mut element: Element) {
+        element.fade_started_at = self.presentation.then(Instant::now);
         self.next_id += 1;
         let id = element.id;
         self.document.elements.push(element);

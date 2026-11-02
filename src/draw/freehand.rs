@@ -1,6 +1,9 @@
-use kurbo::{BezPath, Cap, Shape, Stroke, StrokeOpts};
+use kurbo::{BezPath, Cap, ParamCurve, ParamCurveArclen, Shape, Stroke, StrokeOpts};
+use std::time::Instant;
 
-use super::scene::{Point, Style, kurbo_point, pixel_aligned_point, pixel_aligned_points};
+use super::scene::{
+    ElementKind, Point, Style, kurbo_point, pixel_aligned_point, pixel_aligned_points,
+};
 use super::{CIRCLE_KAPPA, PenMotion};
 use crate::render::Geometry;
 use peniko::Fill;
@@ -26,6 +29,8 @@ struct CacheAnchor {
 #[derive(Debug)]
 pub(super) struct LiveStroke {
     points: Vec<Point>,
+    started: Option<Instant>,
+    timing: Vec<(f32, f32)>,
     sample_anchor: Point,
     sample_pending: bool,
     stabilized_point: Point,
@@ -37,10 +42,16 @@ pub(super) struct LiveStroke {
 }
 
 impl LiveStroke {
-    pub fn new(point: Point, style: Style) -> Self {
+    pub fn new(point: Point, style: Style, temporary: bool) -> Self {
         let aligned = pixel_aligned_point(point, style.size);
         Self {
             points: vec![aligned],
+            started: temporary.then(Instant::now),
+            timing: if temporary {
+                vec![(0.0, 0.0)]
+            } else {
+                Vec::new()
+            },
             sample_anchor: aligned,
             sample_pending: false,
             stabilized_point: aligned,
@@ -128,7 +139,7 @@ impl LiveStroke {
         }
     }
 
-    pub fn finish(mut self, point: Point, snap: bool) -> (Vec<Point>, Style, Geometry) {
+    pub fn finish(mut self, point: Point, snap: bool) -> (ElementKind, Style, Geometry) {
         if !self.direction_locked {
             let point = self.oriented_point(point + self.alignment_offset, snap);
             if point != self.points[0] {
@@ -139,9 +150,37 @@ impl LiveStroke {
             self.points
                 .push(self.points[0] + Point::new(0.0, -STAMP_DIRECTION_LENGTH));
         }
+        let duration = self.started.map(|started| started.elapsed().as_secs_f32());
         while self.cache_ready_chunk() {}
         let geometry = self.tail_geometry();
-        (self.points, self.style, geometry)
+        if let Some(duration) = duration {
+            let mut length = 0.0;
+            for ((_, distance), pair) in self.timing.iter_mut().skip(1).zip(self.points.windows(2))
+            {
+                length += (pair[1] - pair[0]).length();
+                *distance = length;
+            }
+            if duration > 0.0 {
+                if length > 0.0 {
+                    // Keep elapsed seconds and normalize distance once for playback.
+                    for (_, distance) in &mut self.timing {
+                        *distance /= length;
+                    }
+                }
+                // Preserve a pause before release without retiming the final movement.
+                self.timing.push((duration, 1.0));
+            } else {
+                self.timing.clear();
+            }
+        }
+        (
+            ElementKind::Freehand {
+                points: self.points,
+                timing: self.timing,
+            },
+            self.style,
+            geometry,
+        )
     }
 
     fn oriented_point(&self, point: Point, snap: bool) -> Point {
@@ -260,6 +299,12 @@ impl LiveStroke {
             points.push(next);
             self.sample_pending = true;
         }
+        if let Some(started) = self.started {
+            self.timing.resize(points.len(), (0.0, 0.0));
+            if points.len() > 1 {
+                self.timing.last_mut().unwrap().0 = started.elapsed().as_secs_f32();
+            }
+        }
         true
     }
 }
@@ -268,6 +313,89 @@ pub(super) fn geometry(points: &[Point], style: Style) -> Geometry {
     stroke_path(points, style).map_or_else(Geometry::default, |path| {
         Geometry::fill(path, Fill::NonZero, style.color)
     })
+}
+
+pub(super) fn erasing_geometry(
+    points: &[Point],
+    timing: &[(f32, f32)],
+    style: Style,
+    remaining: f32,
+) -> Geometry {
+    let points = pixel_aligned_points(points, style.size);
+    let mut points = points.into_owned();
+    points.dedup();
+    let Some(&first) = points.first() else {
+        return Geometry::default();
+    };
+    let radius = style.size * 0.5;
+    let roundness = style.roundness.clamp(0.0, 1.0);
+    if points.len() == 1
+        || (points.len() == 2 && first.distance_squared(points[1]) < MIN_SAMPLE_DISTANCE_SQUARED)
+    {
+        let direction = points.last().copied().unwrap() - first;
+        return Geometry::fill(
+            brush_stamp(
+                kurbo_point(first),
+                radius * remaining,
+                roundness,
+                direction.y.atan2(direction.x) + std::f32::consts::FRAC_PI_2,
+            ),
+            Fill::NonZero,
+            style.color,
+        );
+    }
+    let centerline = centerline_points(&[], &points, style.size, true)
+        .into_iter()
+        .map(|[x, y]| kurbo::Point::new(x, y))
+        .collect::<Vec<_>>();
+    let centerline = smoothed_centerline(&centerline, false, false);
+    let segments = centerline
+        .segments()
+        .map(|segment| (segment, segment.arclen(0.01)))
+        .collect::<Vec<_>>();
+    let elapsed = (1.0 - remaining) * timing.last().map_or(1.0, |&(duration, _)| duration);
+    let index = timing.partition_point(|&(time, _)| time <= elapsed);
+    let progress = match (
+        index.checked_sub(1).and_then(|i| timing.get(i)),
+        timing.get(index),
+    ) {
+        (Some(&(start_time, start)), Some(&(end_time, end))) => {
+            start + (end - start) * ((elapsed - start_time) / (end_time - start_time))
+        }
+        (Some(&(_, progress)), None) => progress,
+        _ => elapsed,
+    };
+    let mut erased = f64::from(progress) * segments.iter().map(|(_, length)| length).sum::<f64>();
+    // Cut the original smoothed curve so the remaining ink does not shift.
+    let tail = BezPath::from_path_segments(segments.into_iter().filter_map(|(segment, length)| {
+        if erased >= length {
+            erased -= length;
+            return None;
+        }
+        let start = segment.inv_arclen(erased, 0.01);
+        erased = 0.0;
+        Some(segment.subsegment(start..1.0))
+    }));
+    let (Some(first), Some(last)) = (tail.segments().next(), tail.segments().last()) else {
+        return Geometry::default();
+    };
+    let stroke = Stroke::new(f64::from(style.size)).with_caps(Cap::Butt);
+    let mut path = kurbo::stroke(&tail, &stroke, &StrokeOpts::default(), 0.1);
+    for (segment, start) in [(first, true), (last, false)] {
+        let curve = segment.to_cubic();
+        let (center, controls) = if start {
+            (curve.p0, [curve.p1, curve.p2, curve.p3])
+        } else {
+            (curve.p3, [curve.p2, curve.p1, curve.p0])
+        };
+        let outward = controls
+            .into_iter()
+            .map(|point| center - point)
+            .find(|direction| direction.hypot2() > f64::EPSILON)
+            .unwrap_or_default();
+        append_partial_cap(&mut path, center, outward, radius, roundness);
+    }
+    Geometry::fill(path, Fill::NonZero, style.color)
 }
 
 fn stroke_path(points: &[Point], style: Style) -> Option<kurbo::BezPath> {

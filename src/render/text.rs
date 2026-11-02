@@ -14,7 +14,7 @@ const DARK_TEXT_EMBOLDENING: f64 = 0.2;
 const BLACK_BACKGROUND_COLOR: f32 = 20.0 / 255.0;
 const WHITE_BACKGROUND_COLOR: f32 = 235.0 / 255.0;
 
-fn background_color([red, green, blue, alpha]: [f32; 4]) -> [f32; 4] {
+pub(crate) fn contrasting_color([red, green, blue, alpha]: [f32; 4]) -> [f32; 4] {
     let luminance = 0.2126 * srgb_to_linear(red)
         + 0.7152 * srgb_to_linear(green)
         + 0.0722 * srgb_to_linear(blue);
@@ -79,7 +79,7 @@ impl TextSpec<'_> {
         scene.set_fill_rule(peniko::Fill::NonZero);
         let automatic_background = self
             .background_roundness
-            .map(|roundness| (background_color(self.color), roundness));
+            .map(|roundness| (contrasting_color(self.color), roundness));
         let emboldening = if automatic_background.is_some_and(|(color, _)| color[0] > 0.5) {
             DARK_TEXT_EMBOLDENING
         } else {

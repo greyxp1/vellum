@@ -6,6 +6,12 @@ remember_tool_properties = true # Keep color, size, opacity, roundness, fill and
 clear_on_cancel = false # Clear drawings when exiting with cancel.
 freeze_on_activate = false # Freeze the screen when drawing starts.
 annotations_visible = true # Show annotations when drawing mode is off.
+presentation.remember = true # Keep presentation mode between drawing sessions.
+presentation.hold_ms = 3000 # Hold annotations before removal.
+presentation.fade_duration_ms = 1000
+presentation.pen_effect = "fade" # "fade" or "erase".
+presentation.erase_duration_ms = "drawn" # "drawn" or 1 to 60000 ms.
+presentation.erase_pace = "recorded" # "recorded" or "constant".
 whiteboard.color = "#EBEBEB" # CSS color for the board background.
 
 # Appearance
@@ -51,6 +57,7 @@ delete = ["Delete", "BackSpace"]
 cancel = ["Escape"] # Cancel, deselect, or exit drawing mode.
 toggle_fill = ["f"] # Toggle shape fill or text background.
 toggle_whiteboard = ["w"]
+toggle_presentation = ["p"]
 toggle_freeze = ["space"]
 toggle_eraser = []
 clear = []

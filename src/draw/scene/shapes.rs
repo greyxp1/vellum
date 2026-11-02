@@ -84,7 +84,7 @@ pub(in crate::draw) fn bounds_for(kind: &ElementKind, style: Style) -> Bounds {
                 Bounds::from_points([start, end])
             }
         }
-        ElementKind::Freehand { points } => {
+        ElementKind::Freehand { points, .. } => {
             Bounds::from_points(pixel_aligned_points(points, width).iter().copied())
         }
         ElementKind::Triangle { vertices } => {
@@ -158,7 +158,7 @@ pub(in crate::draw) fn geometry(kind: &ElementKind, style: Style) -> Geometry {
                 style.color,
             )
         }
-        ElementKind::Freehand { points } => freehand::geometry(points, style),
+        ElementKind::Freehand { points, .. } => freehand::geometry(points, style),
         ElementKind::Segment {
             points: [start, end],
             arrow: false,

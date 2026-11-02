@@ -122,6 +122,7 @@ impl State {
             input_output: None,
             keyboard_output: None,
             clear_on_cancel: settings.clear_on_cancel,
+            remember_presentation: settings.presentation.remember,
             freeze: freeze::Freeze::new(settings.freeze_on_activate),
             pending_pen_motion: PendingPenMotion::default(),
             render_requested: false,
