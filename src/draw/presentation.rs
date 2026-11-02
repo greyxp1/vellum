@@ -31,7 +31,7 @@ impl DrawState {
             min: origin,
             max: Point::new(viewport.x1 as f32, viewport.y1 as f32),
         }
-        .expanded(1.0);
+        .expanded(if self.shadows { 10.0 } else { 1.0 });
         let active_canvas = presentation.canvas == Some(self.editor.canvas);
         let active_text = active_canvas.then(|| self.editor.text_edit()).flatten();
         let elements = presentation
@@ -115,7 +115,7 @@ impl DrawState {
                     ([16.0, 17.0], OUTLINE),
                     ([16.0, 16.0], [1.0; 4]),
                 ] {
-                    items.push(SceneItem::Text(TextSpec {
+                    items.push(SceneItem::Feedback(TextSpec {
                         key: u64::MAX - 30,
                         content,
                         left: at.x + x,
@@ -131,6 +131,15 @@ impl DrawState {
         };
 
         self.previews.clear();
+        if active_canvas {
+            self.editor.append_preview_geometry(&mut self.previews);
+        }
+        self.previews.retain(|geometry| {
+            geometry
+                .bounds()
+                .is_some_and(|bounds| bounds.inflate(10.0, 10.0).intersect(viewport).area() > 0.0)
+        });
+        let annotation_previews = self.previews.len();
         let mut cursor_rectangle = None;
         if let Some(edit) = active_text.filter(|_| presentation.interactive) {
             let [scale_x, scale_y] = edit.scale;
@@ -153,9 +162,6 @@ impl DrawState {
                 ));
             });
         }
-        if active_canvas {
-            self.editor.append_preview_geometry(&mut self.previews);
-        }
         if presentation.interactive {
             self.editor
                 .append_selection_geometry(self.feedback.is_none(), &mut self.previews);
@@ -163,21 +169,18 @@ impl DrawState {
                 self.previews.push(tool_cursor_geometry(point, cursor));
             }
         }
-        self.previews.retain(|geometry| {
-            geometry
-                .bounds()
-                .is_some_and(|bounds| bounds.inflate(1.0, 1.0).intersect(viewport).area() > 0.0)
-        });
+
         let picker = presentation
             .interactive
             .then(|| self.editor.picker_geometry(viewport))
             .flatten();
         if wgpu.render(
             &items,
-            &self.previews,
+            self.previews.split_at(annotation_previews),
             picker.as_ref(),
             Viewport {
                 background: presentation.background,
+                shadows: self.shadows,
                 origin: [origin.x, origin.y],
                 scale,
             },

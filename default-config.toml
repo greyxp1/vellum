@@ -10,6 +10,7 @@ whiteboard.color = "#EBEBEB" # CSS color for the board background.
 
 # Appearance
 stroke_size = 5 # Stroke width in pixels.
+annotation_shadows = true
 default_fill_shapes = false # Fill shapes instead of drawing outlines.
 cursor.visible = true
 feedback_duration_ms = 500 # Change indicators, 0 to 60000 ms.

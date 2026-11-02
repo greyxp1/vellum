@@ -17,11 +17,13 @@ pub(crate) struct Viewport {
     pub origin: [f32; 2],
     pub scale: [f64; 2],
     pub background: Option<crate::Rgba>,
+    pub shadows: bool,
 }
 
 pub(crate) enum SceneItem<'a> {
     Geometry(Cow<'a, Geometry>, [f32; 2]),
     Text(TextSpec<'a>),
+    Feedback(TextSpec<'a>),
 }
 
 pub(crate) struct WgpuState {
@@ -56,10 +58,12 @@ impl WgpuState {
     ) -> Result<Self, String> {
         checked_target_size(&gpu.device, [width, height], "annotation")?;
         let capabilities = surface.get_capabilities(&gpu.adapter);
+        // Wayland blends encoded colors. Avoid encoding RGB after Vello has
+        // premultiplied edge coverage, which would brighten transparent fringes.
         let format = capabilities
             .formats
             .iter()
-            .find(|format| format.is_srgb())
+            .find(|format| !format.is_srgb())
             .copied()
             .or_else(|| capabilities.formats.first().copied())
             .ok_or("GPU adapter does not support the Wayland surface")?;
@@ -181,7 +185,7 @@ impl WgpuState {
     pub(crate) fn render(
         &mut self,
         items: &[SceneItem<'_>],
-        previews: &[Geometry],
+        previews: (&[Geometry], &[Geometry]),
         picker: Option<&LocalGeometry>,
         viewport: Viewport,
         active_text: Option<(u64, &parley::Layout<()>)>,
@@ -191,6 +195,7 @@ impl WgpuState {
             origin: viewport_origin,
             scale,
             background,
+            shadows,
         } = viewport;
         let Some(output) = self.acquire_frame()? else {
             return Ok(false);
@@ -229,6 +234,10 @@ impl WgpuState {
             is_srgb: target_is_srgb,
         };
         for item in items {
+            let shadow = shadows && !matches!(item, SceneItem::Feedback(_));
+            if shadow {
+                push_shadow(target.scene);
+            }
             match item {
                 SceneItem::Geometry(geometry, offset) => {
                     if *offset != [0.0; 2] {
@@ -242,11 +251,25 @@ impl WgpuState {
                         target.scene.set_transform(scene_transform);
                     }
                 }
-                SceneItem::Text(spec) => self.text.append_to_scene(&mut target, spec, active_text),
+                SceneItem::Text(spec) | SceneItem::Feedback(spec) => {
+                    self.text.append_to_scene(&mut target, spec, active_text)
+                }
+            }
+            if shadow {
+                target.scene.pop_layer();
             }
         }
         self.text.finish_frame(&mut target);
-        for geometry in previews {
+        for geometry in previews.0 {
+            if shadows {
+                push_shadow(&mut self.main_scene);
+            }
+            replay_geometry(&mut self.main_scene, geometry, target_is_srgb);
+            if shadows {
+                self.main_scene.pop_layer();
+            }
+        }
+        for geometry in previews.1 {
             replay_geometry(&mut self.main_scene, geometry, target_is_srgb);
         }
 
@@ -298,6 +321,18 @@ impl WgpuState {
             picker.release_target(&mut self.texture_bindings);
         }
     }
+}
+
+fn push_shadow(scene: &mut vello_hybrid::Scene) {
+    use vello_common::filter_effects::{EdgeMode, Filter, FilterPrimitive};
+
+    scene.push_filter_layer(Filter::from_primitive(FilterPrimitive::DropShadow {
+        dx: 0.0,
+        dy: 2.0,
+        std_deviation: 2.0,
+        color: peniko::Color::new([0.0, 0.0, 0.0, 0.5]),
+        edge_mode: EdgeMode::None,
+    }));
 }
 
 fn checked_target_size(

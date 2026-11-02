@@ -134,6 +134,7 @@ pub(crate) struct DrawState {
     caret_until: Option<Instant>,
     tool_cursor: Option<(Point, ToolCursor)>,
     previews: Vec<Geometry>,
+    shadows: bool,
 }
 
 impl DrawState {
@@ -178,6 +179,7 @@ impl DrawState {
             caret_until: None,
             tool_cursor: None,
             previews: Vec::new(),
+            shadows: settings.annotation_shadows,
         }
     }
 
@@ -188,6 +190,7 @@ impl DrawState {
     ) {
         self.editor.reload(settings, previous);
         self.feedback_duration = settings.feedback_duration;
+        self.shadows = settings.annotation_shadows;
         self.feedback = None;
         self.tool_cursor = None;
         self.record(true);

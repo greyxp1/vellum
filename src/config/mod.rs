@@ -51,6 +51,7 @@ struct FileConfig {
     #[serde(default)]
     whiteboard: WhiteboardConfig,
     default_fill_shapes: Option<bool>,
+    annotation_shadows: Option<bool>,
     #[serde(default)]
     cursor: CursorVisibility,
     #[serde(default)]
@@ -344,6 +345,7 @@ pub(super) struct Settings {
     pub(super) remember_tool_properties: bool,
     pub(super) palette: Vec<Rgba>,
     pub(super) feedback_duration: Duration,
+    pub(super) annotation_shadows: bool,
     pub(super) clear_on_cancel: bool,
     pub(super) freeze_on_activate: bool,
     pub(super) annotations_visible: bool,
@@ -446,6 +448,7 @@ impl Settings {
             remember_tool_properties: file.remember_tool_properties.unwrap_or(true),
             palette,
             feedback_duration: Duration::from_millis(feedback_duration_ms),
+            annotation_shadows: file.annotation_shadows.unwrap_or(true),
             clear_on_cancel: file.clear_on_cancel.unwrap_or(false),
             freeze_on_activate: file.freeze_on_activate.unwrap_or(false),
             annotations_visible: file.annotations_visible.unwrap_or(true),
