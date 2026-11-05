@@ -12,6 +12,9 @@ pub(crate) enum BindingAction {
     Erase,
     Undo,
     Redo,
+    Copy,
+    Cut,
+    Paste,
     SelectAll,
     Delete,
     Cancel,
@@ -50,6 +53,9 @@ impl BindingAction {
                 | Self::ToggleWhiteboard
                 | Self::TogglePresentation
                 | Self::ToggleFreeze
+                | Self::Copy
+                | Self::Cut
+                | Self::Paste
         )
     }
 
@@ -76,6 +82,9 @@ impl BindingAction {
         Some(match self {
             Self::Undo => Action::Undo,
             Self::Redo => Action::Redo,
+            Self::Copy => Action::Copy,
+            Self::Cut => Action::Cut,
+            Self::Paste => Action::Paste,
             Self::SelectAll => Action::SelectAll,
             Self::Delete => Action::Delete,
             Self::Cancel => Action::Cancel,
@@ -231,6 +240,11 @@ impl Keybinds {
         use BindingAction::*;
         let defaults: &[(BindingAction, &[&str])] = if text {
             &[
+                (Undo, &["Ctrl+z"]),
+                (Redo, &["Ctrl+Shift+z", "Ctrl+y"]),
+                (Copy, &["Ctrl+c"]),
+                (Cut, &["Ctrl+x"]),
+                (Paste, &["Ctrl+v"]),
                 (Cancel, &["Escape"]),
                 (Delete, &["Delete"]),
                 (Backspace, &["BackSpace"]),
@@ -274,8 +288,11 @@ impl Keybinds {
         let mut bindings: Vec<ResolvedKeybind> = Vec::new();
         for (action, keys) in configured {
             let text_action = action.movement().is_some()
-                || matches!(action, CommitText | Newline | Backspace | BackspaceWord);
-            let shared_action = matches!(action, Cancel | Delete | SelectAll);
+                || matches!(
+                    action,
+                    CommitText | Newline | Backspace | BackspaceWord | Copy | Cut | Paste
+                );
+            let shared_action = matches!(action, Cancel | Delete | SelectAll | Undo | Redo);
             if !shared_action && text_action != text {
                 return Err(format!(
                     "{table}: {action:?} belongs in {}",

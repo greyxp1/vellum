@@ -229,6 +229,19 @@ impl Editor {
             return false;
         };
         let content = edit.finish();
+        if content.is_empty() {
+            return edit.id.is_none_or(|id| {
+                self.document
+                    .element_index(id)
+                    .is_some_and(|index| self.remove_elements(index..=index, |_| true, false))
+            });
+        }
+        let text = crate::text::Text::from_layout(
+            content,
+            edit.font.clone(),
+            edit.style.size,
+            edit.layout().clone(),
+        );
         let TextEdit {
             id,
             origin,
@@ -236,16 +249,9 @@ impl Editor {
             scale,
             ..
         } = edit;
-        if content.is_empty() {
-            return id.is_none_or(|id| {
-                self.document
-                    .element_index(id)
-                    .is_some_and(|index| self.remove_elements(index..=index, |_| true, false))
-            });
-        }
         let kind = ElementKind::Text {
             origin,
-            content,
+            text,
             scale,
         };
         if let Some(id) = id {
@@ -269,13 +275,20 @@ impl Editor {
         };
         let ElementKind::Text {
             origin,
-            content,
+            text,
             scale,
         } = &element.kind
         else {
             return false;
         };
-        let edit = self.make_text_edit(Some(id), *origin, content.clone(), element.style, *scale);
+        let edit = self.make_text_edit(
+            Some(id),
+            *origin,
+            text.content.to_string(),
+            element.style,
+            *scale,
+            text.font.clone(),
+        );
         // Multi-click editing skips cancel_interaction, which normally ends merged undo steps.
         self.document.history.seal();
         self.interaction = Some(Interaction::EditingText(edit));

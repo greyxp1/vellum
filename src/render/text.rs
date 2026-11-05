@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 
-use crate::text::{layout_text, text_bounds};
-use parley::{Layout, PositionedLayoutItem};
+use crate::text::{TextSpec, text_bounds};
+use parley::PositionedLayoutItem;
 use skrifa::MetadataProvider;
-use skrifa::bitmap::{BitmapData, BitmapFormat, BitmapGlyph, Origin};
+use skrifa::bitmap::{BitmapData, BitmapFormat, BitmapGlyph};
 use skrifa::raw::TableProvider;
 use vello_common::{TextureId, geometry::RectU16};
 use wgpu::util::DeviceExt;
@@ -28,17 +28,6 @@ pub(crate) fn contrasting_color([red, green, blue, alpha]: [f32; 4]) -> [f32; 4]
         WHITE_BACKGROUND_COLOR
     };
     [background, background, background, alpha]
-}
-
-pub struct TextSpec<'a> {
-    pub key: u64,
-    pub content: &'a str,
-    pub left: f32,
-    pub top: f32,
-    pub font_size: f32,
-    pub color: [f32; 4],
-    pub background_roundness: Option<f32>,
-    pub scale: [f32; 2],
 }
 
 pub(super) struct TextTarget<'a> {
@@ -69,12 +58,12 @@ struct Bitmaps {
 impl TextSpec<'_> {
     fn append_to_scene(
         &self,
-        layout: &Layout<()>,
         target: &mut TextTarget<'_>,
         bitmaps: &mut Bitmaps,
         outline_glyphs: &mut Vec<glifo::Glyph>,
     ) {
         let scene = &mut *target.scene;
+        let layout = self.layout;
         let target_is_srgb = target.is_srgb;
         scene.set_fill_rule(peniko::Fill::NonZero);
         let automatic_background = self
@@ -114,12 +103,7 @@ impl TextSpec<'_> {
                 let run = glyph_run.run();
                 let [scale_x, scale_y] = self.scale;
                 let synthesis = run.synthesis();
-                let skew = f64::from(synthesis.skew().unwrap_or(0.0))
-                    .to_radians()
-                    .tan();
-                let transform =
-                    kurbo::Affine::scale_non_uniform(f64::from(scale_x), f64::from(scale_y))
-                        * kurbo::Affine::new([1.0, 0.0, -skew, 1.0, 0.0, 0.0]);
+                let transform = self.glyph_transform(run);
                 let emboldening = emboldening
                     + if synthesis.embolden() {
                         f64::from(run.font_size()) / 48.0
@@ -265,31 +249,9 @@ impl TextSpec<'_> {
             }
         };
         image.used = true;
-        let size = run.font_size();
-        let origin_y = if bitmap.placement_origin == Origin::BottomLeft {
-            -f64::from(image.size[1])
-        } else {
-            0.0
-        };
         let saved = target.scene.save_current_state();
         let transform = saved.transforms.scene_transform()
-            * kurbo::Affine::translate((
-                f64::from(self.left + self.scale[0] * glyph.x),
-                f64::from(self.top + self.scale[1] * glyph.y),
-            ))
-            * kurbo::Affine::scale_non_uniform(f64::from(self.scale[0]), f64::from(self.scale[1]))
-            * kurbo::Affine::translate((
-                f64::from(-bitmap.bearing_x * size / units_per_em),
-                f64::from(bitmap.bearing_y * size / units_per_em),
-            ))
-            * kurbo::Affine::scale_non_uniform(
-                f64::from(size / bitmap.ppem_x),
-                f64::from(size / bitmap.ppem_y),
-            )
-            * kurbo::Affine::translate((
-                f64::from(-bitmap.inner_bearing_x),
-                f64::from(-bitmap.inner_bearing_y) + origin_y,
-            ));
+            * self.bitmap_transform(run, glyph, bitmap, image.size[1], units_per_em);
         target.scene.set_transform(transform);
         target.scene.push_opacity_layer(self.color[3]);
         target.scene.draw_texture_rects(
@@ -306,57 +268,17 @@ impl TextSpec<'_> {
 }
 
 #[derive(Default)]
-struct CachedText {
-    content: String,
-    font_size: f32,
-    layout: Layout<()>,
-    used: bool,
-}
-
-fn cached_layout<'a>(
-    buffers: &'a mut HashMap<u64, CachedText>,
-    key: u64,
-    content: &str,
-    font_size: f32,
-) -> &'a Layout<()> {
-    let cached = buffers.entry(key).or_default();
-    if cached.content != content || cached.font_size != font_size {
-        content.clone_into(&mut cached.content);
-        cached.font_size = font_size;
-        cached.layout = layout_text(content, font_size);
-    }
-    cached.used = true;
-    &cached.layout
-}
-
-#[derive(Default)]
 pub(super) struct TextState {
-    buffers: HashMap<u64, CachedText>,
     bitmaps: Bitmaps,
     outline_glyphs: Vec<glifo::Glyph>,
 }
 
 impl TextState {
-    pub(super) fn invalidate_layouts(&mut self) {
-        self.buffers.clear();
-    }
-
-    pub(super) fn append_to_scene(
-        &mut self,
-        target: &mut TextTarget<'_>,
-        spec: &TextSpec<'_>,
-        active_text: Option<(u64, &Layout<()>)>,
-    ) {
-        let layout = match active_text {
-            Some((key, layout)) if key == spec.key => layout,
-            _ => cached_layout(&mut self.buffers, spec.key, spec.content, spec.font_size),
-        };
-        spec.append_to_scene(layout, target, &mut self.bitmaps, &mut self.outline_glyphs);
+    pub(super) fn append_to_scene(&mut self, target: &mut TextTarget<'_>, spec: &TextSpec<'_>) {
+        spec.append_to_scene(target, &mut self.bitmaps, &mut self.outline_glyphs);
     }
 
     pub(super) fn finish_frame(&mut self, target: &mut TextTarget<'_>) {
-        self.buffers
-            .retain(|_, cached| std::mem::take(&mut cached.used));
         self.bitmaps.images.retain(|_, image| {
             let used = std::mem::take(&mut image.used);
             if !used {

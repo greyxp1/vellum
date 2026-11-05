@@ -6,7 +6,6 @@ use std::borrow::Cow;
 use super::{Bounds, ElementKind, Point, Style, kurbo_point};
 use crate::draw::{CIRCLE_KAPPA, freehand};
 use crate::render::Geometry;
-use crate::text::layout_text;
 
 fn pixel_aligned_coordinate(value: f32, width: f32) -> f32 {
     if !value.is_finite() || !width.is_finite() || width <= 0.0 {
@@ -100,10 +99,10 @@ pub(in crate::draw) fn bounds_for(kind: &ElementKind, style: Style) -> Bounds {
         },
         ElementKind::Text {
             origin,
-            content,
+            text,
             scale,
         } => {
-            let layout = layout_text(content, style.size);
+            let layout = text.layout();
             text_bounds(
                 *origin,
                 [layout.full_width(), layout.height()],

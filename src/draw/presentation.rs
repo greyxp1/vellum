@@ -4,7 +4,8 @@ use super::decorations::{text_cursor_rectangle, text_preedit_span, tool_cursor_g
 use super::scene::{self, ElementKind};
 use super::{DrawState, Feedback, Point, TextInputSnapshot};
 use crate::OutputId;
-use crate::render::{Previews, SceneItem, TextSpec, Viewport, WgpuState};
+use crate::render::{Previews, SceneItem, Viewport, WgpuState};
+use crate::text::TextSpec;
 
 impl DrawState {
     pub fn render(
@@ -79,7 +80,7 @@ impl DrawState {
                 }
                 let ElementKind::Text {
                     origin,
-                    content,
+                    text,
                     scale,
                 } = kind
                 else {
@@ -96,8 +97,7 @@ impl DrawState {
                 };
                 items.push(SceneItem::Text(
                     TextSpec {
-                        key: element.id,
-                        content,
+                        layout: text.layout(),
                         left: origin.x + offset.x,
                         top: origin.y + offset.y,
                         font_size: style.size,
@@ -112,9 +112,7 @@ impl DrawState {
                 items.push(SceneItem::Text(edit.spec(), 1.0));
             }
             if let Some(Feedback {
-                text: content,
-                anchor: at,
-                ..
+                text, anchor: at, ..
             }) = self.feedback.as_ref().filter(|_| presentation.interactive)
             {
                 const OUTLINE: [f32; 4] = [0.0, 0.0, 0.0, 0.9];
@@ -126,8 +124,7 @@ impl DrawState {
                     ([16.0, 16.0], [1.0; 4]),
                 ] {
                     items.push(SceneItem::Feedback(TextSpec {
-                        key: u64::MAX - 30,
-                        content,
+                        layout: text.layout(),
                         left: at.x + x,
                         top: at.y + y,
                         font_size: 18.0,
@@ -197,7 +194,6 @@ impl DrawState {
                 origin: [origin.x, origin.y],
                 scale,
             },
-            active_text.map(|edit| (edit.id.unwrap_or(0), edit.layout())),
             || {
                 before_present(
                     active_text

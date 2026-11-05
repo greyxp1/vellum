@@ -363,6 +363,7 @@ impl Dispatch<WlKeyboard, ()> for State {
                 state.modifiers_changed();
             }
             Event::Leave { .. } => {
+                state.clipboard.serial = None;
                 state.keyboard.cancel_repeat();
                 state.release_keyboard_gestures();
                 state.refresh_cursor();
@@ -370,10 +371,12 @@ impl Dispatch<WlKeyboard, ()> for State {
             Event::RepeatInfo { rate, delay } => state.keyboard.set_repeat_info(rate, delay),
             Event::Key {
                 key,
+                serial,
                 state: WEnum::Value(KeyState::Pressed),
                 time,
                 ..
             } if state.is_active() => {
+                state.clipboard.serial = Some(serial);
                 let session = state
                     .draw
                     .text_input_snapshot()

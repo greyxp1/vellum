@@ -462,6 +462,7 @@ impl State {
             }
             match pending.event {
                 Event::Button {
+                    serial,
                     time,
                     button,
                     state: WEnum::Value(button_state),
@@ -476,6 +477,7 @@ impl State {
                         if !self.is_active() || self.pointer.output.is_none() {
                             continue;
                         }
+                        self.clipboard.serial = Some(serial);
                         let Some(binding) = self.keyboard.mouse_binding(
                             button,
                             self.draw.is_editing_text(),

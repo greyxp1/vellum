@@ -4,9 +4,10 @@ pub(crate) use gpu::GpuContext;
 mod picker;
 mod text;
 
+use crate::text::TextSpec;
 use geometry::DrawCommand;
 pub(crate) use geometry::{Geometry, LocalGeometry};
-pub(crate) use text::{TextSpec, contrasting_color};
+pub(crate) use text::contrasting_color;
 
 use kurbo::Affine;
 use picker::PickerState;
@@ -48,10 +49,6 @@ pub(crate) struct WgpuState {
 }
 
 impl WgpuState {
-    pub(crate) fn invalidate_text_layouts(&mut self) {
-        self.text.invalidate_layouts();
-    }
-
     pub(crate) fn size(&self) -> [u32; 2] {
         [self.surface_config.width, self.surface_config.height]
     }
@@ -194,7 +191,6 @@ impl WgpuState {
         previews: Previews<'_>,
         picker: Option<&LocalGeometry>,
         viewport: Viewport,
-        active_text: Option<(u64, &parley::Layout<()>)>,
         before_present: impl FnOnce(),
     ) -> Result<bool, String> {
         let Viewport {
@@ -260,7 +256,7 @@ impl WgpuState {
                     }
                 }
                 SceneItem::Text(spec, _) | SceneItem::Feedback(spec) => {
-                    self.text.append_to_scene(&mut target, spec, active_text)
+                    self.text.append_to_scene(&mut target, spec)
                 }
             }
             if layer {

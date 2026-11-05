@@ -57,7 +57,7 @@ pub(in crate::draw) fn resize_text(
     modifiers: Modifiers,
     font_size_range: [f32; 2],
 ) -> Option<(ElementKind, Style, Bounds)> {
-    let ElementKind::Text { content, scale, .. } = original else {
+    let ElementKind::Text { text, scale, .. } = original else {
         return None;
     };
     let direction = resize_direction(handle)?;
@@ -132,10 +132,12 @@ pub(in crate::draw) fn resize_text(
         [0.0, 0.0]
     };
     let origin = text_origin(bounds, scale, padding);
+    let mut text = text.clone();
+    text.set_size(style.size);
     Some((
         ElementKind::Text {
             origin,
-            content: content.clone(),
+            text,
             scale,
         },
         style,

@@ -115,7 +115,7 @@ pub(crate) struct PenMotion {
 }
 
 struct Feedback {
-    text: String,
+    text: crate::text::Text,
     anchor: Point,
     until: Instant,
 }
@@ -235,7 +235,7 @@ impl DrawState {
         let mut effect = self.editor.handle_action(action);
         if let (Some(label), Some(at)) = (effect.feedback.take(), at) {
             self.feedback = Some(Feedback {
-                text: label,
+                text: crate::text::Text::new(label, self.editor.text_font.clone(), 18.0),
                 anchor: at,
                 until: Instant::now() + self.feedback_duration,
             });
@@ -366,7 +366,7 @@ impl DrawState {
                 .as_ref()
                 .map_or(at, |feedback| feedback.anchor);
             self.feedback = Some(Feedback {
-                text,
+                text: crate::text::Text::new(text, self.editor.text_font.clone(), 18.0),
                 anchor,
                 until: Instant::now() + self.feedback_duration,
             });
@@ -390,6 +390,10 @@ impl DrawState {
 
     pub(crate) fn text_input_snapshot(&self) -> Option<TextInputSnapshot<'_>> {
         self.editor.text_edit().map(|edit| edit.snapshot(None))
+    }
+
+    pub(crate) fn clipboard_text(&self) -> Option<String> {
+        self.editor.text_edit().and_then(TextEdit::selected_text)
     }
 
     pub(crate) fn clear_preedit(&mut self) -> bool {

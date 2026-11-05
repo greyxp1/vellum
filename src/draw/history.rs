@@ -42,19 +42,6 @@ impl History {
         self.merging = false;
     }
 
-    pub(super) fn refresh_text_bounds(&mut self) {
-        for entry in self.undo.iter_mut().chain(&mut self.redo) {
-            match entry {
-                Entry::Remove(elements) | Entry::Clear(elements) => {
-                    for element in elements {
-                        element.refresh_text_bounds();
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
     pub(super) fn record(&mut self, entry: Entry) {
         self.merging = false;
         self.push(entry);

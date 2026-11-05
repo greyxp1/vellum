@@ -6,14 +6,13 @@ use wayland_client::backend::WaylandError;
 use crate::cli::Command;
 use crate::config::{Config, Settings};
 use crate::ipc::ControlSocket;
-use crate::{state, text};
+use crate::state;
 
 const MAX_SOCKET_MESSAGE: usize = 4096;
 // Yield to drawing, input and the other endpoint even when a queue stays full.
 const MAX_SOCKET_BATCH: usize = 32;
 
 pub(crate) fn run(mut settings: Settings, mut config: Config) -> Result<(), String> {
-    text::set_text_font(settings.text_font.clone());
     let control = ControlSocket::bind()?;
     let sockets = &control.sockets;
 
@@ -24,6 +23,7 @@ pub(crate) fn run(mut settings: Settings, mut config: Config) -> Result<(), Stri
         event_queue
             .dispatch_pending(&mut state)
             .map_err(|error| format!("Wayland dispatch failed: {error}"))?;
+        state.dispatch_clipboard();
         if let Some(result) = config.reload(Instant::now()) {
             match result {
                 Ok(settings) => pending_settings = Some(settings),
@@ -67,7 +67,7 @@ pub(crate) fn run(mut settings: Settings, mut config: Config) -> Result<(), Stri
                 }
             });
         let (wayland_ready, socket_ready, config_ready) = {
-            let mut fds = [
+            let mut fds = vec![
                 PollFd::new(
                     &event_queue,
                     PollFlags::IN
@@ -84,6 +84,7 @@ pub(crate) fn run(mut settings: Settings, mut config: Config) -> Result<(), Stri
                     |fd| PollFd::new(fd, PollFlags::IN),
                 ),
             ];
+            fds.extend(state.clipboard_poll_fds());
             if let Err(error) = poll(&mut fds, timeout.as_ref()) {
                 if error == rustix::io::Errno::INTR {
                     continue;

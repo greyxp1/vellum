@@ -1,5 +1,7 @@
 use std::num::NonZeroUsize;
 use std::ops::Range;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use parley::{
     Affinity, Cursor, Layout, PlainEditor, PlainEditorDriver, Selection, SplitString, StyleProperty,
@@ -8,8 +10,33 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use super::decorations::text_caret;
 use super::scene::{Bounds, ElementId, Point, Style, text_bounds};
-use crate::render::{Geometry, TextSpec};
-use crate::text::{text_styles, with_text_context};
+use crate::render::Geometry;
+use crate::text::{TextFont, TextSpec, text_styles, with_text_context};
+
+const HISTORY_LIMIT: usize = 256;
+const GROUP_TIMEOUT: Duration = Duration::from_secs(1);
+
+#[derive(Debug)]
+struct Snapshot {
+    text: String,
+    anchor: usize,
+    focus: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EditKind {
+    Insert,
+    Backspace,
+    Delete,
+    Atomic,
+}
+
+#[derive(Debug)]
+struct EditGroup {
+    kind: EditKind,
+    cursor: usize,
+    updated: Instant,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PreeditHint {
@@ -57,6 +84,7 @@ pub(crate) struct TextInputBatch {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct TextInputSnapshot<'a> {
     pub(crate) session: u64,
+    pub(crate) generation: parley::Generation,
     pub(crate) content: SplitString<'a>,
     pub(crate) cursor: usize,
     pub(crate) anchor: usize,
@@ -75,6 +103,11 @@ pub(super) struct TextEdit {
     drag_point: Option<Point>,
     pub(super) style: Style,
     pub(super) scale: [f32; 2],
+    pub(super) font: Arc<TextFont>,
+    undo: Vec<Snapshot>,
+    redo: Vec<Snapshot>,
+    group: Option<EditGroup>,
+    composition_before: Option<Snapshot>,
 }
 
 impl TextEdit {
@@ -85,10 +118,11 @@ impl TextEdit {
         content: String,
         style: Style,
         scale: [f32; 2],
+        font: Arc<TextFont>,
     ) -> Self {
         let mut editor = PlainEditor::new(style.size);
         editor.set_quantize(false);
-        for property in text_styles() {
+        for property in text_styles(&font) {
             editor.edit_styles().insert(property);
         }
         editor.set_text(&content);
@@ -103,6 +137,11 @@ impl TextEdit {
             drag_point: None,
             style,
             scale,
+            font,
+            undo: Vec::new(),
+            redo: Vec::new(),
+            group: None,
+            composition_before: None,
         }
     }
 
@@ -117,8 +156,7 @@ impl TextEdit {
 
     pub(super) fn spec(&self) -> TextSpec<'_> {
         TextSpec {
-            key: self.id.unwrap_or(0),
-            content: self.editor.raw_text(),
+            layout: self.layout(),
             left: self.origin.x,
             top: self.origin.y,
             font_size: self.style.size,
@@ -142,7 +180,7 @@ impl TextEdit {
         self.drag_point = Some(point);
         let x = (point.x - self.origin.x) / self.scale[0];
         let y = (point.y - self.origin.y) / self.scale[1];
-        self.external_edit(|driver| match clicks {
+        self.external_edit(None, |driver| match clicks {
             2 => driver.select_word_at_point(x, y),
             3 => driver.select_line_at_point(x, y),
             _ if extend => driver.shift_click_extension(x, y),
@@ -160,7 +198,7 @@ impl TextEdit {
         *previous = point;
         let x = (point.x - self.origin.x) / self.scale[0];
         let y = (point.y - self.origin.y) / self.scale[1];
-        self.external_edit(|driver| driver.extend_selection_to_point(x, y))
+        self.external_edit(None, |driver| driver.extend_selection_to_point(x, y))
     }
 
     pub(super) fn end_drag(&mut self, point: Option<Point>) -> bool {
@@ -170,6 +208,7 @@ impl TextEdit {
     }
 
     pub(super) fn set_size(&mut self, size: f32) {
+        self.group = None;
         self.style.size = size;
         self.editor
             .edit_styles()
@@ -177,15 +216,74 @@ impl TextEdit {
         with_text_context(|fonts, layouts| self.editor.refresh_layout(fonts, layouts));
     }
 
-    fn external_edit(&mut self, edit: impl FnOnce(&mut PlainEditorDriver<'_, ()>)) -> bool {
+    fn capture(&self) -> Snapshot {
+        let selection = self.editor.raw_selection();
+        Snapshot {
+            text: self.editor.raw_text().to_owned(),
+            anchor: selection.anchor().index(),
+            focus: selection.focus().index(),
+        }
+    }
+
+    fn restore(&mut self, snapshot: Snapshot) {
+        with_text_context(|fonts, layouts| self.editor.driver(fonts, layouts).finish_compose());
+        self.editor.set_text(&snapshot.text);
+        with_text_context(|fonts, layouts| {
+            self.editor
+                .driver(fonts, layouts)
+                .select_byte_range(snapshot.anchor, snapshot.focus);
+        });
+        self.preedit_hints.clear();
+    }
+
+    fn record(&mut self, before: Snapshot, kind: EditKind) {
+        if before.text == self.editor.raw_text() {
+            self.group = None;
+            return;
+        }
+        let now = Instant::now();
+        let selection = self.editor.raw_selection();
+        let collapsed = before.anchor == before.focus && selection.is_collapsed();
+        let merge = collapsed
+            && kind != EditKind::Atomic
+            && self.group.as_ref().is_some_and(|group| {
+                group.kind == kind
+                    && group.cursor == before.focus
+                    && now.duration_since(group.updated) <= GROUP_TIMEOUT
+            });
+        if !merge {
+            if self.undo.len() == HISTORY_LIMIT {
+                self.undo.remove(0);
+            }
+            self.undo.push(before);
+        }
+        self.redo.clear();
+        self.group = (collapsed && kind != EditKind::Atomic).then_some(EditGroup {
+            kind,
+            cursor: selection.focus().index(),
+            updated: now,
+        });
+    }
+
+    fn external_edit(
+        &mut self,
+        kind: Option<EditKind>,
+        edit: impl FnOnce(&mut PlainEditorDriver<'_, ()>),
+    ) -> bool {
+        let cancelled = self.clear_preedit();
+        let before = kind.map(|_| self.capture());
         let generation = self.editor.generation();
         self.preedit_hints.clear();
         with_text_context(|fonts, layouts| {
             let mut driver = self.editor.driver(fonts, layouts);
-            driver.clear_compose();
             edit(&mut driver);
         });
-        let changed = self.editor.generation() != generation;
+        let changed = cancelled || self.editor.generation() != generation;
+        if let Some((before, kind)) = before.zip(kind) {
+            self.record(before, kind);
+        } else {
+            self.group = None;
+        }
         if changed {
             self.external_revision = self.external_revision.wrapping_add(1);
         }
@@ -193,7 +291,63 @@ impl TextEdit {
     }
 
     pub(super) fn insert(&mut self, text: &str) -> bool {
-        self.external_edit(|driver| driver.insert_or_replace_selection(text))
+        let kind = if text.contains('\n') {
+            EditKind::Atomic
+        } else {
+            EditKind::Insert
+        };
+        self.external_edit(Some(kind), |driver| {
+            driver.insert_or_replace_selection(text)
+        })
+    }
+
+    pub(super) fn selected_text(&self) -> Option<String> {
+        self.editor.selected_text().map(str::to_owned)
+    }
+
+    pub(super) fn cut(&mut self) -> bool {
+        if self.editor.selected_text().is_none() {
+            return false;
+        }
+        self.external_edit(Some(EditKind::Atomic), |driver| driver.delete_selection())
+    }
+
+    pub(super) fn paste(&mut self, text: &str) -> bool {
+        self.external_edit(Some(EditKind::Atomic), |driver| {
+            driver.insert_or_replace_selection(text)
+        })
+    }
+
+    pub(super) fn undo(&mut self) -> bool {
+        self.group = None;
+        self.drag_point = None;
+        if self.clear_preedit() {
+            self.external_revision = self.external_revision.wrapping_add(1);
+            return true;
+        }
+        let Some(previous) = self.undo.pop() else {
+            return false;
+        };
+        self.redo.push(self.capture());
+        self.restore(previous);
+        self.external_revision = self.external_revision.wrapping_add(1);
+        true
+    }
+
+    pub(super) fn redo(&mut self) -> bool {
+        self.group = None;
+        self.drag_point = None;
+        if self.clear_preedit() {
+            self.external_revision = self.external_revision.wrapping_add(1);
+            return true;
+        }
+        let Some(next) = self.redo.pop() else {
+            return false;
+        };
+        self.undo.push(self.capture());
+        self.restore(next);
+        self.external_revision = self.external_revision.wrapping_add(1);
+        true
     }
 
     pub(super) fn backspace(&mut self) -> bool {
@@ -201,7 +355,7 @@ impl TextEdit {
     }
 
     pub(super) fn backspace_word(&mut self) -> bool {
-        self.external_edit(|driver| driver.backdelete_word())
+        self.external_edit(Some(EditKind::Atomic), |driver| driver.backdelete_word())
     }
 
     pub(super) fn delete(&mut self) -> bool {
@@ -209,7 +363,12 @@ impl TextEdit {
     }
 
     fn delete_grapheme(&mut self, backwards: bool) -> bool {
-        self.external_edit(|driver| {
+        let kind = if backwards {
+            EditKind::Backspace
+        } else {
+            EditKind::Delete
+        };
+        self.external_edit(Some(kind), |driver| {
             if !driver.editor.raw_selection().is_collapsed() {
                 driver.delete_selection();
                 return;
@@ -236,7 +395,7 @@ impl TextEdit {
     }
 
     pub(super) fn move_cursor(&mut self, movement: CursorMove, extend: bool) -> bool {
-        self.external_edit(|driver| match (movement, extend) {
+        self.external_edit(None, |driver| match (movement, extend) {
             (CursorMove::Left, false) => driver.move_left(),
             (CursorMove::Left, true) => driver.select_left(),
             (CursorMove::Right, false) => driver.move_right(),
@@ -261,28 +420,32 @@ impl TextEdit {
     }
 
     pub(super) fn select_all(&mut self) -> bool {
-        self.external_edit(|driver| driver.select_all())
+        self.external_edit(None, |driver| driver.select_all())
     }
 
     pub(super) fn clear_preedit(&mut self) -> bool {
         let changed = self.editor.is_composing();
         self.preedit_hints.clear();
-        with_text_context(|fonts, layouts| self.editor.driver(fonts, layouts).clear_compose());
+        if let Some(before) = self.composition_before.take() {
+            self.restore(before);
+        } else if changed {
+            with_text_context(|fonts, layouts| self.editor.driver(fonts, layouts).clear_compose());
+        }
+        if changed {
+            self.group = None;
+        }
         changed
     }
 
     pub(super) fn apply_text_input(&mut self, batch: TextInputBatch) -> bool {
         let generation = self.editor.generation();
+        let commit = batch.commit.is_some() || batch.delete_surrounding.is_some();
+        let replace_compose = commit || batch.preedit.is_none();
+        let cancelled = replace_compose && self.clear_preedit();
+        let before = commit.then(|| self.capture());
         self.preedit_hints.clear();
         with_text_context(|fonts, layouts| {
             let mut driver = self.editor.driver(fonts, layouts);
-            // Pure preedit updates replace the composition in place, shaping only once.
-            if batch.preedit.is_none()
-                || batch.commit.is_some()
-                || batch.delete_surrounding.is_some()
-            {
-                driver.clear_compose();
-            }
             if let Some((before, after)) = batch.delete_surrounding {
                 let selection = driver.editor.raw_selection().text_range();
                 let text = driver.editor.raw_text();
@@ -301,12 +464,23 @@ impl TextEdit {
             if let Some(commit) = batch.commit {
                 driver.insert_or_replace_selection(&commit);
             }
-            if let Some(preedit) = batch.preedit {
-                driver.set_compose(&preedit.text, preedit.cursor);
-                self.preedit_hints = preedit.spans;
-            }
         });
-        self.editor.generation() != generation
+        if let Some(before) = before {
+            self.record(before, EditKind::Atomic);
+        }
+        if let Some(preedit) = batch.preedit {
+            if self.composition_before.is_none() {
+                self.group = None;
+                self.composition_before = Some(self.capture());
+            }
+            with_text_context(|fonts, layouts| {
+                self.editor
+                    .driver(fonts, layouts)
+                    .set_compose(&preedit.text, preedit.cursor);
+            });
+            self.preedit_hints = preedit.spans;
+        }
+        cancelled || self.editor.generation() != generation
     }
 
     pub(super) fn shows_caret(&self) -> bool {
@@ -369,6 +543,7 @@ impl TextEdit {
     pub(super) fn snapshot(&self, cursor_rectangle: Option<[i32; 4]>) -> TextInputSnapshot<'_> {
         TextInputSnapshot {
             session: self.session,
+            generation: self.editor.generation(),
             content: self.editor.text(),
             cursor: self.editor.raw_compose().as_ref().map_or_else(
                 || self.editor.raw_selection().focus().index(),

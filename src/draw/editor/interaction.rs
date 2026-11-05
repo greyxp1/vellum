@@ -25,6 +25,7 @@ impl From<&Element> for ResizeSnapshot {
 
 impl ResizeSnapshot {
     pub(super) fn set_style(&mut self, style: Style) {
+        self.kind.prepare(style);
         if !matches!(self.kind, ElementKind::Text { .. })
             || style.size != self.style.size
             || style.filled != self.style.filled
@@ -152,7 +153,14 @@ impl Editor {
             }
             Tool::Text => {
                 let origin = Point::new(point.x, point.y - text_line_height(self.style.size) * 0.5);
-                let edit = self.make_text_edit(None, origin, String::new(), self.style, [1.0; 2]);
+                let edit = self.make_text_edit(
+                    None,
+                    origin,
+                    String::new(),
+                    self.style,
+                    [1.0; 2],
+                    self.text_font.clone(),
+                );
                 self.interaction = Some(Interaction::EditingText(edit));
                 true
             }

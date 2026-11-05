@@ -53,6 +53,10 @@ pub(crate) enum Action {
     BackspaceWord,
     MoveCursor(CursorMove, bool),
     InsertText(String),
+    Copy,
+    Cut,
+    Paste,
+    PasteText(String),
     ApplyTextInput(TextInputBatch),
 }
 
@@ -79,6 +83,7 @@ pub(super) struct Editor {
     picker: Option<Picker>,
     default_tool: Tool,
     default_style: Style,
+    pub(in crate::draw) text_font: std::sync::Arc<crate::text::TextFont>,
     last_non_eraser_tool: Tool,
     tool_properties: ToolPropertySet,
     default_tool_properties: ToolPropertySet,
@@ -161,6 +166,7 @@ impl Editor {
             picker: None,
             default_tool: settings.default_tool,
             default_style: style,
+            text_font: std::sync::Arc::new(settings.text_font.clone()),
             last_non_eraser_tool: if settings.default_tool == Tool::Eraser {
                 Tool::Pen
             } else {
@@ -200,6 +206,7 @@ impl Editor {
         self.presentation_settings = settings.presentation;
         self.default_tool_properties = next.default_tool_properties;
         self.default_style = next.default_style;
+        self.text_font = next.text_font;
         self.size_ranges = next.size_ranges;
         self.steps = next.steps;
         self.stops = next.stops;
@@ -217,14 +224,6 @@ impl Editor {
         }
         self.default_tool = settings.default_tool;
         self.style = self.style_for(self.tool);
-        if settings.text_font != previous.text_font {
-            for document in [&mut self.document, &mut self.other_document] {
-                for element in &mut document.elements {
-                    element.refresh_text_bounds();
-                }
-                document.history.refresh_text_bounds();
-            }
-        }
     }
 
     pub(in crate::draw) fn deactivate(&mut self, preserve_picker: bool) -> bool {
@@ -309,8 +308,20 @@ impl Editor {
             return effect;
         }
         match action {
-            Action::Undo if !self.is_editing_text() => effect.changed = self.undo(),
-            Action::Redo if !self.is_editing_text() => effect.changed = self.redo(),
+            Action::Undo => {
+                effect.changed = if let Some(edit) = self.text_edit_mut() {
+                    edit.undo()
+                } else {
+                    self.undo()
+                };
+            }
+            Action::Redo => {
+                effect.changed = if let Some(edit) = self.text_edit_mut() {
+                    edit.redo()
+                } else {
+                    self.redo()
+                };
+            }
             Action::SelectAll => {
                 effect.changed = if let Some(edit) = self.text_edit_mut() {
                     edit.select_all()
@@ -361,7 +372,17 @@ impl Editor {
                     effect.changed = edit.insert(&text);
                 }
             }
-            Action::Undo | Action::Redo | Action::ApplyTextInput(_) => {}
+            Action::Cut => {
+                if let Some(edit) = self.text_edit_mut() {
+                    effect.changed = edit.cut();
+                }
+            }
+            Action::PasteText(text) => {
+                if let Some(edit) = self.text_edit_mut() {
+                    effect.changed = edit.paste(&text);
+                }
+            }
+            Action::Copy | Action::Paste | Action::ApplyTextInput(_) => {}
         }
         effect.changed |= closed_picker;
         effect
@@ -437,10 +458,11 @@ impl Editor {
         content: String,
         style: Style,
         scale: [f32; 2],
+        font: std::sync::Arc<crate::text::TextFont>,
     ) -> TextEdit {
         let session = self.next_text_session;
         self.next_text_session = self.next_text_session.wrapping_add(1).max(1);
-        TextEdit::new(session, id, origin, content, style, scale)
+        TextEdit::new(session, id, origin, content, style, scale, font)
     }
 
     pub(in crate::draw) fn switch_tool(&mut self, tool: Tool) -> bool {

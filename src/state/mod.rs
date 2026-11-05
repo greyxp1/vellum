@@ -1,5 +1,6 @@
 //! Overlay lifecycle and application state.
 
+mod clipboard;
 mod freeze;
 mod input;
 mod output;
@@ -54,6 +55,7 @@ pub(crate) struct State {
     text_input: input::TextInputState,
     pointer: input::PointerState,
     tablet: input::TabletState,
+    clipboard: clipboard::Clipboard,
 
     gpu: Option<GpuContext>,
     qhandle: QueueHandle<State>,
@@ -92,14 +94,6 @@ impl State {
         self.freeze.on_activate = settings.freeze_on_activate;
         self.keyboard
             .reload(settings.keybinds.clone(), settings.text_keybinds.clone());
-        if settings.text_font != previous.text_font {
-            crate::text::set_text_font(settings.text_font.clone());
-            for output in self.wayland.outputs.values_mut() {
-                if let Some(wgpu) = &mut output.wgpu {
-                    wgpu.invalidate_text_layouts();
-                }
-            }
-        }
         self.draw.reload(settings, previous);
         self.update_output_input();
         self.damage_presentation();

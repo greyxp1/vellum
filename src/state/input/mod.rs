@@ -202,6 +202,18 @@ impl State {
         if self.freeze.capturing() && !matches!(action, Action::Cancel | Action::Clear) {
             return;
         }
+        match action {
+            Action::Copy => {
+                self.copy_text();
+                return;
+            }
+            Action::Cut if !self.copy_text() => return,
+            Action::Paste => {
+                self.paste_text();
+                return;
+            }
+            _ => {}
+        }
         self.flush_pen_motion();
         self.pointer.clear_released_pen_tip();
         let clear_on_cancel = self.clear_on_cancel && matches!(action, Action::Cancel);

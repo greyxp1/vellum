@@ -3,6 +3,8 @@
 use std::collections::BTreeMap;
 use wayland_client::globals::{GlobalListContents, registry_queue_init};
 use wayland_client::protocol::wl_compositor::WlCompositor;
+use wayland_client::protocol::wl_data_device::WlDataDevice;
+use wayland_client::protocol::wl_data_device_manager::WlDataDeviceManager;
 use wayland_client::protocol::wl_display::WlDisplay;
 use wayland_client::protocol::wl_keyboard::WlKeyboard;
 use wayland_client::protocol::wl_output::WlOutput;
@@ -49,6 +51,8 @@ pub(super) struct WaylandState {
     pub(super) pointer: Option<WlPointer>,
     pub(super) keyboard: Option<WlKeyboard>,
     pub(super) text_input: Option<ZwpTextInputV3>,
+    pub(super) data_device_manager: Option<WlDataDeviceManager>,
+    pub(super) data_device: Option<WlDataDevice>,
 
     pub(super) cursor_shape_manager: Option<WpCursorShapeManagerV1>,
     pub(super) xdg_output_manager: Option<ZxdgOutputManagerV1>,
@@ -75,6 +79,12 @@ impl State {
         let layer_shell = globals
             .bind::<ZwlrLayerShellV1, _, _>(&qhandle, 1..=4, ())
             .map_err(|_| "compositor does not provide zwlr_layer_shell_v1")?;
+        let data_device_manager = globals
+            .bind::<WlDataDeviceManager, _, _>(&qhandle, 1..=3, ())
+            .ok();
+        let data_device = data_device_manager
+            .as_ref()
+            .map(|manager| manager.get_data_device(&seat, &qhandle, ()));
         let cursor_shape_manager = globals
             .bind::<WpCursorShapeManagerV1, _, _>(&qhandle, 1..=1, ())
             .ok();
@@ -141,6 +151,8 @@ impl State {
                 pointer: None,
                 keyboard: None,
                 text_input,
+                data_device_manager,
+                data_device,
                 cursor_shape_manager,
                 xdg_output_manager,
                 viewporter,
@@ -154,6 +166,7 @@ impl State {
             text_input: input::TextInputState::default(),
             pointer: input::PointerState::default(),
             tablet: input::TabletState::default(),
+            clipboard: super::clipboard::Clipboard::default(),
             gpu: None,
             qhandle,
         };
@@ -186,6 +199,7 @@ impl Dispatch<WlRegistry, GlobalListContents> for State {
 }
 
 delegate_noop!(State: ignore WlCompositor);
+delegate_noop!(State: ignore WlDataDeviceManager);
 delegate_noop!(State: ignore WlRegion);
 delegate_noop!(State: ignore ZwpTextInputManagerV3);
 delegate_noop!(State: ignore WpViewporter);

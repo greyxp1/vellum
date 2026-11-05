@@ -156,12 +156,17 @@ pub enum ElementKind {
     },
     Text {
         origin: Point,
-        content: String,
+        text: crate::text::Text,
         scale: [f32; 2],
     },
 }
 
 impl ElementKind {
+    pub(in crate::draw) fn prepare(&mut self, style: Style) {
+        if let Self::Text { text, .. } = self {
+            text.set_size(style.size);
+        }
+    }
     pub(in crate::draw) fn ellipse(min: Point, max: Point) -> Self {
         Self::Ellipse {
             center: min.midpoint(max),
@@ -253,12 +258,6 @@ impl Element {
         (Cow::Borrowed(&self.geometry), remaining)
     }
 
-    pub(super) fn refresh_text_bounds(&mut self) {
-        if matches!(self.kind, ElementKind::Text { .. }) {
-            self.bounds = bounds_for(&self.kind, self.style);
-        }
-    }
-
     pub(super) fn new(id: ElementId, kind: ElementKind, style: Style) -> Self {
         let geometry = geometry(&kind, style);
         Self::with_geometry(id, kind, style, geometry)
@@ -266,10 +265,11 @@ impl Element {
 
     pub(super) fn with_geometry(
         id: ElementId,
-        kind: ElementKind,
+        mut kind: ElementKind,
         style: Style,
         geometry: Geometry,
     ) -> Self {
+        kind.prepare(style);
         let bounds = bounds_for(&kind, style);
         Self {
             id,
@@ -281,8 +281,9 @@ impl Element {
         }
     }
 
-    pub(super) fn replace(&mut self, kind: ElementKind, style: Style) -> (ElementKind, Style) {
+    pub(super) fn replace(&mut self, mut kind: ElementKind, style: Style) -> (ElementKind, Style) {
         self.restart_fade();
+        kind.prepare(style);
         let same_shape = self.kind == kind
             && self.style.size == style.size
             && self.style.roundness == style.roundness

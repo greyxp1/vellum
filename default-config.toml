@@ -64,6 +64,11 @@ clear = []
 
 # Text editing
 [text_keybinds]
+undo = ["Ctrl+z"]
+redo = ["Ctrl+Shift+z", "Ctrl+y"]
+copy = ["Ctrl+c"]
+cut = ["Ctrl+x"]
+paste = ["Ctrl+v"]
 cancel = ["Escape"]
 delete = ["Delete"]
 backspace = ["BackSpace"]
