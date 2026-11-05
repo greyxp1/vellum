@@ -176,7 +176,9 @@ impl State {
         let Some(mut output) = self.wayland.outputs.remove(&id) else {
             return;
         };
-        if self.selected_output == Some(id) {
+        if self.selected_output == Some(id)
+            || (self.keyboard_output == Some(id) && self.draw.is_editing_text())
+        {
             self.pending_pen_motion.reset(None);
             self.keyboard.cancel_repeat();
             self.pointer.suppress_gesture();
