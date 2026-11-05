@@ -134,7 +134,6 @@ pub(crate) struct DrawState {
     caret_until: Option<Instant>,
     tool_cursor: Option<(Point, ToolCursor)>,
     previews: Vec<Geometry>,
-    presentation_settings: crate::config::PresentationSettings,
     fade_frame: Option<Instant>,
     shadows: bool,
 }
@@ -191,7 +190,6 @@ impl DrawState {
             caret_until: None,
             tool_cursor: None,
             previews: Vec::new(),
-            presentation_settings: settings.presentation,
             fade_frame: None,
             shadows: settings.annotation_shadows,
         }
@@ -204,7 +202,6 @@ impl DrawState {
     ) {
         self.editor.reload(settings, previous);
         self.feedback_duration = settings.feedback_duration;
-        self.presentation_settings = settings.presentation;
         self.shadows = settings.annotation_shadows;
         self.feedback = None;
         self.tool_cursor = None;
@@ -437,7 +434,7 @@ impl DrawState {
         if changed {
             self.fade_frame = self
                 .editor
-                .next_fade(Instant::now(), self.presentation_settings.hold)
+                .next_fade(Instant::now())
                 .map(|next| self.fade_frame.map_or(next, |current| current.min(next)));
             for output in self.outputs.values_mut() {
                 output.dirty = true;
@@ -461,8 +458,7 @@ impl DrawState {
         let fading = self.fade_frame.is_some_and(|until| now >= until);
         if fading {
             self.fade_frame = None;
-            self.editor
-                .expire_annotations(now, self.presentation_settings);
+            self.editor.expire_annotations(now);
         }
         let mut changed = fading;
         if self

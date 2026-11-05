@@ -10,6 +10,10 @@ pub(super) use shapes::{
 
 use crate::render::Geometry;
 use peniko::Fill;
+use std::borrow::Cow;
+use std::time::Instant;
+
+use crate::config::{ErasePace, PenEffect, PresentationSettings};
 
 const HIT_SLOP: f32 = 5.0;
 
@@ -199,6 +203,56 @@ pub struct Element {
 }
 
 impl Element {
+    pub(super) fn remaining(
+        &self,
+        now: Instant,
+        settings: PresentationSettings,
+        protected: bool,
+    ) -> f32 {
+        let Some(started) = self.fade_started_at else {
+            return 1.0;
+        };
+        if protected {
+            return 1.0;
+        }
+        let elapsed = now.saturating_duration_since(started);
+        let duration = match &self.kind {
+            ElementKind::Freehand { timing, .. } if settings.pen_effect == PenEffect::Erase => {
+                match (settings.erase_duration, timing.last()) {
+                    (Some(duration), _) => duration.as_secs_f32(),
+                    (None, Some(&(duration, _))) => duration,
+                    _ => settings.fade_duration.as_secs_f32(),
+                }
+            }
+            _ => settings.fade_duration.as_secs_f32(),
+        };
+        1.0 - (elapsed.saturating_sub(settings.hold).as_secs_f32() / duration).min(1.0)
+    }
+
+    pub(super) fn presentation_geometry(
+        &self,
+        remaining: f32,
+        settings: PresentationSettings,
+    ) -> (Cow<'_, Geometry>, f32) {
+        if let ElementKind::Freehand { points, timing } = &self.kind
+            && settings.pen_effect == PenEffect::Erase
+            && remaining < 1.0
+        {
+            let timing = if settings.erase_pace == ErasePace::Recorded {
+                timing.as_slice()
+            } else {
+                &[]
+            };
+            return (
+                Cow::Owned(super::freehand::erasing_geometry(
+                    points, timing, self.style, remaining,
+                )),
+                1.0,
+            );
+        }
+        (Cow::Borrowed(&self.geometry), remaining)
+    }
+
     pub(super) fn refresh_text_bounds(&mut self) {
         if matches!(self.kind, ElementKind::Text { .. }) {
             self.bounds = bounds_for(&self.kind, self.style);
@@ -248,10 +302,17 @@ impl Element {
         self.fade_started_at = self.fade_started_at.map(|_| std::time::Instant::now());
     }
 
-    pub(super) fn erase_hit_test(&self, start: Point, end: Point, radius: f32) -> bool {
+    pub(super) fn erase_hit_test(
+        &self,
+        start: Point,
+        end: Point,
+        radius: f32,
+        remaining: f32,
+        settings: PresentationSettings,
+    ) -> bool {
         use kurbo::Shape;
         let swept_bounds = Bounds::from_points([start, end]).expanded(radius);
-        if !self.bounds.intersects(swept_bounds) {
+        if remaining <= 0.0 || !self.bounds.intersects(swept_bounds) {
             return false;
         }
         let line = kurbo::Line::new(kurbo_point(start), kurbo_point(end));
@@ -266,11 +327,18 @@ impl Element {
             return Geometry::fill(path, Fill::NonZero, self.style.color)
                 .swept_hit_test(line, f64::from(radius));
         }
-        self.geometry.swept_hit_test(line, f64::from(radius))
+        self.presentation_geometry(remaining, settings)
+            .0
+            .swept_hit_test(line, f64::from(radius))
     }
 
-    pub(super) fn hit_test(&self, point: Point) -> bool {
-        if !self.bounds.expanded(HIT_SLOP).contains(point) {
+    pub(super) fn hit_test(
+        &self,
+        point: Point,
+        remaining: f32,
+        settings: PresentationSettings,
+    ) -> bool {
+        if remaining <= 0.0 || !self.bounds.expanded(HIT_SLOP).contains(point) {
             return false;
         }
         let tolerance = self.style.size * 0.5 + HIT_SLOP;
@@ -285,10 +353,13 @@ impl Element {
             ElementKind::Freehand { .. }
             | ElementKind::Segment { arrow: true, .. }
             | ElementKind::Rectangle { .. }
-            | ElementKind::Triangle { .. } => self.geometry.swept_hit_test(
-                kurbo::Line::new(kurbo_point(point), kurbo_point(point)),
-                f64::from(HIT_SLOP),
-            ),
+            | ElementKind::Triangle { .. } => self
+                .presentation_geometry(remaining, settings)
+                .0
+                .swept_hit_test(
+                    kurbo::Line::new(kurbo_point(point), kurbo_point(point)),
+                    f64::from(HIT_SLOP),
+                ),
             ElementKind::Ellipse { center, radii } => {
                 let local = point - *center;
                 (self.style.filled

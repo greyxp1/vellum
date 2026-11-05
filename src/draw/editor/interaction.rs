@@ -449,9 +449,9 @@ impl Editor {
         let id = self.selected[0];
         Cursor::Shape(match self.hit_handle(id, point) {
             Some(handle) => selection::cursor(handle),
-            None if self
-                .element(id)
-                .is_some_and(|element| element.hit_test(point)) =>
+            None if self.element(id).is_some_and(|element| {
+                element.hit_test(point, 1.0, self.presentation_settings)
+            }) =>
             {
                 selection::CursorHint::Move
             }

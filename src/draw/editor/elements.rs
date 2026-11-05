@@ -1,7 +1,6 @@
 use std::time::{Duration, Instant};
 
 use super::{Editor, HistoryEntry, Interaction};
-use crate::config::{PenEffect, PresentationSettings};
 use crate::draw::scene::{Element, ElementId, ElementKind, Point, Style};
 use crate::draw::text_edit::TextEdit;
 
@@ -10,40 +9,22 @@ impl Editor {
         self.selected.contains(&id) || self.text_edit().is_some_and(|edit| edit.id == Some(id))
     }
 
-    pub(in crate::draw) fn annotation_remaining(
-        &self,
-        element: &Element,
-        now: Instant,
-        settings: PresentationSettings,
-    ) -> f32 {
-        let Some(started) = element.fade_started_at else {
-            return 1.0;
-        };
-        if self.protected_from_fading(element.id) {
-            return 1.0;
-        }
-        let elapsed = now.saturating_duration_since(started);
-        let duration = match &element.kind {
-            ElementKind::Freehand { timing, .. } if settings.pen_effect == PenEffect::Erase => {
-                match (settings.erase_duration, timing.last()) {
-                    (Some(duration), _) => duration.as_secs_f32(),
-                    (None, Some(&(duration, _))) => duration,
-                    _ => settings.fade_duration.as_secs_f32(),
-                }
-            }
-            _ => settings.fade_duration.as_secs_f32(),
-        };
-        1.0 - (elapsed.saturating_sub(settings.hold).as_secs_f32() / duration).min(1.0)
+    pub(in crate::draw) fn annotation_remaining(&self, element: &Element, now: Instant) -> f32 {
+        element.remaining(
+            now,
+            self.presentation_settings,
+            self.protected_from_fading(element.id),
+        )
     }
 
-    pub(in crate::draw) fn next_fade(&self, now: Instant, hold: Duration) -> Option<Instant> {
+    pub(in crate::draw) fn next_fade(&self, now: Instant) -> Option<Instant> {
         [&self.document, &self.other_document]
             .into_iter()
             .flat_map(|document| &document.elements)
             .filter(|element| !self.protected_from_fading(element.id))
             .filter_map(|element| element.fade_started_at)
             .map(|started| {
-                let start = started + hold;
+                let start = started + self.presentation_settings.hold;
                 if start > now {
                     start
                 } else {
@@ -53,15 +34,11 @@ impl Editor {
             .min()
     }
 
-    pub(in crate::draw) fn expire_annotations(
-        &mut self,
-        now: Instant,
-        settings: PresentationSettings,
-    ) {
+    pub(in crate::draw) fn expire_annotations(&mut self, now: Instant) {
         let mut expired: Vec<_> = [&self.document, &self.other_document]
             .into_iter()
             .flat_map(|document| &document.elements)
-            .filter(|element| self.annotation_remaining(element, now, settings) <= 0.0)
+            .filter(|element| self.annotation_remaining(element, now) <= 0.0)
             .map(|element| element.id)
             .collect();
         if expired.is_empty() {
@@ -95,7 +72,9 @@ impl Editor {
         };
         let id = *id;
         let element = self.element(id)?;
-        if matches!(element.kind, ElementKind::Text { .. }) && element.hit_test(point) {
+        if matches!(element.kind, ElementKind::Text { .. })
+            && element.hit_test(point, 1.0, self.presentation_settings)
+        {
             let changed = self.begin_text_edit(id);
             if let Some(edit) = self.text_edit_mut() {
                 edit.click(point, clicks, false);
@@ -106,11 +85,18 @@ impl Editor {
     }
 
     pub(in crate::draw) fn hit_test(&self, point: Point) -> Option<ElementId> {
+        let now = Instant::now();
         self.document
             .elements
             .iter()
             .rev()
-            .find(|element| element.hit_test(point))
+            .find(|element| {
+                element.hit_test(
+                    point,
+                    self.annotation_remaining(element, now),
+                    self.presentation_settings,
+                )
+            })
             .map(|element| element.id)
     }
 
@@ -222,9 +208,15 @@ impl Editor {
 
     pub(super) fn erase_between(&mut self, start: Point, end: Point, size: f32) -> bool {
         let radius = size * 0.5;
+        let now = Instant::now();
+        let settings = self.presentation_settings;
+        let selected = self.selected.clone();
         self.remove_elements(
             ..,
-            |element| element.erase_hit_test(start, end, radius),
+            |element| {
+                let remaining = element.remaining(now, settings, selected.contains(&element.id));
+                element.erase_hit_test(start, end, radius, remaining, settings)
+            },
             true,
         )
     }

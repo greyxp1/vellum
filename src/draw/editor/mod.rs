@@ -71,6 +71,7 @@ pub(super) struct Editor {
     other_document: Document,
     pub(in crate::draw) canvas: super::Canvas,
     pub(in crate::draw) presentation: bool,
+    pub(in crate::draw) presentation_settings: crate::config::PresentationSettings,
     selected: Vec<ElementId>,
     interaction: Option<Interaction>,
     next_id: ElementId,
@@ -152,6 +153,7 @@ impl Editor {
             other_document: Document::default(),
             canvas: super::Canvas::Desktop,
             presentation: false,
+            presentation_settings: settings.presentation,
             selected: Vec::new(),
             interaction: None,
             next_id: 1,
@@ -195,6 +197,7 @@ impl Editor {
             &next.default_tool_properties,
             &settings.size_ranges,
         );
+        self.presentation_settings = settings.presentation;
         self.default_tool_properties = next.default_tool_properties;
         self.default_style = next.default_style;
         self.size_ranges = next.size_ranges;

@@ -42,9 +42,7 @@ impl DrawState {
             let mut items = Vec::with_capacity(elements.len());
             let now = std::time::Instant::now();
             for element in elements {
-                let remaining =
-                    self.editor
-                        .annotation_remaining(element, now, self.presentation_settings);
+                let remaining = self.editor.annotation_remaining(element, now);
                 if remaining <= 0.0 {
                     continue;
                 }
@@ -85,35 +83,13 @@ impl DrawState {
                     scale,
                 } = kind
                 else {
-                    let (geometry, opacity) = match kind {
-                        ElementKind::Freehand { points, timing }
-                            if self.presentation_settings.pen_effect
-                                == crate::config::PenEffect::Erase
-                                && remaining < 1.0 =>
-                        {
-                            (
-                                std::borrow::Cow::Owned(super::freehand::erasing_geometry(
-                                    points,
-                                    if self.presentation_settings.erase_pace
-                                        == crate::config::ErasePace::Recorded
-                                    {
-                                        timing
-                                    } else {
-                                        &[]
-                                    },
-                                    style,
-                                    remaining,
-                                )),
-                                1.0,
-                            )
-                        }
-                        _ => (
-                            preview
-                                .map(|current| scene::geometry(&current.kind, current.style))
-                                .map(std::borrow::Cow::Owned)
-                                .unwrap_or(std::borrow::Cow::Borrowed(&element.geometry)),
+                    let (geometry, opacity) = if let Some(preview) = preview {
+                        (
+                            std::borrow::Cow::Owned(scene::geometry(&preview.kind, preview.style)),
                             remaining,
-                        ),
+                        )
+                    } else {
+                        element.presentation_geometry(remaining, self.editor.presentation_settings)
                     };
                     items.push(SceneItem::Geometry(geometry, [offset.x, offset.y], opacity));
                     continue;
