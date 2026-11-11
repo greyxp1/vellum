@@ -52,6 +52,7 @@ struct FileConfig {
     whiteboard: WhiteboardConfig,
     default_fill_shapes: Option<bool>,
     annotation_shadows: Option<bool>,
+    annotation_shadow_overlap: Option<bool>,
     #[serde(default)]
     presentation: PresentationConfig,
     #[serde(default)]
@@ -440,6 +441,7 @@ pub(super) struct Settings {
     pub(super) feedback_duration: Duration,
     pub(super) presentation: PresentationSettings,
     pub(super) annotation_shadows: bool,
+    pub(super) annotation_shadow_overlap: bool,
     pub(super) clear_on_cancel: bool,
     pub(super) freeze_on_activate: bool,
     pub(super) annotations_visible: bool,
@@ -544,6 +546,7 @@ impl Settings {
             feedback_duration: Duration::from_millis(feedback_duration_ms),
             presentation: file.presentation.resolve()?,
             annotation_shadows: file.annotation_shadows.unwrap_or(true),
+            annotation_shadow_overlap: file.annotation_shadow_overlap.unwrap_or(false),
             clear_on_cancel: file.clear_on_cancel.unwrap_or(false),
             freeze_on_activate: file.freeze_on_activate.unwrap_or(false),
             annotations_visible: file.annotations_visible.unwrap_or(true),

@@ -134,6 +134,7 @@ pub(crate) struct DrawState {
     tool_cursor: Option<(Point, ToolCursor)>,
     fade_frame: Option<Instant>,
     shadows: bool,
+    shadow_overlap: bool,
 }
 
 impl DrawState {
@@ -189,6 +190,7 @@ impl DrawState {
             tool_cursor: None,
             fade_frame: None,
             shadows: settings.annotation_shadows,
+            shadow_overlap: settings.annotation_shadow_overlap,
         }
     }
 
@@ -200,6 +202,7 @@ impl DrawState {
         self.editor.reload(settings, previous);
         self.feedback_duration = settings.feedback_duration;
         self.shadows = settings.annotation_shadows;
+        self.shadow_overlap = settings.annotation_shadow_overlap;
         self.feedback = None;
         self.tool_cursor = None;
         self.record(true);

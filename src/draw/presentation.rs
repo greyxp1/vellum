@@ -202,6 +202,7 @@ impl DrawState {
             Viewport {
                 background: presentation.background,
                 shadows: self.shadows,
+                shadow_overlap: self.shadow_overlap,
                 origin: [origin.x, origin.y],
                 scale,
             },

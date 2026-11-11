@@ -19,6 +19,7 @@ pub(crate) struct Viewport {
     pub scale: [f64; 2],
     pub background: Option<crate::Rgba>,
     pub shadows: bool,
+    pub shadow_overlap: bool,
 }
 
 pub(crate) enum SceneItem<'a> {
@@ -106,6 +107,13 @@ impl WgpuState {
         let mut main_settings = vello_hybrid::RenderSettings::default();
         // The glyph cache is the main scene's only atlas user; 1024px avoids a 64 MiB first-use allocation.
         main_settings.memory_settings.image_atlas_config.atlas_size = (1024, 1024);
+        // A grouped shadow can span the entire output, including after a resize.
+        let texture_limit = device
+            .limits()
+            .max_texture_dimension_2d
+            .min(u16::MAX.into()) as u16;
+        main_settings.memory_settings.layers_config.max_texture_size =
+            vello_hybrid::SizeU16::new(texture_limit);
         let (main_renderer, main_resources) =
             vello_hybrid::Renderer::new_with(&device, &target_config, main_settings);
 
@@ -209,6 +217,7 @@ impl WgpuState {
             scale,
             background,
             shadows,
+            shadow_overlap,
         } = viewport;
         let empty = items.is_empty()
             && previews.annotations.is_empty()
@@ -231,140 +240,151 @@ impl WgpuState {
             self.surface_config.width as u16,
             self.surface_config.height as u16,
         ];
-        if empty {
-            // Reset keeps the recorder's peak allocations. Empty frames can release
-            // that CPU storage while retaining the GPU device and pipelines.
-            self.main_scene = vello_hybrid::Scene::new(main_size[0], main_size[1]);
-        } else {
-            self.main_scene.reset_and_resize(main_size[0], main_size[1]);
-        }
-        if let Some(color) = background {
-            self.main_scene.set_transform(Affine::IDENTITY);
-            self.main_scene
-                .set_paint(vello_color(color, self.surface_config.format.is_srgb()));
-            self.main_scene.fill_rect(&kurbo::Rect::new(
-                0.0,
-                0.0,
-                f64::from(main_size[0]),
-                f64::from(main_size[1]),
-            ));
-        }
-        let scene_transform = Affine::scale_non_uniform(scale[0], scale[1])
-            * Affine::translate((
-                -f64::from(viewport_origin[0]),
-                -f64::from(viewport_origin[1]),
-            ));
-        self.main_scene.set_transform(scene_transform);
-        let target_is_srgb = self.surface_config.format.is_srgb();
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-        let mut target = text::TextTarget {
-            scene: &mut self.main_scene,
-            resources: &mut self.main_resources,
-            texture_bindings: &mut self.texture_bindings,
-            device: &self.device,
-            queue: &self.queue,
-            is_srgb: target_is_srgb,
-        };
-        for item in items {
-            if matches!(item, SceneItem::Feedback(_)) {
-                continue;
+        let mut shadows = shadows;
+        let encoder = loop {
+            if empty {
+                // Reset keeps the recorder's peak allocations. Empty frames can release
+                // that CPU storage while retaining the GPU device and pipelines.
+                self.main_scene = vello_hybrid::Scene::new(main_size[0], main_size[1]);
+            } else {
+                self.main_scene.reset_and_resize(main_size[0], main_size[1]);
             }
-            let layer = match item {
-                SceneItem::Geometry(_, _, opacity) | SceneItem::Text(_, opacity) => {
-                    annotation_layer(target.scene, *opacity, shadows)
-                }
-                SceneItem::Feedback(_) => false,
+            if let Some(color) = background {
+                self.main_scene.set_transform(Affine::IDENTITY);
+                self.main_scene
+                    .set_paint(vello_color(color, self.surface_config.format.is_srgb()));
+                self.main_scene.fill_rect(&kurbo::Rect::new(
+                    0.0,
+                    0.0,
+                    f64::from(main_size[0]),
+                    f64::from(main_size[1]),
+                ));
+            }
+            let scene_transform = Affine::scale_non_uniform(scale[0], scale[1])
+                * Affine::translate((
+                    -f64::from(viewport_origin[0]),
+                    -f64::from(viewport_origin[1]),
+                ));
+            self.main_scene.set_transform(scene_transform);
+            let target_is_srgb = self.surface_config.format.is_srgb();
+            let mut encoder = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+            let mut target = text::TextTarget {
+                scene: &mut self.main_scene,
+                resources: &mut self.main_resources,
+                texture_bindings: &mut self.texture_bindings,
+                device: &self.device,
+                queue: &self.queue,
+                is_srgb: target_is_srgb,
             };
-            match item {
-                SceneItem::Geometry(geometry, offset, _) => {
-                    if *offset != [0.0; 2] {
-                        target.scene.set_transform(
-                            scene_transform
-                                * Affine::translate((f64::from(offset[0]), f64::from(offset[1]))),
-                        );
+            if shadows && !shadow_overlap {
+                target
+                    .scene
+                    .push_layer(None, None, None, None, Some(shadow_filter(2.0)));
+            }
+            for item in items {
+                if matches!(item, SceneItem::Feedback(_)) {
+                    continue;
+                }
+                let layer = match item {
+                    SceneItem::Geometry(_, _, opacity) | SceneItem::Text(_, opacity) => {
+                        annotation_layer(target.scene, *opacity, shadows && shadow_overlap)
                     }
-                    replay_geometry(target.scene, geometry, target_is_srgb);
-                    if *offset != [0.0; 2] {
-                        target.scene.set_transform(scene_transform);
+                    SceneItem::Feedback(_) => false,
+                };
+                match item {
+                    SceneItem::Geometry(geometry, offset, _) => {
+                        if *offset != [0.0; 2] {
+                            target.scene.set_transform(
+                                scene_transform
+                                    * Affine::translate((
+                                        f64::from(offset[0]),
+                                        f64::from(offset[1]),
+                                    )),
+                            );
+                        }
+                        replay_geometry(target.scene, geometry, target_is_srgb);
+                        if *offset != [0.0; 2] {
+                            target.scene.set_transform(scene_transform);
+                        }
+                    }
+                    SceneItem::Text(spec, _) | SceneItem::Feedback(spec) => {
+                        self.text.append_to_scene(&mut target, spec)
                     }
                 }
-                SceneItem::Text(spec, _) | SceneItem::Feedback(spec) => {
-                    self.text.append_to_scene(&mut target, spec)
+                if layer {
+                    target.scene.pop_layer();
                 }
             }
-            if layer {
-                target.scene.pop_layer();
-            }
-        }
-        for (geometries, shadow) in [
-            (previews.annotations, shadows),
-            (previews.decorations, false),
-        ] {
-            for geometry in geometries {
-                let layer = annotation_layer(&mut self.main_scene, 1.0, shadow);
+            for geometry in previews.annotations {
+                let layer = annotation_layer(&mut self.main_scene, 1.0, shadows && shadow_overlap);
                 replay_geometry(&mut self.main_scene, geometry, target_is_srgb);
                 if layer {
                     self.main_scene.pop_layer();
                 }
             }
-        }
-        if let Some(cursor) = &previews.cursor {
-            if shadows {
-                let bounds = cursor.bounds().unwrap_or_default();
-                let radius = (bounds.width().min(bounds.height()) as f32 * 0.2).clamp(0.25, 2.0);
-                self.main_scene
-                    .push_layer(None, None, None, None, Some(shadow_filter(radius)));
-            }
-            replay_geometry(&mut self.main_scene, cursor, target_is_srgb);
-            if shadows {
+            if shadows && !shadow_overlap {
                 self.main_scene.pop_layer();
             }
-        }
-
-        if let Some(picker) = picker {
-            let picker_state = self
-                .picker
-                .get_or_insert_with(|| PickerState::new(&self.device, self.surface_config.format));
-            picker_state.prepare(
-                &self.device,
-                &mut self.main_scene,
-                &mut self.texture_bindings,
-                &self.surface_config,
-                picker,
-                &viewport,
-            )?;
-            picker_state.render(&self.device, &self.queue, &mut encoder)?;
-        } else {
-            self.release_picker();
-        }
-
-        self.main_scene.set_transform(scene_transform);
-        let mut target = text::TextTarget {
-            scene: &mut self.main_scene,
-            resources: &mut self.main_resources,
-            texture_bindings: &mut self.texture_bindings,
-            device: &self.device,
-            queue: &self.queue,
-            is_srgb: target_is_srgb,
-        };
-        for item in items {
-            if let SceneItem::Feedback(spec) = item {
-                self.text.append_to_scene(&mut target, spec);
+            for geometry in previews.decorations {
+                replay_geometry(&mut self.main_scene, geometry, target_is_srgb);
             }
-        }
-        self.text.finish_frame(&mut target);
+            if let Some(cursor) = &previews.cursor {
+                if shadows {
+                    let bounds = cursor.bounds().unwrap_or_default();
+                    let radius =
+                        (bounds.width().min(bounds.height()) as f32 * 0.2).clamp(0.25, 2.0);
+                    self.main_scene
+                        .push_layer(None, None, None, None, Some(shadow_filter(radius)));
+                }
+                replay_geometry(&mut self.main_scene, cursor, target_is_srgb);
+                if shadows {
+                    self.main_scene.pop_layer();
+                }
+            }
 
-        let swapchain_view = output
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-        let render_size = vello_hybrid::RenderSize {
-            width: u32::from(main_size[0]),
-            height: u32::from(main_size[1]),
-        };
-        self.main_renderer
-            .render(
+            if let Some(picker) = picker {
+                let picker_state = self.picker.get_or_insert_with(|| {
+                    PickerState::new(&self.device, self.surface_config.format)
+                });
+                picker_state.prepare(
+                    &self.device,
+                    &mut self.main_scene,
+                    &mut self.texture_bindings,
+                    &self.surface_config,
+                    picker,
+                    &viewport,
+                )?;
+                picker_state.render(&self.device, &self.queue, &mut encoder)?;
+            } else {
+                self.release_picker();
+            }
+
+            self.main_scene.set_transform(scene_transform);
+            let mut target = text::TextTarget {
+                scene: &mut self.main_scene,
+                resources: &mut self.main_resources,
+                texture_bindings: &mut self.texture_bindings,
+                device: &self.device,
+                queue: &self.queue,
+                is_srgb: target_is_srgb,
+            };
+            for item in items {
+                if let SceneItem::Feedback(spec) = item {
+                    self.text.append_to_scene(&mut target, spec);
+                }
+            }
+            self.text.finish_frame(&mut target);
+
+            let swapchain_view = output
+                .texture
+                .create_view(&wgpu::TextureViewDescriptor::default());
+            let render_size = vello_hybrid::RenderSize {
+                width: u32::from(main_size[0]),
+                height: u32::from(main_size[1]),
+            };
+            match self.main_renderer.render(
                 &self.main_scene,
                 &mut self.main_resources,
                 &self.device,
@@ -373,8 +393,22 @@ impl WgpuState {
                 &render_size,
                 &swapchain_view,
                 &self.texture_bindings,
-            )
-            .map_err(|error| format!("Vello annotation render failed: {error}"))?;
+            ) {
+                Ok(()) => break encoder,
+                // Retry on the acquired frame when filter padding exceeds the hardware limit.
+                Err(
+                    error @ vello_hybrid::RenderError::IntermediateTexture(
+                        vello_hybrid::IntermediateTextureError::TooLarge { .. },
+                    ),
+                ) if shadows => {
+                    log::debug!("rendering without shadows for this frame: {error}");
+                    shadows = false;
+                }
+                Err(error) => {
+                    return Err(format!("Vello annotation render failed: {error}"));
+                }
+            }
+        };
         log::trace!("submitting annotation frame");
         self.queue.submit(Some(encoder.finish()));
         before_present();
