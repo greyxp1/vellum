@@ -52,6 +52,9 @@ impl Editor {
                 .retain(|element| expired.binary_search(&element.id).is_err());
             if document.elements.len() != previous_len {
                 document.history.forget(&expired);
+                if document.elements.is_empty() {
+                    document.elements = Vec::new();
+                }
             }
         }
     }

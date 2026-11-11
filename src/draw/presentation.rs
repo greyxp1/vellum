@@ -137,16 +137,16 @@ impl DrawState {
             items
         };
 
-        self.previews.clear();
+        let mut previews = Vec::new();
         if active_canvas {
-            self.editor.append_preview_geometry(&mut self.previews);
+            self.editor.append_preview_geometry(&mut previews);
         }
-        self.previews.retain(|geometry| {
+        previews.retain(|geometry| {
             geometry
                 .bounds()
                 .is_some_and(|bounds| bounds.inflate(10.0, 10.0).intersect(viewport).area() > 0.0)
         });
-        let annotation_previews = self.previews.len();
+        let annotation_previews = previews.len();
         let mut cursor_rectangle = None;
         if let Some(edit) = active_text.filter(|_| presentation.interactive) {
             let [scale_x, scale_y] = edit.scale;
@@ -157,10 +157,10 @@ impl DrawState {
                 origin,
             ));
             if self.caret_visible && edit.shows_caret() {
-                self.previews.push(edit.caret());
+                previews.push(edit.caret());
             }
             edit.decoration_rectangles(|[x, y, width, height], style| {
-                self.previews.push(text_preedit_span(
+                previews.push(text_preedit_span(
                     edit.origin.x + x * scale_x,
                     edit.origin.x + (x + width) * scale_x,
                     edit.origin.y + y * scale_y,
@@ -171,14 +171,14 @@ impl DrawState {
         }
         if presentation.interactive {
             self.editor
-                .append_selection_geometry(self.feedback.is_none(), &mut self.previews);
+                .append_selection_geometry(self.feedback.is_none(), &mut previews);
         }
 
         let picker = presentation
             .interactive
             .then(|| self.editor.picker_geometry(viewport))
             .flatten();
-        let (annotations, decorations) = self.previews.split_at(annotation_previews);
+        let (annotations, decorations) = previews.split_at(annotation_previews);
         let cursor = self.tool_cursor.filter(|_| presentation.interactive);
         if wgpu.render(
             &items,

@@ -12,7 +12,6 @@ mod text_edit;
 mod triangle;
 
 use self::decorations::tool_cursor_geometry;
-use crate::render::Geometry;
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
@@ -133,7 +132,6 @@ pub(crate) struct DrawState {
     caret_visible: bool,
     caret_until: Option<Instant>,
     tool_cursor: Option<(Point, ToolCursor)>,
-    previews: Vec<Geometry>,
     fade_frame: Option<Instant>,
     shadows: bool,
 }
@@ -189,7 +187,6 @@ impl DrawState {
             caret_visible: true,
             caret_until: None,
             tool_cursor: None,
-            previews: Vec::new(),
             fade_frame: None,
             shadows: settings.annotation_shadows,
         }

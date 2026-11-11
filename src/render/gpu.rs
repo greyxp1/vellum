@@ -26,6 +26,7 @@ impl GpuContext {
         surface: &WlSurface,
         width: u32,
         height: u32,
+        can_shrink: bool,
     ) -> Result<(Self, WgpuState), String> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::VULKAN,
@@ -62,7 +63,14 @@ impl GpuContext {
             required_features: wgpu::Features::empty(),
             required_limits: wgpu::Limits::default(),
             experimental_features: wgpu::ExperimentalFeatures::disabled(),
-            memory_hints: wgpu::MemoryHints::MemoryUsage,
+            memory_hints: wgpu::MemoryHints::Manual {
+                // Fixed blocks avoid retaining large unused regions after drawing.
+                // Larger resources still receive dedicated allocations.
+                suballocated_device_memory_block_size: std::ops::Range {
+                    start: 4 * 1024 * 1024,
+                    end: 4 * 1024 * 1024,
+                },
+            },
             trace: wgpu::Trace::Off,
         }))
         .map_err(|error| format!("could not create the GPU device: {error}"))?;
@@ -82,7 +90,7 @@ impl GpuContext {
             queue,
             lost,
         };
-        let wgpu = WgpuState::new(&gpu, surface, width, height)?;
+        let wgpu = WgpuState::new(&gpu, surface, width, height, can_shrink)?;
         Ok((gpu, wgpu))
     }
 

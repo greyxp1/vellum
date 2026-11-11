@@ -36,6 +36,8 @@ pub(crate) struct Previews<'a> {
 pub(crate) struct WgpuState {
     surface: wgpu::Surface<'static>,
     surface_config: wgpu::SurfaceConfiguration,
+    output_size: [u32; 2],
+    can_shrink: bool,
     device: wgpu::Device,
     queue: wgpu::Queue,
     main_renderer: vello_hybrid::Renderer,
@@ -50,7 +52,7 @@ pub(crate) struct WgpuState {
 
 impl WgpuState {
     pub(crate) fn size(&self) -> [u32; 2] {
-        [self.surface_config.width, self.surface_config.height]
+        self.output_size
     }
 
     pub(crate) fn new(
@@ -58,8 +60,11 @@ impl WgpuState {
         surface: wgpu::Surface<'static>,
         width: u32,
         height: u32,
+        can_shrink: bool,
     ) -> Result<Self, String> {
         checked_target_size(&gpu.device, [width, height], "annotation")?;
+        let output_size = [width, height];
+        let [width, height] = if can_shrink { [1, 1] } else { output_size };
         let capabilities = surface.get_capabilities(&gpu.adapter);
         // Wayland blends encoded colors. Avoid encoding RGB after Vello has
         // premultiplied edge coverage, which would brighten transparent fringes.
@@ -107,6 +112,8 @@ impl WgpuState {
         Ok(Self {
             surface,
             surface_config,
+            output_size,
+            can_shrink,
             device,
             queue,
             main_renderer,
@@ -142,18 +149,22 @@ impl WgpuState {
     }
 
     pub(crate) fn resize(&mut self, width: u32, height: u32) -> Result<(), String> {
-        if width == 0
-            || height == 0
-            || (width == self.surface_config.width && height == self.surface_config.height)
-        {
+        if width == 0 || height == 0 || [width, height] == self.output_size {
             return Ok(());
         }
         checked_target_size(&self.device, [width, height], "annotation")?;
+        self.output_size = [width, height];
+        Ok(())
+    }
+
+    fn resize_surface(&mut self, [width, height]: [u32; 2]) {
+        if width == self.surface_config.width && height == self.surface_config.height {
+            return;
+        }
         self.surface_config.width = width;
         self.surface_config.height = height;
         log::debug!("resizing surface to {width}x{height}");
         self.surface.configure(&self.device, &self.surface_config);
-        Ok(())
     }
 
     fn acquire_frame(&self) -> Result<Option<wgpu::SurfaceTexture>, String> {
@@ -199,13 +210,34 @@ impl WgpuState {
             background,
             shadows,
         } = viewport;
+        let empty = items.is_empty()
+            && previews.annotations.is_empty()
+            && previews.decorations.is_empty()
+            && previews.cursor.is_none()
+            && picker.is_none()
+            && background.is_none();
+        // Keep pipelines warm while releasing full-output swapchain and depth buffers.
+        self.resize_surface(if empty && self.can_shrink {
+            [1, 1]
+        } else {
+            self.output_size
+        });
         let Some(output) = self.acquire_frame()? else {
             return Ok(false);
         };
 
         // Creation and resize validate these dimensions.
-        let main_size = self.size().map(|dimension| dimension as u16);
-        self.main_scene.reset_and_resize(main_size[0], main_size[1]);
+        let main_size = [
+            self.surface_config.width as u16,
+            self.surface_config.height as u16,
+        ];
+        if empty {
+            // Reset keeps the recorder's peak allocations. Empty frames can release
+            // that CPU storage while retaining the GPU device and pipelines.
+            self.main_scene = vello_hybrid::Scene::new(main_size[0], main_size[1]);
+        } else {
+            self.main_scene.reset_and_resize(main_size[0], main_size[1]);
+        }
         if let Some(color) = background {
             self.main_scene.set_transform(Affine::IDENTITY);
             self.main_scene
@@ -302,6 +334,8 @@ impl WgpuState {
                 &viewport,
             )?;
             picker_state.render(&self.device, &self.queue, &mut encoder)?;
+        } else {
+            self.release_picker();
         }
 
         let swapchain_view = output
@@ -332,8 +366,8 @@ impl WgpuState {
         Ok(true)
     }
 
-    pub(crate) fn release_picker_target(&mut self) {
-        if let Some(picker) = &mut self.picker {
+    pub(crate) fn release_picker(&mut self) {
+        if let Some(mut picker) = self.picker.take() {
             picker.release_target(&mut self.texture_bindings);
         }
     }

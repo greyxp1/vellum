@@ -422,16 +422,20 @@ impl Dispatch<ZwlrLayerSurfaceV1, OutputId> for State {
                 } else {
                     output_state.configure_scale();
                     let [width, height] = output_state.buffer_size();
+                    let can_shrink = output_state.viewport.is_some();
                     let surface = output_state.surface.clone();
                     let display = state.wayland.display.clone();
                     let wgpu = if let Some(gpu) = &state.gpu {
-                        gpu.create_surface(&display, &surface)
-                            .and_then(|surface| WgpuState::new(gpu, surface, width, height))
-                    } else {
-                        GpuContext::new(&display, &surface, width, height).map(|(gpu, wgpu)| {
-                            state.gpu = Some(gpu);
-                            wgpu
+                        gpu.create_surface(&display, &surface).and_then(|surface| {
+                            WgpuState::new(gpu, surface, width, height, can_shrink)
                         })
+                    } else {
+                        GpuContext::new(&display, &surface, width, height, can_shrink).map(
+                            |(gpu, wgpu)| {
+                                state.gpu = Some(gpu);
+                                wgpu
+                            },
+                        )
                     };
                     match wgpu {
                         Ok(wgpu) => output_state.wgpu = Some(wgpu),

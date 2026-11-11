@@ -155,7 +155,7 @@ impl State {
         }
         for output in self.wayland.outputs.values_mut() {
             if let Some(wgpu) = &mut output.wgpu {
-                wgpu.release_picker_target();
+                wgpu.release_picker();
             }
         }
         if self.is_active() {
