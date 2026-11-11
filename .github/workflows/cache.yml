@@ -7,7 +7,7 @@ on:
       - ".github/workflows/cache.yml"
       - "flake.nix"
       - "flake.lock"
-      - "package.nix"
+      - "nix/package.nix"
       - "Cargo.toml"
       - "Cargo.lock"
       - "build.rs"

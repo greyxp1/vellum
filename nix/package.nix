@@ -12,26 +12,26 @@
 }:
 
 let
-  cargoToml = fromTOML (builtins.readFile ./Cargo.toml);
+  cargoToml = fromTOML (builtins.readFile ../Cargo.toml);
 in
 rustPlatform.buildRustPackage {
   pname = cargoToml.package.name;
   inherit (cargoToml.package) version;
 
   src = lib.fileset.toSource {
-    root = ./.;
+    root = ../.;
     fileset = lib.fileset.unions [
-      ./Cargo.toml
-      ./Cargo.lock
-      ./build.rs
-      ./default-config.toml
-      ./src
-      ./xtask/Cargo.toml
-      ./xtask/src
+      ../Cargo.toml
+      ../Cargo.lock
+      ../build.rs
+      ../default-config.toml
+      ../src
+      ../xtask/Cargo.toml
+      ../xtask/src
     ];
   };
 
-  cargoLock.lockFile = ./Cargo.lock;
+  cargoLock.lockFile = ../Cargo.lock;
 
   __structuredAttrs = true;
 

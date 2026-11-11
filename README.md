@@ -14,7 +14,20 @@ Vellum requires a Wayland compositor that implements [`wlr-layer-shell`](https:/
 
 ### NixOS
 
-See the [NixOS options](https://search.nixos.org/options?channel=unstable&query=vellum&type=options).
+For released versions, use the [NixOS module from nixpkgs](https://search.nixos.org/options?channel=unstable&query=vellum&type=options).
+
+For Vellum main, use the flake module:
+
+```nix
+{
+  imports = [inputs.vellum.nixosModules.default];
+  services.vellum = {
+    enable = true;
+    # Reduce driver memory use on NVIDIA. Disables software fallback.
+    # graphicsDriver = "nvidia";
+  };
+}
+```
 
 ### From source
 

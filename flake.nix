@@ -10,8 +10,10 @@
       nixpkgs.lib.genAttrs systems
       (system: f system nixpkgs.legacyPackages.${system});
   in {
+    nixosModules.default = import ./nix/nixos.nix {inherit self;};
+
     packages = eachSystem (system: pkgs: {
-      vellum = pkgs.callPackage ./package.nix {};
+      vellum = pkgs.callPackage ./nix/package.nix {};
       default = self.packages.${system}.vellum;
     });
 
