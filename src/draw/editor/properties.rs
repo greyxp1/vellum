@@ -12,21 +12,21 @@ pub(in crate::draw) struct Adjustment {
 }
 
 fn size_label(value: f32, default: f32) -> String {
-    let suffix = if value == default { " · default" } else { "" };
+    let suffix = if value == default { " (default)" } else { "" };
     format!("{value} px{suffix}")
 }
 
 fn percent_label(value: f32, default: f32) -> String {
-    let suffix = if value == default { " · default" } else { "" };
+    let suffix = if value == default { " (default)" } else { "" };
     format!("{:.0}%{suffix}", value * 100.0)
 }
 
 fn fill_label(filled: bool) -> String {
-    format!("Fill · {}", if filled { "solid" } else { "outline" })
+    format!("Fill {}", if filled { "solid" } else { "outline" })
 }
 
 fn background_label(background: bool) -> String {
-    format!("Background · {}", if background { "on" } else { "off" })
+    format!("Background {}", if background { "on" } else { "off" })
 }
 
 fn stepped_value(value: f32, default: f32, steps: f32, increment: f32, min: f32, max: f32) -> f32 {

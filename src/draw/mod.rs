@@ -358,13 +358,9 @@ impl DrawState {
         };
         self.record(adjustment.changed || adjustment.feedback.is_some());
         if let Some(text) = adjustment.feedback {
-            let anchor = self
-                .feedback
-                .as_ref()
-                .map_or(at, |feedback| feedback.anchor);
             self.feedback = Some(Feedback {
                 text: crate::text::Text::new(text, self.editor.text_font.clone(), 18.0),
-                anchor,
+                anchor: at,
                 until: Instant::now() + self.feedback_duration,
             });
         }

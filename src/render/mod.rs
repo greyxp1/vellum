@@ -268,6 +268,9 @@ impl WgpuState {
             is_srgb: target_is_srgb,
         };
         for item in items {
+            if matches!(item, SceneItem::Feedback(_)) {
+                continue;
+            }
             let layer = match item {
                 SceneItem::Geometry(_, _, opacity) | SceneItem::Text(_, opacity) => {
                     annotation_layer(target.scene, *opacity, shadows)
@@ -295,7 +298,6 @@ impl WgpuState {
                 target.scene.pop_layer();
             }
         }
-        self.text.finish_frame(&mut target);
         for (geometries, shadow) in [
             (previews.annotations, shadows),
             (previews.decorations, false),
@@ -337,6 +339,22 @@ impl WgpuState {
         } else {
             self.release_picker();
         }
+
+        self.main_scene.set_transform(scene_transform);
+        let mut target = text::TextTarget {
+            scene: &mut self.main_scene,
+            resources: &mut self.main_resources,
+            texture_bindings: &mut self.texture_bindings,
+            device: &self.device,
+            queue: &self.queue,
+            is_srgb: target_is_srgb,
+        };
+        for item in items {
+            if let SceneItem::Feedback(spec) = item {
+                self.text.append_to_scene(&mut target, spec);
+            }
+        }
+        self.text.finish_frame(&mut target);
 
         let swapchain_view = output
             .texture

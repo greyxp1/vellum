@@ -113,20 +113,31 @@ impl DrawState {
             }
             if let Some(Feedback {
                 text, anchor: at, ..
-            }) = self.feedback.as_ref().filter(|_| presentation.interactive)
-            {
+            }) = self.feedback.as_ref().filter(|feedback| {
+                presentation.interactive
+                    && viewport
+                        .contains((f64::from(feedback.anchor.x), f64::from(feedback.anchor.y)))
+            }) {
                 const OUTLINE: [f32; 4] = [0.0, 0.0, 0.0, 0.9];
+                let layout = text.layout();
+                let cursor_radius = self
+                    .tool_cursor
+                    .map_or(0.0, |(_, cursor)| cursor.size * 0.5);
+                let top =
+                    (at.y - layout.height() - cursor_radius.max(8.0) - 8.0).max(origin.y + 1.0);
+                let right = (viewport.x1 as f32 - layout.width() - 1.0).max(origin.x + 1.0);
+                let left = (at.x + 16.0).min(right);
                 for ([x, y], color) in [
-                    ([15.0, 16.0], OUTLINE),
-                    ([17.0, 16.0], OUTLINE),
-                    ([16.0, 15.0], OUTLINE),
-                    ([16.0, 17.0], OUTLINE),
-                    ([16.0, 16.0], [1.0; 4]),
+                    ([-1.0, 0.0], OUTLINE),
+                    ([1.0, 0.0], OUTLINE),
+                    ([0.0, -1.0], OUTLINE),
+                    ([0.0, 1.0], OUTLINE),
+                    ([0.0, 0.0], [1.0; 4]),
                 ] {
                     items.push(SceneItem::Feedback(TextSpec {
-                        layout: text.layout(),
-                        left: at.x + x,
-                        top: at.y + y,
+                        layout,
+                        left: left + x,
+                        top: top + y,
                         font_size: 18.0,
                         color,
                         background_roundness: None,
