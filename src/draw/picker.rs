@@ -69,15 +69,6 @@ fn radial_point(center: Point, radius: f32, angle: f32) -> kurbo::Point {
 
 fn push_color_preview(output: &mut Geometry, center: Point, color: Rgba, presentation: bool) {
     let preview_radius = CENTER_RADIUS - WHEEL_BORDER_WIDTH;
-    output.push_fill(
-        Circle::new(
-            (f64::from(center.x), f64::from(center.y)),
-            f64::from(CENTER_RADIUS),
-        )
-        .to_path(0.02),
-        Fill::NonZero,
-        GAP_LINE_COLOR,
-    );
     let inner = Circle::new(
         (f64::from(center.x), f64::from(center.y)),
         f64::from(preview_radius - PREVIEW_BORDER_WIDTH),
@@ -141,13 +132,19 @@ fn push_palette(output: &mut Geometry, center: Point, hovered: Option<Choice>, p
         let is_hovered = hovered == Some(Choice::Color(index));
         let start = index as f32 * step - step * 0.5;
         let end = start + step;
-        let border = wedge(
-            center,
-            CENTER_RADIUS - WHEEL_BORDER_WIDTH,
-            COLOR_OUTER_RADIUS + WHEEL_BORDER_WIDTH,
-            start..end,
-            0.0,
-        );
+        if is_hovered {
+            output.push_fill(
+                wedge(
+                    center,
+                    CENTER_RADIUS - WHEEL_BORDER_WIDTH,
+                    COLOR_OUTER_RADIUS + WHEEL_BORDER_WIDTH,
+                    start..end,
+                    0.0,
+                ),
+                Fill::NonZero,
+                HOVER_COLOR,
+            );
+        }
         let swatch = wedge(
             center,
             CENTER_RADIUS,
@@ -157,15 +154,6 @@ fn push_palette(output: &mut Geometry, center: Point, hovered: Option<Choice>, p
                 WHEEL_BORDER_WIDTH
             } else {
                 SEPARATOR_HALF_WIDTH
-            },
-        );
-        output.push_fill(
-            border,
-            Fill::NonZero,
-            if is_hovered {
-                HOVER_COLOR
-            } else {
-                GAP_LINE_COLOR
             },
         );
         output.push_fill(swatch, Fill::NonZero, opaque(color));
@@ -194,7 +182,12 @@ pub(super) fn picker_geometry(
         return None;
     }
     let local_center = Point::new(center.x - origin[0], center.y - origin[1]);
-    let mut output = Geometry::default();
+    let backdrop = Circle::new(
+        (f64::from(local_center.x), f64::from(local_center.y)),
+        f64::from(TOOL_OUTER_RADIUS + WHEEL_BORDER_WIDTH),
+    )
+    .to_path(0.02);
+    let mut output = Geometry::fill(backdrop, Fill::NonZero, GAP_LINE_COLOR);
     push_color_preview(&mut output, local_center, current_color, presentation);
     let step = std::f32::consts::TAU / tools.len() as f32;
     for index in 0..tools.len() {
@@ -203,17 +196,19 @@ pub(super) fn picker_geometry(
         let outer = TOOL_OUTER_RADIUS + if is_hovered { HOVER_EXTENSION } else { 0.0 };
         let start = index as f32 * step - step * 0.5;
         let end = start + step;
-        output.push_fill(
-            wedge(
-                local_center,
-                TOOL_INNER_RADIUS - WHEEL_BORDER_WIDTH,
-                outer + WHEEL_BORDER_WIDTH,
-                start..end,
-                0.0,
-            ),
-            Fill::NonZero,
-            GAP_LINE_COLOR,
-        );
+        if is_hovered {
+            output.push_fill(
+                wedge(
+                    local_center,
+                    TOOL_INNER_RADIUS - WHEEL_BORDER_WIDTH,
+                    outer + WHEEL_BORDER_WIDTH,
+                    start..end,
+                    0.0,
+                ),
+                Fill::NonZero,
+                GAP_LINE_COLOR,
+            );
+        }
         output.push_fill(
             wedge(
                 local_center,
