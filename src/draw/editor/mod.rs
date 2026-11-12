@@ -5,7 +5,6 @@ mod properties;
 
 use self::interaction::Interaction;
 pub(super) use self::properties::Property;
-use self::properties::ToolPropertySet;
 use super::Modifiers;
 use super::history::{Entry as HistoryEntry, History};
 use super::picker::{Choice, Picker, choice};
@@ -14,7 +13,11 @@ use super::scene::{ElementId, ElementKind, Point, Style};
 use super::selection;
 use super::text_edit::TextEdit;
 use super::text_edit::{CursorMove, TextInputBatch};
-use crate::tool::Tool;
+use crate::Rgba;
+use crate::config::{ToolDefinition, ToolProperties};
+use crate::tool::Primitive;
+use crate::tool::ToolId;
+use std::sync::Arc;
 
 #[derive(Default)]
 struct Document {
@@ -68,8 +71,12 @@ pub(crate) struct EditorEffect {
 }
 
 pub(super) struct Editor {
-    tool: Tool,
-    style: Style,
+    tool: ToolId,
+    tools: Arc<[ToolDefinition]>,
+    tool_properties: Vec<ToolProperties>,
+    color: [f32; 3],
+    default_color: [f32; 3],
+    tool_wheel: Vec<ToolId>,
     // IDs increase on insertion; undo restores the original order.
     document: Document,
     other_document: Document,
@@ -81,30 +88,16 @@ pub(super) struct Editor {
     next_id: ElementId,
     next_text_session: u64,
     picker: Option<Picker>,
-    default_tool: Tool,
-    default_style: Style,
-    pub(in crate::draw) text_font: std::sync::Arc<crate::text::TextFont>,
-    last_non_eraser_tool: Tool,
-    tool_properties: ToolPropertySet,
-    default_tool_properties: ToolPropertySet,
-    size_ranges: std::sync::Arc<std::collections::BTreeMap<Tool, crate::config::SizeRange>>,
-    steps: std::sync::Arc<std::collections::BTreeMap<Tool, crate::config::Steps>>,
-    stops: std::sync::Arc<std::collections::BTreeMap<Tool, crate::config::Stops>>,
+    default_tool: ToolId,
+    last_non_eraser_tool: Option<ToolId>,
     remember_last_tool: bool,
     remember_tool_properties: bool,
-    palette: Vec<[f32; 4]>,
-    cursor_visibility: Option<bool>,
-    tool_cursor_visibility: std::collections::BTreeMap<Tool, bool>,
+    palette: Vec<Rgba>,
     // Wheel adjustments of one property merge into one undo step.
     adjusted: Option<Property>,
 }
 
 impl Editor {
-    pub(in crate::draw) fn tool_style(&self, tool: Option<Tool>) -> (Tool, Style) {
-        let tool = tool.unwrap_or(self.tool);
-        (tool, self.style_for(tool))
-    }
-
     pub(in crate::draw) fn switch_canvas(&mut self, canvas: super::Canvas) {
         if self.canvas != canvas {
             std::mem::swap(&mut self.document, &mut self.other_document);
@@ -129,31 +122,17 @@ impl Editor {
     }
 
     pub(in crate::draw) fn new(settings: &crate::config::Settings) -> Self {
-        let default_tool_properties = ToolPropertySet::new(
-            settings.stroke_size,
-            settings.default_color[3],
-            settings.default_fill_shapes,
-            &settings.tool_defaults,
-            &settings.size_ranges,
-        );
-        let tool_properties = default_tool_properties;
-        let active = tool_properties.properties(settings.default_tool).copied();
-        let fallback = tool_properties
-            .properties(Tool::Pen)
-            .copied()
-            .expect("pen has adjustable properties");
-        let active = active.unwrap_or(fallback);
-        let mut color = settings.default_color;
-        color[3] = active.opacity;
-        let style = Style {
-            size: active.size,
-            color,
-            roundness: active.roundness,
-            filled: active.filled,
-        };
+        let tool = settings.default_tool;
+        let last_non_eraser_tool =
+            (settings.tools[tool.0].primitive != Primitive::Eraser).then_some(tool);
+        let [r, g, b, _] = settings.default_color;
         Self {
-            tool: settings.default_tool,
-            style,
+            tool,
+            tools: settings.tools.clone(),
+            tool_properties: settings.tools.iter().map(|tool| tool.properties).collect(),
+            color: [r, g, b],
+            default_color: [r, g, b],
+            tool_wheel: settings.tool_wheel.clone(),
             document: Document::default(),
             other_document: Document::default(),
             canvas: super::Canvas::Desktop,
@@ -164,66 +143,79 @@ impl Editor {
             next_id: 1,
             next_text_session: 1,
             picker: None,
-            default_tool: settings.default_tool,
-            default_style: style,
-            text_font: std::sync::Arc::new(settings.text_font.clone()),
-            last_non_eraser_tool: if settings.default_tool == Tool::Eraser {
-                Tool::Pen
-            } else {
-                settings.default_tool
-            },
-            tool_properties,
-            default_tool_properties,
-            size_ranges: settings.size_ranges.clone(),
-            steps: settings.steps.clone(),
-            stops: settings.stops.clone(),
+            default_tool: tool,
+            last_non_eraser_tool,
             remember_last_tool: settings.remember_last_tool,
             remember_tool_properties: settings.remember_tool_properties,
             palette: settings.palette.clone(),
-            cursor_visibility: settings.cursor.visible,
             adjusted: None,
-            tool_cursor_visibility: settings
-                .tool_defaults
-                .iter()
-                .filter_map(|(tool, defaults)| {
-                    defaults.cursor.visible.map(|visible| (*tool, visible))
-                })
-                .collect(),
         }
     }
 
-    pub(in crate::draw) fn reload(
-        &mut self,
-        settings: &crate::config::Settings,
-        previous: &crate::config::Settings,
-    ) {
-        let next = Self::new(settings);
-        self.tool_properties.reload(
-            &self.default_tool_properties,
-            &next.default_tool_properties,
-            &settings.size_ranges,
-        );
-        self.presentation_settings = settings.presentation;
-        self.default_tool_properties = next.default_tool_properties;
-        self.default_style = next.default_style;
-        self.text_font = next.text_font;
-        self.size_ranges = next.size_ranges;
-        self.steps = next.steps;
-        self.stops = next.stops;
-        self.remember_last_tool = next.remember_last_tool;
-        self.remember_tool_properties = next.remember_tool_properties;
-        self.palette = next.palette;
-        self.cursor_visibility = next.cursor_visibility;
-        self.tool_cursor_visibility = next.tool_cursor_visibility;
-        self.picker = None;
-        if settings.default_color[..3] != previous.default_color[..3] {
-            self.style.color[..3].copy_from_slice(&settings.default_color[..3]);
+    pub(in crate::draw) fn reload(&mut self, settings: &crate::config::Settings) {
+        let next = &settings.tools;
+        let default_changed =
+            self.tools[self.default_tool.0].id != next[settings.default_tool.0].id;
+        let active = if default_changed {
+            settings.default_tool
+        } else {
+            ToolDefinition::find(next, self.tool_name()).unwrap_or(settings.default_tool)
+        };
+        let tool_changed = next[active.0].id.as_ref() != self.tool_name()
+            || next[active.0].primitive != self.primitive();
+        if tool_changed || self.interaction.is_some() {
+            self.finish_interaction();
         }
-        if self.default_tool != settings.default_tool {
-            self.switch_tool(settings.default_tool);
+        if tool_changed {
+            self.selected.clear();
         }
+        self.last_non_eraser_tool = self
+            .last_non_eraser_tool
+            .map(|id| self.tools[id.0].id.as_ref())
+            .and_then(|name| ToolDefinition::find(next, name))
+            .filter(|id| next[id.0].primitive != Primitive::Eraser);
+        self.tool_properties = next
+            .iter()
+            .map(|tool| {
+                let mut properties = tool.properties;
+                if let Some(id) = ToolDefinition::find(&self.tools, &tool.id)
+                    && self.tools[id.0].primitive == tool.primitive
+                {
+                    let defaults = self.tools[id.0].properties;
+                    let old = self.tool_properties[id.0];
+                    if defaults.size == properties.size {
+                        properties.size = tool.size_range.clamp(old.size);
+                    }
+                    if defaults.opacity == properties.opacity {
+                        properties.opacity = old.opacity;
+                    }
+                    if defaults.roundness == properties.roundness {
+                        properties.roundness = old.roundness;
+                    }
+                    if defaults.filled == properties.filled {
+                        properties.filled = old.filled;
+                    }
+                }
+                properties
+            })
+            .collect();
+        self.tools = next.clone();
+        self.tool = active;
         self.default_tool = settings.default_tool;
-        self.style = self.style_for(self.tool);
+        let [r, g, b, _] = settings.default_color;
+        if self.default_color != [r, g, b] {
+            self.default_color = [r, g, b];
+            self.color = self.default_color;
+        }
+        if self.primitive() != Primitive::Eraser {
+            self.last_non_eraser_tool = Some(self.tool);
+        }
+        self.tool_wheel = settings.tool_wheel.clone();
+        self.presentation_settings = settings.presentation;
+        self.remember_last_tool = settings.remember_last_tool;
+        self.remember_tool_properties = settings.remember_tool_properties;
+        self.palette = settings.palette.clone();
+        self.picker = None;
     }
 
     pub(in crate::draw) fn deactivate(&mut self, preserve_picker: bool) -> bool {
@@ -239,50 +231,50 @@ impl Editor {
         }
         if !self.remember_last_tool {
             self.tool = self.default_tool;
-            self.last_non_eraser_tool = if self.default_tool == Tool::Eraser {
-                Tool::Pen
-            } else {
-                self.default_tool
-            };
+            self.last_non_eraser_tool = None;
         }
         if !self.remember_tool_properties {
-            self.style = self.default_style;
-            self.tool_properties = self.default_tool_properties;
+            self.color = self.default_color;
+            for (properties, tool) in self.tool_properties.iter_mut().zip(self.tools.iter()) {
+                *properties = tool.properties;
+            }
         }
-        self.style = self.style_for(self.tool);
+        if self.primitive() != Primitive::Eraser {
+            self.last_non_eraser_tool = Some(self.tool);
+        }
         self.adjusted = None;
         true
     }
 
     pub(in crate::draw) fn is_editing_text(&self) -> bool {
-        matches!(self.interaction, Some(Interaction::EditingText(_)))
+        matches!(self.interaction, Some(Interaction::EditingText(..)))
     }
 
     pub(in crate::draw) fn is_drawing_pen(&self) -> bool {
-        matches!(self.interaction, Some(Interaction::Freehand(_)))
+        matches!(self.interaction, Some(Interaction::Freehand(..)))
     }
 
     pub(super) fn text_edit(&self) -> Option<&TextEdit> {
         match &self.interaction {
-            Some(Interaction::EditingText(edit)) => Some(edit),
+            Some(Interaction::EditingText(_, edit)) => Some(edit),
             _ => None,
         }
     }
 
     fn text_edit_mut(&mut self) -> Option<&mut TextEdit> {
         match &mut self.interaction {
-            Some(Interaction::EditingText(edit)) => Some(edit),
+            Some(Interaction::EditingText(_, edit)) => Some(edit),
             _ => None,
         }
     }
 
-    pub(in crate::draw) fn current_color(&self) -> [f32; 4] {
+    pub(in crate::draw) fn current_color(&self) -> Rgba {
         if let Some(edit) = self.text_edit() {
             edit.style.color
         } else if let Some(element) = self.selected.last().and_then(|id| self.element(*id)) {
             element.style.color
         } else {
-            self.style.color
+            self.tool_style(self.color_tool()).color
         }
     }
 
@@ -399,7 +391,12 @@ impl Editor {
         let Some(picker) = &mut self.picker else {
             return false;
         };
-        let choice = choice(picker.center, point, self.palette.len());
+        let choice = choice(
+            picker.center,
+            point,
+            self.palette.len(),
+            self.tool_wheel.len(),
+        );
         let changed = picker.hovered != choice;
         picker.hovered = choice;
         changed
@@ -409,17 +406,23 @@ impl Editor {
         let Some(picker) = self.picker else {
             return false;
         };
-        let choice = choice(picker.center, point, self.palette.len());
+        let choice = choice(
+            picker.center,
+            point,
+            self.palette.len(),
+            self.tool_wheel.len(),
+        );
         if choice.is_none() && latch_center {
             return false;
         }
         self.picker = None;
         match choice {
             Some(Choice::Color(index)) => {
-                self.apply_rgba(self.palette[index]);
+                self.apply_color(self.palette[index]);
             }
-            Some(Choice::Tool(tool)) => {
-                self.switch_tool(tool);
+            Some(Choice::Tool(index)) => {
+                let id = self.tool_wheel[index];
+                self.switch_tool_id(id);
             }
             None => {}
         }
@@ -431,17 +434,20 @@ impl Editor {
     }
 
     fn toggle_eraser(&mut self) -> bool {
-        let tool = if self.tool == Tool::Eraser {
+        let next = if self.primitive() == Primitive::Eraser {
             self.last_non_eraser_tool
+                .unwrap_or_else(|| self.builtin(Primitive::Pen))
         } else {
-            Tool::Eraser
+            self.builtin(Primitive::Eraser)
         };
-        self.switch_tool(tool)
+        self.switch_tool_id(next)
     }
 
-    fn color_tool(&self) -> Tool {
-        if self.tool == Tool::Eraser {
+    fn color_tool(&self) -> ToolId {
+        if self.primitive() == Primitive::Eraser {
             self.last_non_eraser_tool
+                .filter(|id| self.tools[id.0].primitive.supports_opacity())
+                .unwrap_or_else(|| self.builtin(Primitive::Pen))
         } else {
             self.tool
         }
@@ -465,44 +471,101 @@ impl Editor {
         TextEdit::new(session, id, origin, content, style, scale, font)
     }
 
-    pub(in crate::draw) fn switch_tool(&mut self, tool: Tool) -> bool {
-        if self.tool == tool {
+    pub(in crate::draw) fn switch_tool(&mut self, primitive: Primitive) -> bool {
+        self.switch_tool_id(self.builtin(primitive))
+    }
+
+    fn builtin(&self, primitive: Primitive) -> ToolId {
+        ToolDefinition::builtin(&self.tools, primitive)
+    }
+
+    fn tool_style(&self, id: ToolId) -> Style {
+        self.tool_properties[id.0].style(self.color)
+    }
+
+    fn primitive(&self) -> Primitive {
+        self.tools[self.tool.0].primitive
+    }
+
+    fn effective_tool(&self, tool_override: super::ToolOverride) -> ToolId {
+        match tool_override {
+            super::ToolOverride::None => self.tool,
+            super::ToolOverride::InvertEraser if self.primitive() == Primitive::Eraser => {
+                self.builtin(Primitive::Pen)
+            }
+            super::ToolOverride::Eraser | super::ToolOverride::InvertEraser => {
+                self.builtin(Primitive::Eraser)
+            }
+        }
+    }
+
+    pub(in crate::draw) fn tool_name(&self) -> &str {
+        &self.tools[self.tool.0].id
+    }
+
+    pub(in crate::draw) fn resolve_tool(&self, id: &str) -> Result<ToolId, String> {
+        ToolDefinition::find(&self.tools, id).ok_or_else(|| format!("unknown tool {id:?}"))
+    }
+
+    pub(in crate::draw) fn switch_named_tool(&mut self, id: &str) -> Result<bool, String> {
+        let id = self.resolve_tool(id)?;
+        Ok(self.switch_tool_id(id))
+    }
+
+    fn switch_tool_id(&mut self, id: ToolId) -> bool {
+        if self.tool == id {
             return false;
         }
         self.picker = None;
         self.finish_interaction();
         self.selected.clear();
-        self.tool = tool;
-        if tool != Tool::Eraser {
-            self.last_non_eraser_tool = tool;
+        self.tool = id;
+        if self.primitive() != Primitive::Eraser {
+            self.last_non_eraser_tool = Some(id);
         }
-        self.style = self.style_for(self.tool);
         true
+    }
+
+    fn tool_font(&self, id: ToolId) -> Arc<crate::text::TextFont> {
+        self.tools[id.0]
+            .font
+            .as_ref()
+            .expect("text tools have fonts")
+            .clone()
+    }
+
+    pub(in crate::draw) fn text_font(&self) -> Arc<crate::text::TextFont> {
+        self.tool_font(self.builtin(Primitive::Text))
     }
 }
 
-fn drawing_kind(tool: Tool, start: Point, current: Point, modifiers: Modifiers) -> ElementKind {
+fn drawing_kind(
+    tool: Primitive,
+    start: Point,
+    current: Point,
+    modifiers: Modifiers,
+) -> ElementKind {
     match tool {
-        Tool::Line | Tool::Arrow => ElementKind::Segment {
+        Primitive::Line | Primitive::Arrow => ElementKind::Segment {
             points: [
                 start,
                 selection::constrained_endpoint(start, current, modifiers.shift),
             ],
-            arrow: tool == Tool::Arrow,
+            arrow: tool == Primitive::Arrow,
         },
-        Tool::Triangle => ElementKind::Triangle {
+        Primitive::Triangle => ElementKind::Triangle {
             vertices: selection::triangle_from_drag(start, current, modifiers),
         },
-        Tool::Rectangle => {
+        Primitive::Rectangle => {
             let (min, max) =
                 selection::constrained_box(start, current, modifiers.shift, modifiers.alt);
             ElementKind::Rectangle { min, max }
         }
-        Tool::Ellipse => {
+        Primitive::Ellipse => {
             let (min, max) =
                 selection::constrained_box(start, current, modifiers.shift, modifiers.alt);
             ElementKind::ellipse(min, max)
         }
-        Tool::Pen | Tool::Text | Tool::Eraser | Tool::Select => unreachable!(),
+        Primitive::Pen | Primitive::Text | Primitive::Eraser | Primitive::Select => unreachable!(),
     }
 }

@@ -26,7 +26,7 @@ use super::State;
 use crate::OutputId;
 use crate::config::DrawOn;
 use crate::draw::{self, Action, Modifiers, Point};
-use crate::tool::Tool;
+use crate::tool::Primitive;
 
 const MAX_PENDING_PEN_SAMPLES: usize = 64;
 const PEN_BEND_DEVIATION_SQUARED: f32 = 0.5 * 0.5;
@@ -383,7 +383,7 @@ impl State {
         let cursor = self.draw.cursor(point, self.pointer.tool_override());
         let preview_changed = self.draw.set_tool_cursor(match cursor.tool() {
             Some(preview) if self.pointer.tool_cursor_supported() => {
-                let point = if preview.tool == Tool::Pen {
+                let point = if preview.tool == Primitive::Pen {
                     self.pointer.released_pen_tip().unwrap_or(point)
                 } else {
                     point

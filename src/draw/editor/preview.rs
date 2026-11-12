@@ -4,18 +4,19 @@ use crate::draw::picker::picker_geometry;
 use crate::draw::scene::{Bounds, ElementId, ElementKind, Point, geometry};
 use crate::draw::selection;
 use crate::render::Geometry;
-use crate::tool::Tool;
+use crate::tool::Primitive;
 
 impl Editor {
     pub(in crate::draw) fn append_preview_geometry(&self, output: &mut Vec<Geometry>) {
         match &self.interaction {
-            Some(Interaction::Freehand(stroke)) => output.push(stroke.tail_geometry()),
+            Some(Interaction::Freehand(_, stroke)) => output.push(stroke.tail_geometry()),
             Some(Interaction::Drawing {
                 tool,
                 style,
                 start,
                 current,
                 modifiers,
+                ..
             }) => output.push(geometry(
                 &drawing_kind(*tool, *start, *current, *modifiers),
                 *style,
@@ -29,7 +30,7 @@ impl Editor {
         show_handles: bool,
         output: &mut Vec<Geometry>,
     ) {
-        if self.tool != Tool::Select {
+        if self.primitive() != Primitive::Select {
             return;
         }
         if self.selected.len() > 1 {
@@ -78,15 +79,31 @@ impl Editor {
         viewport: kurbo::Rect,
     ) -> Option<crate::render::LocalGeometry> {
         let picker = self.picker?;
-        let active = self.color_tool();
+        let active = self
+            .tool_wheel
+            .iter()
+            .position(|id| *id == self.tool)
+            .or_else(|| {
+                self.tool_wheel
+                    .iter()
+                    .position(|id| *id == self.color_tool())
+            });
+        let tools: Vec<_> = self
+            .tool_wheel
+            .iter()
+            .map(|id| {
+                let tool = &self.tools[id.0];
+                (
+                    tool.icon,
+                    tool.primitive.supports_fill() && self.tool_properties[id.0].filled,
+                )
+            })
+            .collect();
         picker_geometry(
             picker,
             active,
             self.current_color(),
-            |tool| {
-                self.properties(tool)
-                    .is_some_and(|properties| properties.filled)
-            },
+            &tools,
             &self.palette,
             viewport,
             self.presentation,

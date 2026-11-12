@@ -1,3 +1,4 @@
+use std::io::Write;
 use std::path::PathBuf;
 
 use clap::{CommandFactory, ValueEnum};
@@ -6,9 +7,8 @@ use clap_complete_nushell::Nushell;
 
 #[path = "src/cli.rs"]
 mod cli;
-
-#[path = "src/tool.rs"]
 #[allow(dead_code)]
+#[path = "src/tool.rs"]
 mod tool;
 
 fn main() -> std::io::Result<()> {
@@ -25,21 +25,29 @@ fn main() -> std::io::Result<()> {
         }
         std::fs::create_dir_all(output)?;
     }
-    let mut command = cli::Cli::command();
-    // Man pages need native value lists instead of the terminal's multiline help.
-    let man_command = command.clone().mut_subcommands(|command| {
+    let command = cli::Cli::command();
+    clap_mangen::generate_to(command.clone(), &man_dir)?;
+    let tool_names = tool::Primitive::ALL.map(tool::Primitive::name);
+    let mut command = command.mut_subcommands(|command| {
         command.mut_args(|arg| {
             if arg.get_id() == "tool" {
-                arg.long_help(None).hide_possible_values(false)
+                arg.value_parser(clap::builder::PossibleValuesParser::new(tool_names))
             } else {
                 arg
             }
         })
     });
-    clap_mangen::generate_to(man_command, &man_dir)?;
     for &shell in Shell::value_variants() {
         generate_to(shell, &mut command, "vellum", &completions_dir)?;
     }
     generate_to(Nushell, &mut command, "vellum", &completions_dir)?;
+    // The Fish generator emits option values but skips positional arguments.
+    writeln!(
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(completions_dir.join("vellum.fish"))?,
+        "complete -c vellum -n '__fish_vellum_using_subcommand use; and test (count (commandline -opc)) -eq 2' -f -a '{}'",
+        tool_names.join(" "),
+    )?;
     Ok(())
 }

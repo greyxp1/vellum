@@ -4,7 +4,7 @@ use crate::draw::selection::{self, Handle};
 use crate::draw::text_edit::TextEdit;
 use crate::draw::{Cursor, Modifiers, PenMotion, ToolCursor, ToolOverride, freehand};
 use crate::text::text_line_height;
-use crate::tool::Tool;
+use crate::tool::Primitive;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(in crate::draw) struct ResizeSnapshot {
@@ -39,9 +39,10 @@ impl ResizeSnapshot {
 
 #[derive(Debug)]
 pub(super) enum Interaction {
-    Freehand(freehand::LiveStroke),
+    Freehand(crate::tool::ToolId, freehand::LiveStroke),
     Drawing {
-        tool: Tool,
+        preset: crate::tool::ToolId,
+        tool: Primitive,
         style: Style,
         start: Point,
         current: Point,
@@ -54,6 +55,8 @@ pub(super) enum Interaction {
     },
     Resizing {
         id: ElementId,
+        preset: std::sync::Arc<str>,
+        text_size_range: [f32; 2],
         handle: Handle,
         start: Point,
         point: Point,
@@ -62,8 +65,9 @@ pub(super) enum Interaction {
         current: ResizeSnapshot,
         equal_side_anchor: Option<usize>,
     },
-    EditingText(TextEdit),
+    EditingText(std::sync::Arc<str>, TextEdit),
     Erasing {
+        tool: crate::tool::ToolId,
         previous: Point,
         size: f32,
     },
@@ -71,7 +75,6 @@ pub(super) enum Interaction {
 
 impl Editor {
     pub(in crate::draw) fn modifiers_changed(&mut self, modifiers: Modifiers) -> bool {
-        let text_size_range = self.text_size_range();
         match &mut self.interaction {
             Some(Interaction::Drawing {
                 modifiers: current, ..
@@ -80,6 +83,7 @@ impl Editor {
                 true
             }
             Some(Interaction::Resizing {
+                text_size_range,
                 handle,
                 start,
                 point,
@@ -95,7 +99,7 @@ impl Editor {
                     *point - *start,
                     modifiers,
                     equal_side_anchor,
-                    text_size_range,
+                    *text_size_range,
                     *properties,
                 );
                 if resized == *current {
@@ -122,10 +126,13 @@ impl Editor {
             return edit.click(point, 1, modifiers.shift);
         }
         let previous = self.finish_interaction();
-        let effective_tool = tool_override.effective_tool(self.tool);
-        if effective_tool == Tool::Eraser {
-            let size = self.style_for(Tool::Eraser).size;
+        let effective_id = self.effective_tool(tool_override);
+        let effective_tool = self.tools[effective_id.0].primitive;
+        let effective_style = self.tool_style(effective_id);
+        if effective_tool == Primitive::Eraser {
+            let size = effective_style.size;
             self.interaction = Some(Interaction::Erasing {
+                tool: effective_id,
                 previous: point,
                 size,
             });
@@ -133,47 +140,61 @@ impl Editor {
         }
 
         match effective_tool {
-            Tool::Pen => {
-                self.interaction = Some(Interaction::Freehand(freehand::LiveStroke::new(
-                    point,
-                    self.style_for(effective_tool),
-                    self.presentation,
-                )));
+            Primitive::Pen => {
+                self.interaction = Some(Interaction::Freehand(
+                    effective_id,
+                    freehand::LiveStroke::new(point, effective_style, self.presentation),
+                ));
                 true
             }
-            Tool::Line | Tool::Arrow | Tool::Triangle | Tool::Rectangle | Tool::Ellipse => {
+            Primitive::Line
+            | Primitive::Arrow
+            | Primitive::Triangle
+            | Primitive::Rectangle
+            | Primitive::Ellipse => {
                 self.interaction = Some(Interaction::Drawing {
+                    preset: effective_id,
                     tool: effective_tool,
-                    style: self.style,
+                    style: effective_style,
                     start: point,
                     current: point,
                     modifiers,
                 });
                 true
             }
-            Tool::Text => {
-                let origin = Point::new(point.x, point.y - text_line_height(self.style.size) * 0.5);
+            Primitive::Text => {
+                let origin = Point::new(
+                    point.x,
+                    point.y - text_line_height(effective_style.size) * 0.5,
+                );
                 let edit = self.make_text_edit(
                     None,
                     origin,
                     String::new(),
-                    self.style,
+                    effective_style,
                     [1.0; 2],
-                    self.text_font.clone(),
+                    self.tool_font(effective_id),
                 );
-                self.interaction = Some(Interaction::EditingText(edit));
+                self.interaction = Some(Interaction::EditingText(
+                    self.tools[effective_id.0].id.clone(),
+                    edit,
+                ));
                 true
             }
-            Tool::Select => {
+            Primitive::Select => {
                 if !modifiers.ctrl
                     && self.selected.len() == 1
                     && let Some(id) = self.selected.first().copied()
                     && let Some(handle) = self.hit_handle(id, point)
                     && let Some(element) = self.element(id)
                 {
+                    let text_size_range = self.text_size_range(element);
+                    let preset = element.preset.clone();
                     let original = ResizeSnapshot::from(element);
                     self.interaction = Some(Interaction::Resizing {
                         id,
+                        preset,
+                        text_size_range,
                         handle,
                         start: point,
                         point,
@@ -216,14 +237,13 @@ impl Editor {
                 });
                 true
             }
-            Tool::Eraser => unreachable!(),
+            Primitive::Eraser => unreachable!(),
         }
     }
 
     pub(in crate::draw) fn pointer_motion(&mut self, point: Point, modifiers: Modifiers) -> bool {
-        let text_size_range = self.text_size_range();
         match &mut self.interaction {
-            Some(Interaction::EditingText(edit)) => edit.drag(point),
+            Some(Interaction::EditingText(_, edit)) => edit.drag(point),
             Some(Interaction::Drawing {
                 current,
                 modifiers: current_modifiers,
@@ -238,6 +258,7 @@ impl Editor {
                 true
             }
             Some(Interaction::Resizing {
+                text_size_range,
                 handle,
                 start,
                 point: current_point,
@@ -253,23 +274,23 @@ impl Editor {
                     point - *start,
                     modifiers,
                     equal_side_anchor,
-                    text_size_range,
+                    *text_size_range,
                     *properties,
                 );
                 *current_point = point;
                 true
             }
-            Some(Interaction::Erasing { previous, size }) => {
+            Some(Interaction::Erasing { previous, size, .. }) => {
                 let start = std::mem::replace(previous, point);
                 let size = *size;
                 self.erase_between(start, point, size)
             }
-            Some(Interaction::Freehand(_)) | None => false,
+            Some(Interaction::Freehand(..)) | None => false,
         }
     }
 
     pub(in crate::draw) fn pen_motion(&mut self, motion: PenMotion, modifiers: Modifiers) -> bool {
-        let Some(Interaction::Freehand(stroke)) = &mut self.interaction else {
+        let Some(Interaction::Freehand(_, stroke)) = &mut self.interaction else {
             return false;
         };
         stroke.push_motion(motion, modifiers.shift)
@@ -280,7 +301,7 @@ impl Editor {
         point: Point,
         modifiers: Modifiers,
     ) -> Option<Point> {
-        let Some(Interaction::Freehand(stroke)) = &self.interaction else {
+        let Some(Interaction::Freehand(_, stroke)) = &self.interaction else {
             return None;
         };
         Some(stroke.release_tip(point, modifiers.shift))
@@ -290,22 +311,35 @@ impl Editor {
         if let Some(edit) = self.text_edit_mut() {
             return edit.end_drag(Some(point));
         }
-        let text_size_range = self.text_size_range();
         match self.interaction.take() {
-            Some(Interaction::Freehand(stroke)) => {
+            Some(Interaction::Freehand(preset, stroke)) => {
                 let (kind, style, geometry) = stroke.finish(point, modifiers.shift);
-                self.insert_element(Element::with_geometry(self.next_id, kind, style, geometry));
+                self.insert_element(Element::with_geometry(
+                    self.next_id,
+                    self.tools[preset.0].id.clone(),
+                    kind,
+                    style,
+                    geometry,
+                ));
                 true
             }
             Some(Interaction::Drawing {
-                tool, style, start, ..
+                preset,
+                tool,
+                style,
+                start,
+                ..
             }) => {
                 // Without a drag, only rectangles and filled ellipses leave a visible dot.
                 if point != start
-                    || tool == Tool::Rectangle
-                    || (tool == Tool::Ellipse && style.filled)
+                    || tool == Primitive::Rectangle
+                    || (tool == Primitive::Ellipse && style.filled)
                 {
-                    self.insert_kind(drawing_kind(tool, start, point, modifiers), style);
+                    self.insert_kind(
+                        self.tools[preset.0].id.clone(),
+                        drawing_kind(tool, start, point, modifiers),
+                        style,
+                    );
                 }
                 true
             }
@@ -326,6 +360,7 @@ impl Editor {
             }
             Some(Interaction::Resizing {
                 id,
+                text_size_range,
                 handle,
                 start,
                 original,
@@ -354,7 +389,7 @@ impl Editor {
                 }
                 true
             }
-            Some(Interaction::Erasing { previous, size }) => {
+            Some(Interaction::Erasing { previous, size, .. }) => {
                 self.erase_between(previous, point, size)
             }
             interaction => {
@@ -369,39 +404,28 @@ impl Editor {
         selection::hit_handle(&element.kind, element.style, element.bounds, point)
     }
 
-    fn text_size_range(&self) -> [f32; 2] {
-        let range = self
-            .size_ranges
-            .get(&Tool::Text)
-            .expect("text has a size range");
+    fn text_size_range(&self, element: &Element) -> [f32; 2] {
+        let id = super::ToolDefinition::preset(&self.tools, &element.preset, Primitive::Text);
+        let range = self.tools[id.0].size_range;
         [range.min(), range.max()]
     }
 
     pub(in crate::draw) fn cursor(&self, point: Point, tool_override: ToolOverride) -> Cursor {
-        let effective_tool = tool_override.effective_tool(self.tool);
-        let tool = if tool_override != ToolOverride::None && effective_tool == Tool::Eraser {
-            Tool::Eraser
-        } else {
-            match &self.interaction {
-                Some(Interaction::Freehand(_)) => Tool::Pen,
-                Some(Interaction::Drawing { tool, .. }) => *tool,
-                Some(Interaction::Moving { .. } | Interaction::Resizing { .. }) => Tool::Select,
-                Some(Interaction::EditingText(_)) => Tool::Text,
-                Some(Interaction::Erasing { .. }) => Tool::Eraser,
-                None => effective_tool,
-            }
-        };
+        let effective_id = self.effective_tool(tool_override);
         let cursor = self.default_cursor(point, tool_override);
-        let visible = self
-            .tool_cursor_visibility
-            .get(&tool)
-            .copied()
-            .or(self.cursor_visibility)
-            .unwrap_or(!matches!(tool, Tool::Pen | Tool::Arrow | Tool::Eraser));
+        let cursor_tool = match &self.interaction {
+            Some(
+                Interaction::Freehand(tool, _)
+                | Interaction::Drawing { preset: tool, .. }
+                | Interaction::Erasing { tool, .. },
+            ) => *tool,
+            _ => effective_id,
+        };
+        let visible = self.tools[cursor_tool.0].cursor;
         if !visible
             && matches!(
                 self.interaction,
-                Some(Interaction::Freehand(_) | Interaction::Drawing { .. })
+                Some(Interaction::Freehand(..) | Interaction::Drawing { .. })
             )
         {
             return Cursor::Hidden;
@@ -415,41 +439,48 @@ impl Editor {
     }
 
     fn default_cursor(&self, point: Point, tool_override: ToolOverride) -> Cursor {
-        let effective_tool = tool_override.effective_tool(self.tool);
-        if tool_override != ToolOverride::None && effective_tool == Tool::Eraser {
-            return self.tool_cursor(effective_tool);
+        if let Some(Interaction::Erasing { tool, .. }) = &self.interaction {
+            return self.tool_cursor(*tool);
+        }
+        let effective_id = self.effective_tool(tool_override);
+        let effective_tool = self.tools[effective_id.0].primitive;
+        if tool_override != ToolOverride::None && effective_tool == Primitive::Eraser {
+            return self.tool_cursor(effective_id);
         }
         match &self.interaction {
             Some(Interaction::Resizing { handle, .. }) => {
                 return Cursor::Shape(selection::cursor(*handle));
             }
-            Some(Interaction::Freehand(_)) => return Cursor::Hidden,
+            Some(Interaction::Freehand(..)) => return Cursor::Hidden,
             Some(Interaction::Drawing { .. }) => {
                 return Cursor::Shape(selection::CursorHint::Crosshair);
             }
             Some(Interaction::Moving { .. }) => {
                 return Cursor::Shape(selection::CursorHint::Move);
             }
-            Some(Interaction::EditingText(_)) => {
+            Some(Interaction::EditingText(..)) => {
                 return Cursor::Shape(selection::CursorHint::Text);
             }
-            Some(Interaction::Erasing { .. }) => return self.tool_cursor(Tool::Eraser),
             _ => {}
         }
         if self.picker.is_some() {
             return Cursor::Shape(selection::CursorHint::Crosshair);
         }
-        if effective_tool == Tool::Text {
+        if effective_tool == Primitive::Text {
             return Cursor::Shape(selection::CursorHint::Text);
         }
         if matches!(
             effective_tool,
-            Tool::Line | Tool::Arrow | Tool::Triangle | Tool::Rectangle | Tool::Ellipse
+            Primitive::Line
+                | Primitive::Arrow
+                | Primitive::Triangle
+                | Primitive::Rectangle
+                | Primitive::Ellipse
         ) {
             return Cursor::Shape(selection::CursorHint::Crosshair);
         }
-        if effective_tool != Tool::Select {
-            return self.tool_cursor(effective_tool);
+        if effective_tool != Primitive::Select {
+            return self.tool_cursor(effective_id);
         }
         if self.selected.len() != 1 {
             return Cursor::Shape(selection::CursorHint::Crosshair);
@@ -467,9 +498,10 @@ impl Editor {
         })
     }
 
-    fn tool_cursor(&self, tool: Tool) -> Cursor {
-        let mut style = self.style_for(tool);
-        if tool == Tool::Eraser
+    fn tool_cursor(&self, id: crate::tool::ToolId) -> Cursor {
+        let tool = self.tools[id.0].primitive;
+        let mut style = self.tool_style(id);
+        if tool == Primitive::Eraser
             && let Some(Interaction::Erasing { size, .. }) = &self.interaction
         {
             style.size = *size;

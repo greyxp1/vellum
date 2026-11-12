@@ -1,8 +1,9 @@
 use std::ops::Range;
 
 use super::scene::Point;
+use crate::Rgba;
 use crate::render::{Geometry, LocalGeometry, contrasting_color};
-use crate::tool::Tool;
+use crate::tool::Icon;
 use kurbo::{Arc, BezPath, Circle, Shape};
 use peniko::Fill;
 
@@ -24,7 +25,7 @@ const ACTIVE_COLOR: [f32; 4] = rgb_to_f32(57, 100, 136, 0.95);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Choice {
     Color(usize),
-    Tool(Tool),
+    Tool(usize),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -33,27 +34,19 @@ pub(super) struct Picker {
     pub hovered: Option<Choice>,
 }
 
-const TOOL_CHOICES: [Tool; 8] = [
-    Tool::Pen,
-    Tool::Line,
-    Tool::Arrow,
-    Tool::Triangle,
-    Tool::Rectangle,
-    Tool::Ellipse,
-    Tool::Select,
-    Tool::Text,
-];
-
-pub(super) fn choice(center: Point, point: Point, color_count: usize) -> Option<Choice> {
+pub(super) fn choice(
+    center: Point,
+    point: Point,
+    color_count: usize,
+    tool_count: usize,
+) -> Option<Choice> {
     let distance = (point - center).length();
     if distance < CENTER_RADIUS {
         None
     } else if distance < (COLOR_OUTER_RADIUS + TOOL_INNER_RADIUS) * 0.5 {
         Some(Choice::Color(radial_index(center, point, color_count)))
     } else {
-        Some(Choice::Tool(
-            TOOL_CHOICES[radial_index(center, point, TOOL_CHOICES.len())],
-        ))
+        Some(Choice::Tool(radial_index(center, point, tool_count)))
     }
 }
 
@@ -74,27 +67,23 @@ fn radial_point(center: Point, radius: f32, angle: f32) -> kurbo::Point {
     )
 }
 
-fn push_disc(output: &mut Geometry, center: Point, radius: f32, color: [f32; 4]) {
+fn push_color_preview(output: &mut Geometry, center: Point, color: Rgba, presentation: bool) {
+    let preview_radius = CENTER_RADIUS - WHEEL_BORDER_WIDTH;
     output.push_fill(
         Circle::new(
             (f64::from(center.x), f64::from(center.y)),
-            f64::from(radius),
+            f64::from(CENTER_RADIUS),
         )
         .to_path(0.02),
         Fill::NonZero,
-        color,
+        GAP_LINE_COLOR,
     );
-}
-
-fn push_color_preview(output: &mut Geometry, center: Point, color: [f32; 4], presentation: bool) {
-    let preview_radius = CENTER_RADIUS - WHEEL_BORDER_WIDTH;
-    push_disc(output, center, CENTER_RADIUS, GAP_LINE_COLOR);
-    push_disc(
-        output,
-        center,
-        preview_radius - PREVIEW_BORDER_WIDTH,
-        opaque(color),
-    );
+    let inner = Circle::new(
+        (f64::from(center.x), f64::from(center.y)),
+        f64::from(preview_radius - PREVIEW_BORDER_WIDTH),
+    )
+    .to_path(0.02);
+    output.push_fill(inner, Fill::NonZero, opaque(color));
     if !presentation {
         return;
     }
@@ -112,15 +101,7 @@ fn push_color_preview(output: &mut Geometry, center: Point, color: [f32; 4], pre
     );
 }
 
-fn push_wedge(
-    output: &mut Geometry,
-    center: Point,
-    inner: f32,
-    outer: f32,
-    angles: Range<f32>,
-    edge_inset: f32,
-    color: [f32; 4],
-) {
+fn wedge(center: Point, inner: f32, outer: f32, angles: Range<f32>, edge_inset: f32) -> BezPath {
     let inner_inset = (edge_inset / inner).asin();
     let outer_inset = (edge_inset / outer).asin();
     let inner_start = angles.start + inner_inset;
@@ -151,35 +132,23 @@ fn push_wedge(
         .append_iter(0.02),
     );
     path.close_path();
-    output.push_fill(path, Fill::NonZero, color);
+    path
 }
 
-fn push_palette(
-    output: &mut Geometry,
-    center: Point,
-    hovered: Option<Choice>,
-    palette: &[[f32; 4]],
-) {
+fn push_palette(output: &mut Geometry, center: Point, hovered: Option<Choice>, palette: &[Rgba]) {
     let step = std::f32::consts::TAU / palette.len() as f32;
     for (index, &color) in palette.iter().enumerate() {
         let is_hovered = hovered == Some(Choice::Color(index));
         let start = index as f32 * step - step * 0.5;
         let end = start + step;
-        push_wedge(
-            output,
+        let border = wedge(
             center,
             CENTER_RADIUS - WHEEL_BORDER_WIDTH,
             COLOR_OUTER_RADIUS + WHEEL_BORDER_WIDTH,
             start..end,
             0.0,
-            if is_hovered {
-                HOVER_COLOR
-            } else {
-                GAP_LINE_COLOR
-            },
         );
-        push_wedge(
-            output,
+        let swatch = wedge(
             center,
             CENTER_RADIUS,
             COLOR_OUTER_RADIUS,
@@ -189,17 +158,26 @@ fn push_palette(
             } else {
                 SEPARATOR_HALF_WIDTH
             },
-            opaque(color),
         );
+        output.push_fill(
+            border,
+            Fill::NonZero,
+            if is_hovered {
+                HOVER_COLOR
+            } else {
+                GAP_LINE_COLOR
+            },
+        );
+        output.push_fill(swatch, Fill::NonZero, opaque(color));
     }
 }
 
 pub(super) fn picker_geometry(
     picker: Picker,
-    active: Tool,
-    current_color: [f32; 4],
-    tool_fill: impl Fn(Tool) -> bool,
-    palette: &[[f32; 4]],
+    active: Option<usize>,
+    current_color: Rgba,
+    tools: &[(Icon, bool)],
+    palette: &[Rgba],
     viewport: kurbo::Rect,
     presentation: bool,
 ) -> Option<LocalGeometry> {
@@ -215,32 +193,36 @@ pub(super) fn picker_geometry(
     if bounds.intersect(viewport.inflate(1.0, 1.0)).area() == 0.0 {
         return None;
     }
-    let mut output = Geometry::default();
     let local_center = Point::new(center.x - origin[0], center.y - origin[1]);
+    let mut output = Geometry::default();
     push_color_preview(&mut output, local_center, current_color, presentation);
-    let step = std::f32::consts::TAU / TOOL_CHOICES.len() as f32;
-    for (index, tool) in TOOL_CHOICES.iter().copied().enumerate() {
-        let is_hovered = hovered == Some(Choice::Tool(tool));
-        let is_active = tool == active;
+    let step = std::f32::consts::TAU / tools.len() as f32;
+    for index in 0..tools.len() {
+        let is_hovered = hovered == Some(Choice::Tool(index));
+        let is_active = Some(index) == active;
         let outer = TOOL_OUTER_RADIUS + if is_hovered { HOVER_EXTENSION } else { 0.0 };
         let start = index as f32 * step - step * 0.5;
         let end = start + step;
-        push_wedge(
-            &mut output,
-            local_center,
-            TOOL_INNER_RADIUS - WHEEL_BORDER_WIDTH,
-            outer + WHEEL_BORDER_WIDTH,
-            start..end,
-            0.0,
+        output.push_fill(
+            wedge(
+                local_center,
+                TOOL_INNER_RADIUS - WHEEL_BORDER_WIDTH,
+                outer + WHEEL_BORDER_WIDTH,
+                start..end,
+                0.0,
+            ),
+            Fill::NonZero,
             GAP_LINE_COLOR,
         );
-        push_wedge(
-            &mut output,
-            local_center,
-            TOOL_INNER_RADIUS,
-            outer,
-            start..end,
-            SEPARATOR_HALF_WIDTH,
+        output.push_fill(
+            wedge(
+                local_center,
+                TOOL_INNER_RADIUS,
+                outer,
+                start..end,
+                SEPARATOR_HALF_WIDTH,
+            ),
+            Fill::NonZero,
             if is_hovered {
                 HOVER_COLOR
             } else if is_active {
@@ -251,13 +233,12 @@ pub(super) fn picker_geometry(
         );
     }
     push_palette(&mut output, local_center, hovered, palette);
-    for (index, tool) in TOOL_CHOICES.iter().copied().enumerate() {
+    for (index, (tool, filled)) in tools.iter().copied().enumerate() {
         let (sin, cos) = (index as f32 * step).sin_cos();
         let tool_icon_center = Point::new(
             local_center.x + TOOL_ICON_RADIUS * cos,
             local_center.y + TOOL_ICON_RADIUS * sin,
         );
-        let filled = tool.supports_fill() && tool_fill(tool);
         push_tool_icon(&mut output, tool_icon_center, tool, filled);
     }
     Some(LocalGeometry::new(output, origin, [PICKER_LAYER_SIZE; 2]))
@@ -271,7 +252,7 @@ fn opaque([red, green, blue, _]: [f32; 4]) -> [f32; 4] {
     [red, green, blue, 1.0]
 }
 
-fn push_tool_icon(output: &mut Geometry, center: Point, tool: Tool, filled: bool) {
+fn push_tool_icon(output: &mut Geometry, center: Point, tool: Icon, filled: bool) {
     const SCALE: f32 = 0.82;
     let p = |x: f32, y: f32| {
         (
@@ -281,7 +262,7 @@ fn push_tool_icon(output: &mut Geometry, center: Point, tool: Tool, filled: bool
     };
     let mut path = BezPath::new();
     match tool {
-        Tool::Pen => {
+        Icon::Pen => {
             path.move_to(p(13.0, 21.0));
             path.line_to(p(21.0, 21.0));
             path.move_to(p(3.8, 16.2));
@@ -291,24 +272,24 @@ fn push_tool_icon(output: &mut Geometry, center: Point, tool: Tool, filled: bool
             path.line_to(p(2.5, 21.5));
             path.close_path();
         }
-        Tool::Line => {
+        Icon::Line => {
             path.move_to(p(5.0, 12.0));
             path.line_to(p(19.0, 12.0));
         }
-        Tool::Arrow => {
+        Icon::Arrow => {
             path.move_to(p(7.0, 7.0));
             path.line_to(p(17.0, 7.0));
             path.line_to(p(17.0, 17.0));
             path.move_to(p(7.0, 17.0));
             path.line_to(p(17.0, 7.0));
         }
-        Tool::Triangle => {
+        Icon::Triangle => {
             path.move_to(p(12.0, 3.0));
             path.line_to(p(21.0, 20.0));
             path.line_to(p(3.0, 20.0));
             path.close_path();
         }
-        Tool::Rectangle => {
+        Icon::Rectangle => {
             path.move_to(p(5.0, 3.0));
             path.line_to(p(19.0, 3.0));
             path.line_to(p(21.0, 5.0));
@@ -319,10 +300,10 @@ fn push_tool_icon(output: &mut Geometry, center: Point, tool: Tool, filled: bool
             path.line_to(p(3.0, 5.0));
             path.close_path();
         }
-        Tool::Ellipse => {
+        Icon::Ellipse => {
             path = Circle::new(p(12.0, 12.0), f64::from(10.0 * SCALE)).to_path(0.02);
         }
-        Tool::Text => {
+        Icon::Text => {
             path.move_to(p(12.0, 4.0));
             path.line_to(p(12.0, 20.0));
             path.move_to(p(4.0, 7.0));
@@ -332,14 +313,23 @@ fn push_tool_icon(output: &mut Geometry, center: Point, tool: Tool, filled: bool
             path.move_to(p(9.0, 20.0));
             path.line_to(p(15.0, 20.0));
         }
-        Tool::Select => {
+        Icon::Select => {
             path.move_to(p(4.0, 4.7));
             path.line_to(p(20.7, 11.0));
             path.line_to(p(14.5, 13.0));
             path.line_to(p(12.0, 20.7));
             path.close_path();
         }
-        Tool::Eraser => unreachable!("eraser is not a radial choice"),
+        Icon::Eraser => {
+            path.move_to(p(3.0, 15.0));
+            path.line_to(p(14.0, 4.0));
+            path.line_to(p(21.0, 11.0));
+            path.line_to(p(12.0, 20.0));
+            path.line_to(p(8.0, 20.0));
+            path.close_path();
+            path.move_to(p(8.0, 10.0));
+            path.line_to(p(15.0, 17.0));
+        }
     }
     let icon_color = [0.96, 0.97, 1.0, 1.0];
     if filled {

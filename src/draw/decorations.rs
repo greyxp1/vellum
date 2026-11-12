@@ -3,22 +3,22 @@ use peniko::Fill;
 use super::{Point, PreeditHint, ToolCursor, scene};
 use crate::render::Geometry;
 use crate::text::text_line_height;
-use crate::tool::Tool;
+use crate::tool::Primitive;
 
 pub(super) fn tool_cursor_geometry(point: Point, cursor: ToolCursor) -> Geometry {
     use kurbo::Shape;
 
     let radius = f64::from(match cursor.tool {
-        Tool::Pen | Tool::Eraser => cursor.size * 0.5,
+        Primitive::Pen | Primitive::Eraser => cursor.size * 0.5,
         _ => unreachable!("only pen and eraser have tool cursors"),
     });
-    let point = if cursor.tool == Tool::Pen {
+    let point = if cursor.tool == Primitive::Pen {
         scene::pixel_aligned_point(point, cursor.size)
     } else {
         point
     };
     let center = kurbo::Point::new(f64::from(point.x), f64::from(point.y));
-    if cursor.tool == Tool::Eraser {
+    if cursor.tool == Primitive::Eraser {
         const OUTLINE_WIDTH: f64 = 0.75;
         let mut geometry = Geometry::fill(
             kurbo::Circle::new(center, radius + OUTLINE_WIDTH).to_path(0.1),

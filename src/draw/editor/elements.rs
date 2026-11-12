@@ -67,7 +67,7 @@ impl Editor {
                 .contains(point)
                 .then(|| edit.click(point, clicks, false));
         }
-        if self.tool != crate::tool::Tool::Select {
+        if self.primitive() != crate::tool::Primitive::Select {
             return None;
         }
         let [id] = self.selected.as_slice() else {
@@ -126,7 +126,7 @@ impl Editor {
         if self.document.elements.is_empty() {
             return cancelled;
         }
-        let changed = cancelled | self.switch_tool(crate::tool::Tool::Select);
+        let changed = cancelled | self.switch_tool(crate::tool::Primitive::Select);
         let selected = self
             .document
             .elements
@@ -197,8 +197,13 @@ impl Editor {
         true
     }
 
-    pub(super) fn insert_kind(&mut self, kind: ElementKind, style: Style) {
-        self.insert_element(Element::new(self.next_id, kind, style));
+    pub(super) fn insert_kind(
+        &mut self,
+        preset: std::sync::Arc<str>,
+        kind: ElementKind,
+        style: Style,
+    ) {
+        self.insert_element(Element::new(self.next_id, preset, kind, style));
     }
 
     pub(super) fn insert_element(&mut self, mut element: Element) {
@@ -225,9 +230,9 @@ impl Editor {
     }
 
     pub(super) fn commit_text(&mut self) -> bool {
-        let Some(Interaction::EditingText(edit)) = self
+        let Some(Interaction::EditingText(preset, edit)) = self
             .interaction
-            .take_if(|interaction| matches!(interaction, Interaction::EditingText(_)))
+            .take_if(|interaction| matches!(interaction, Interaction::EditingText(..)))
         else {
             return false;
         };
@@ -267,7 +272,7 @@ impl Editor {
                 .history
                 .record(HistoryEntry::Update(vec![(id, kind, style)]));
         } else {
-            self.insert_kind(kind, style);
+            self.insert_kind(preset, kind, style);
         }
         true
     }
@@ -284,6 +289,7 @@ impl Editor {
         else {
             return false;
         };
+        let preset = element.preset.clone();
         let edit = self.make_text_edit(
             Some(id),
             *origin,
@@ -294,7 +300,7 @@ impl Editor {
         );
         // Multi-click editing skips cancel_interaction, which normally ends merged undo steps.
         self.document.history.seal();
-        self.interaction = Some(Interaction::EditingText(edit));
+        self.interaction = Some(Interaction::EditingText(preset, edit));
         true
     }
 

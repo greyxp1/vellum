@@ -3,12 +3,11 @@ use std::time::Instant;
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use wayland_client::backend::WaylandError;
 
-use crate::cli::Command;
+use crate::cli::{Command, MAX_COMMAND_SIZE};
 use crate::config::{Config, Settings};
 use crate::ipc::ControlSocket;
 use crate::state;
 
-const MAX_SOCKET_MESSAGE: usize = 4096;
 // Yield to drawing, input and the other endpoint even when a queue stays full.
 const MAX_SOCKET_BATCH: usize = 32;
 
@@ -113,7 +112,7 @@ pub(crate) fn run(mut settings: Settings, mut config: Config) -> Result<(), Stri
             if !ready {
                 continue;
             }
-            let mut message = [0; MAX_SOCKET_MESSAGE + 1];
+            let mut message = [0; MAX_COMMAND_SIZE + 1];
             for _ in 0..MAX_SOCKET_BATCH {
                 let (size, sender) = match ControlSocket::recv(socket, &mut message) {
                     Ok(Some(message)) => message,
@@ -121,10 +120,6 @@ pub(crate) fn run(mut settings: Settings, mut config: Config) -> Result<(), Stri
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
                     Err(error) => return Err(format!("socket read failed: {error}")),
                 };
-                if size > MAX_SOCKET_MESSAGE {
-                    log::warn!("socket message exceeded {MAX_SOCKET_MESSAGE} bytes");
-                    continue;
-                }
                 let reply = |response: &[u8]| {
                     if let Some(sender) = &sender
                         && let Err(error) = rustix::net::sendto(
@@ -137,6 +132,11 @@ pub(crate) fn run(mut settings: Settings, mut config: Config) -> Result<(), Stri
                         log::warn!("could not send response: {error}");
                     }
                 };
+                if size > MAX_COMMAND_SIZE {
+                    log::warn!("socket message exceeded {MAX_COMMAND_SIZE} bytes");
+                    reply(b"error:command is too large");
+                    continue;
+                }
                 let command = match Command::deserialize(&message[..size]) {
                     Ok(command) => command,
                     Err(error) => {
@@ -168,12 +168,10 @@ pub(crate) fn run(mut settings: Settings, mut config: Config) -> Result<(), Stri
                     Command::Annotations { command } => state.annotations(command),
                     Command::Status {
                         field, tool, json, ..
-                    } => {
-                        let response = state
-                            .status_reply(field, tool, json)
-                            .map_err(|error| format!("could not format status: {error}"))?;
-                        reply(response.as_bytes());
-                    }
+                    } => match state.status_reply(field, tool, json) {
+                        Ok(response) => reply(response.as_bytes()),
+                        Err(error) => reply(format!("error:{error}").as_bytes()),
+                    },
                     Command::Exit => return Ok(()),
                 }
             }

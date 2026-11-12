@@ -60,7 +60,7 @@ pub(crate) fn query(request: &Command) -> Result<Option<String>, String> {
         return Err(format!("could not send command: {error}"));
     }
 
-    let mut response = [0; 4096];
+    let mut response = [0; crate::cli::MAX_COMMAND_SIZE];
     let size = match socket.recv(&mut response) {
         Ok(size) => size,
         Err(error) if error.kind() == ErrorKind::ConnectionRefused => {
@@ -71,7 +71,10 @@ pub(crate) fn query(request: &Command) -> Result<Option<String>, String> {
     if size == response.len() {
         return Err("overlay response is too large".into());
     }
-    String::from_utf8(response[..size].to_vec())
-        .map(Some)
-        .map_err(|_| "invalid overlay response".into())
+    let response =
+        String::from_utf8(response[..size].to_vec()).map_err(|_| "invalid overlay response")?;
+    if let Some(error) = response.strip_prefix("error:") {
+        return Err(error.into());
+    }
+    Ok(Some(response))
 }

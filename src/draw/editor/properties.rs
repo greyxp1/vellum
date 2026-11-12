@@ -1,8 +1,9 @@
 use super::{Editor, HistoryEntry, Interaction};
+use crate::Rgba;
 use crate::cli::ToolSetting;
-use crate::config::{MIN_OPACITY, SizeRange};
+use crate::config::{MIN_OPACITY, ToolDefinition, ToolProperties};
 use crate::draw::scene::{ElementKind, Style, tool_for};
-use crate::tool::Tool;
+use crate::tool::{Primitive, ToolId};
 
 #[derive(Default)]
 pub(in crate::draw) struct Adjustment {
@@ -86,11 +87,19 @@ pub(in crate::draw) enum Property {
 }
 
 impl Property {
-    fn supported(self, tool: Tool) -> bool {
+    fn supported(self, tool: Primitive) -> bool {
         match self {
-            Self::Size => tool != Tool::Select,
+            Self::Size => tool != Primitive::Select,
             Self::Opacity => tool.supports_opacity(),
             Self::Roundness => tool.supports_roundness(),
+        }
+    }
+
+    fn style_value(self, style: &mut Style) -> &mut f32 {
+        match self {
+            Self::Size => &mut style.size,
+            Self::Opacity => &mut style.color[3],
+            Self::Roundness => &mut style.roundness,
         }
     }
 
@@ -102,148 +111,90 @@ impl Property {
         }
     }
 
-    fn style_value(self, style: &mut Style) -> &mut f32 {
-        match self {
-            Self::Size => &mut style.size,
-            Self::Opacity => &mut style.color[3],
-            Self::Roundness => &mut style.roundness,
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-pub(super) struct ToolProperties {
-    pub size: f32,
-    pub opacity: f32,
-    pub roundness: f32,
-    pub filled: bool,
-}
-
-#[derive(Clone, Copy)]
-pub(super) struct ToolPropertySet([ToolProperties; Tool::SIZED.len()]);
-
-impl ToolPropertySet {
-    pub(super) fn reload(
-        &mut self,
-        previous: &Self,
-        next: &Self,
-        ranges: &std::collections::BTreeMap<Tool, SizeRange>,
-    ) {
-        for (index, tool) in Tool::SIZED.into_iter().enumerate() {
-            let properties = &mut self.0[index];
-            let previous = previous.0[index];
-            let next = next.0[index];
-            if previous.size != next.size {
-                properties.size = next.size;
-            }
-            properties.size = ranges[&tool].clamp(properties.size);
-            if previous.opacity != next.opacity {
-                properties.opacity = next.opacity;
-            }
-            if previous.roundness != next.roundness {
-                properties.roundness = next.roundness;
-            }
-            if previous.filled != next.filled {
-                properties.filled = next.filled;
-            }
-        }
-    }
-
-    pub(super) fn new(
-        stroke_size: f32,
-        default_opacity: f32,
-        default_fill_shapes: bool,
-        defaults: &crate::config::ToolDefaults,
-        size_ranges: &std::collections::BTreeMap<Tool, SizeRange>,
-    ) -> Self {
-        let fallback = crate::config::PropertyDefaults::default();
-        let properties = |tool: Tool| {
-            let configured = defaults.get(&tool).unwrap_or(&fallback);
-            let size_range = size_ranges
-                .get(&tool)
-                .expect("adjustable tools have size ranges");
-            let size = configured.size.unwrap_or_else(|| {
-                tool.initial_size(stroke_size)
-                    .expect("adjustable tools have sizes")
-            });
-            ToolProperties {
-                size: size_range.clamp(size),
-                opacity: configured.opacity.unwrap_or(default_opacity),
-                roundness: configured
-                    .roundness
-                    .unwrap_or_else(|| tool.initial_roundness()),
-                filled: if tool == Tool::Text {
-                    configured.background.unwrap_or(false)
-                } else {
-                    configured
-                        .filled
-                        .unwrap_or(default_fill_shapes && tool.supports_fill())
-                },
-            }
+    fn adjust(self, tool: &ToolDefinition, value: f32, steps: f32) -> (StepAdjustment, String) {
+        let mut properties = tool.properties;
+        let default = *self.tool_value(&mut properties);
+        let (min, max, increment, stops) = match self {
+            Self::Size => (
+                tool.size_range.min(),
+                tool.size_range.max(),
+                tool.steps.size,
+                &*tool.stops.size,
+            ),
+            Self::Opacity => (MIN_OPACITY, 1.0, tool.steps.opacity, &*tool.stops.opacity),
+            Self::Roundness => (0.0, 1.0, tool.steps.roundness, &*tool.stops.roundness),
         };
-        Self(Tool::SIZED.map(properties))
+        let adjustment = stepped_with_stops(value, default, steps, increment, min, max, stops);
+        let label = match self {
+            Self::Size => size_label(adjustment.value, default),
+            Self::Opacity | Self::Roundness => percent_label(adjustment.value, default),
+        };
+        (adjustment, label)
     }
+}
 
-    pub(super) fn properties(&self, tool: Tool) -> Option<&ToolProperties> {
-        self.0
-            .get(Tool::SIZED.iter().position(|item| *item == tool)?)
-    }
-
-    fn properties_mut(&mut self, tool: Tool) -> Option<&mut ToolProperties> {
-        self.0
-            .get_mut(Tool::SIZED.iter().position(|item| *item == tool)?)
+fn recolor(color: &mut Rgba, [r, g, b, alpha]: Rgba) {
+    color[..3].copy_from_slice(&[r, g, b]);
+    if alpha < 1.0 {
+        color[3] = alpha;
     }
 }
 
 impl Editor {
     pub(in crate::draw) fn set_tool_setting(
         &mut self,
-        target: Option<Tool>,
+        target: Option<&str>,
         setting: ToolSetting,
     ) -> Result<bool, String> {
-        let tool = target.unwrap_or(self.tool);
+        let id = target
+            .map(|name| self.resolve_tool(name))
+            .transpose()?
+            .unwrap_or_else(|| {
+                if matches!(setting, ToolSetting::Color { .. }) {
+                    self.color_tool()
+                } else {
+                    self.tool
+                }
+            });
+        let definition = &self.tools[id.0];
+        let primitive = definition.primitive;
         let supported = match setting {
-            ToolSetting::Size { .. } => Property::Size.supported(tool),
-            ToolSetting::Opacity { .. } | ToolSetting::Color { .. } => {
-                Property::Opacity.supported(tool)
-            }
-            ToolSetting::Roundness { .. } => Property::Roundness.supported(tool),
-            ToolSetting::Filled { .. } => tool.supports_fill() || tool == Tool::Text,
+            ToolSetting::Size { .. } => Property::Size.supported(primitive),
+            ToolSetting::Opacity { .. } => primitive.supports_opacity(),
+            ToolSetting::Color { .. } => true,
+            ToolSetting::Roundness { .. } => primitive.supports_roundness(),
+            ToolSetting::Filled { .. } => primitive.supports_fill() || primitive == Primitive::Text,
         };
         if !supported {
-            return Err(format!("property is not applicable to {}", tool.name()));
+            return Err(format!("property is not applicable to {}", definition.id));
         }
-        let before = (self.style, self.style_for(tool));
+        let properties = &mut self.tool_properties[id.0];
+        let before = *properties;
+        let before_color = self.color;
         match setting {
             ToolSetting::Size { value } => {
-                let range = &self.size_ranges[&tool];
-                if !range.contains(value) {
+                if !definition.size_range.contains(value) {
                     return Err(format!(
                         "{} size must be between {} and {}",
-                        tool.name(),
-                        range.min(),
-                        range.max()
+                        definition.id,
+                        definition.size_range.min(),
+                        definition.size_range.max()
                     ));
                 }
-                self.properties_mut(tool).unwrap().size = value;
+                properties.size = value;
             }
-            ToolSetting::Opacity { value } => self.properties_mut(tool).unwrap().opacity = value,
-            ToolSetting::Roundness { value } => {
-                self.properties_mut(tool).unwrap().roundness = value
-            }
-            ToolSetting::Filled { value } => self.properties_mut(tool).unwrap().filled = value,
+            ToolSetting::Opacity { value } => properties.opacity = value,
+            ToolSetting::Roundness { value } => properties.roundness = value,
+            ToolSetting::Filled { value } => properties.filled = value,
             ToolSetting::Color { value } => {
-                let rgba = crate::color_to_srgb(value);
-                if !rgba.iter().all(|value| value.is_finite()) {
-                    return Err("color components must be finite".into());
+                let [r, g, b, alpha] = crate::color_to_srgb(value);
+                self.color = [r, g, b];
+                if alpha < 1.0 && primitive.supports_opacity() {
+                    properties.opacity = alpha;
                 }
-                self.properties_mut(tool).unwrap().opacity = rgba[3];
-                self.style.color[..3].copy_from_slice(&rgba[..3]);
             }
         }
-        // Refresh future defaults without restyling an in-progress stroke or text edit.
-        self.style = self.style_for(self.tool);
-        Ok(before != (self.style, self.style_for(tool)))
+        Ok(before != *properties || before_color != self.color)
     }
 
     pub(super) fn toggle_fill(&mut self) -> Adjustment {
@@ -265,7 +216,7 @@ impl Editor {
                     .filter(|element| supports_fill(&element.kind))
                     .any(|element| !element.style.filled)
             };
-            return self.adjust_selected(false, |kind, style| {
+            return self.adjust_selected(false, |kind, _, style| {
                 supports_fill(kind).then(|| {
                     style.filled = enable;
                     if matches!(kind, ElementKind::Text { .. }) {
@@ -276,20 +227,16 @@ impl Editor {
                 })
             });
         }
-        if !self.tool.supports_fill() && self.tool != Tool::Text {
+        if !self.primitive().supports_fill() && self.primitive() != Primitive::Text {
             return Adjustment::default();
         }
-        let tool = self.tool;
-        let properties = self
-            .properties_mut(tool)
-            .expect("fillable tools have adjustable properties");
+        let properties = &mut self.tool_properties[self.tool.0];
         let filled = !properties.filled;
         properties.filled = filled;
-        self.style = self.style_for(tool);
-        self.update_live_style(tool, |style| style.filled = filled);
+        self.update_live_style(self.tool, |style| style.filled = filled);
         Adjustment {
             changed: true,
-            feedback: Some(if self.tool == Tool::Text {
+            feedback: Some(if self.primitive() == Primitive::Text {
                 background_label(filled)
             } else {
                 fill_label(filled)
@@ -302,15 +249,15 @@ impl Editor {
         if steps == 0.0 {
             return Adjustment::default();
         }
-        let step = self.property_stepper(property, steps);
-        if let Some(edit) = self.text_edit_mut() {
-            let value = *property.style_value(&mut edit.style);
-            let (adjustment, label) = step(Tool::Text, value);
-            let changed = value != adjustment.value;
+        if let Some(Interaction::EditingText(preset, edit)) = &mut self.interaction {
+            let id = ToolDefinition::preset(&self.tools, preset, Primitive::Text);
+            let value = property.style_value(&mut edit.style);
+            let (adjustment, label) = property.adjust(&self.tools[id.0], *value, steps);
+            let changed = *value != adjustment.value;
             if changed {
                 match property {
                     Property::Size => edit.set_size(adjustment.value),
-                    _ => *property.style_value(&mut edit.style) = adjustment.value,
+                    _ => *value = adjustment.value,
                 }
             }
             return Adjustment {
@@ -323,14 +270,16 @@ impl Editor {
             if self.adjusted.replace(property) != Some(property) {
                 self.document.history.seal();
             }
+            let tools = self.tools.clone();
             let mut hit_stop = false;
-            let mut adjustment = self.adjust_selected(true, |kind, style| {
-                let tool = tool_for(kind);
-                if !property.supported(tool) {
+            let mut adjustment = self.adjust_selected(true, |kind, preset, style| {
+                let primitive = tool_for(kind);
+                if !property.supported(primitive) {
                     return None;
                 }
+                let id = ToolDefinition::preset(&tools, preset, primitive);
                 let value = property.style_value(style);
-                let (adjustment, label) = step(tool, *value);
+                let (adjustment, label) = property.adjust(&tools[id.0], *value, steps);
                 *value = adjustment.value;
                 hit_stop |= adjustment.hit_stop;
                 Some(label)
@@ -338,20 +287,16 @@ impl Editor {
             adjustment.hit_stop = hit_stop;
             return adjustment;
         }
-        let tool = self.tool;
+        let tool = self.primitive();
         if !property.supported(tool) {
             return Adjustment::default();
         }
-        let properties = self
-            .properties_mut(tool)
-            .expect("supported tools have adjustable properties");
-        let value = property.tool_value(properties);
-        let (adjustment, label) = step(tool, *value);
+        let value = property.tool_value(&mut self.tool_properties[self.tool.0]);
+        let (adjustment, label) = property.adjust(&self.tools[self.tool.0], *value, steps);
         let changed = *value != adjustment.value;
         if changed {
             *value = adjustment.value;
-            self.style = self.style_for(tool);
-            self.update_live_style(tool, |style| {
+            self.update_live_style(self.tool, |style| {
                 *property.style_value(style) = adjustment.value;
             });
         }
@@ -362,53 +307,20 @@ impl Editor {
         }
     }
 
-    /// Steps a tool's property value without borrowing the editor.
-    fn property_stepper(
-        &self,
-        property: Property,
-        steps: f32,
-    ) -> impl Fn(Tool, f32) -> (StepAdjustment, String) + use<> {
-        let defaults = self.default_tool_properties;
-        let size_ranges = self.size_ranges.clone();
-        let increments = self.steps.clone();
-        let stop_sets = self.stops.clone();
-        move |tool, value| {
-            let mut properties = *defaults
-                .properties(tool)
-                .expect("adjustable tools have defaults");
-            let default = *property.tool_value(&mut properties);
-            let (increment, stops) = (&increments[&tool], &stop_sets[&tool]);
-            let (min, max, increment, stops) = match property {
-                Property::Size => {
-                    let range = &size_ranges[&tool];
-                    (range.min(), range.max(), increment.size, &stops.size)
-                }
-                Property::Opacity => (MIN_OPACITY, 1.0, increment.opacity, &stops.opacity),
-                Property::Roundness => (0.0, 1.0, increment.roundness, &stops.roundness),
-            };
-            let adjustment = stepped_with_stops(value, default, steps, increment, min, max, stops);
-            let label = if property == Property::Size {
-                size_label(adjustment.value, default)
-            } else {
-                percent_label(adjustment.value, default)
-            };
-            (adjustment, label)
-        }
-    }
-
     fn adjust_selected(
         &mut self,
         merge: bool,
-        mut adjust: impl FnMut(&ElementKind, &mut Style) -> Option<String>,
+        mut adjust: impl FnMut(&ElementKind, &str, &mut Style) -> Option<String>,
     ) -> Adjustment {
         if let Some(Interaction::Resizing {
+            preset,
             properties,
             current,
             ..
         }) = &mut self.interaction
         {
             let mut style = current.style;
-            let feedback = adjust(&current.kind, &mut style);
+            let feedback = adjust(&current.kind, preset, &mut style);
             let changed = style != current.style;
             if changed {
                 // Text resizing also changes font size; retain only the user's adjustment.
@@ -432,7 +344,7 @@ impl Editor {
                 continue;
             };
             let mut style = element.style;
-            if let Some(label) = adjust(&element.kind, &mut style) {
+            if let Some(label) = adjust(&element.kind, &element.preset, &mut style) {
                 feedback = Some(label);
             }
             if style != element.style {
@@ -456,62 +368,50 @@ impl Editor {
         }
     }
 
-    pub(in crate::draw) fn apply_rgba(&mut self, rgba: [f32; 4]) -> bool {
-        let mut changed = self.style.color != rgba;
-        if let Some(properties) = self.properties_mut(self.color_tool()) {
-            changed |= properties.opacity != rgba[3];
-            properties.opacity = rgba[3];
+    pub(super) fn apply_color(&mut self, color: Rgba) {
+        let [r, g, b, alpha] = color;
+        self.color = [r, g, b];
+        let id = self.color_tool();
+        if alpha < 1.0 && self.tools[id.0].primitive.supports_opacity() {
+            self.tool_properties[id.0].opacity = alpha;
         }
-        self.style.color = rgba;
         if let Some(edit) = self.text_edit_mut() {
-            changed |= edit.style.color != rgba;
-            edit.style.color = rgba;
-            return changed;
-        }
-        if self.selected.is_empty() {
-            return changed;
-        }
-        changed |= self
-            .adjust_selected(false, |_, style| {
-                style.color = rgba;
+            recolor(&mut edit.style.color, color);
+        } else if !self.selected.is_empty() {
+            self.adjust_selected(false, |_, _, style| {
+                recolor(&mut style.color, color);
                 None
-            })
-            .changed;
-        changed
+            });
+        }
     }
 
-    pub(super) fn properties(&self, tool: Tool) -> Option<&ToolProperties> {
-        self.tool_properties.properties(tool)
+    pub(in crate::draw) fn named_tool_style(
+        &self,
+        id: Option<&str>,
+    ) -> Result<(Primitive, Style), String> {
+        let id = id
+            .map(|name| self.resolve_tool(name))
+            .transpose()?
+            .unwrap_or(self.tool);
+        Ok((self.tools[id.0].primitive, self.tool_style(id)))
     }
 
-    fn properties_mut(&mut self, tool: Tool) -> Option<&mut ToolProperties> {
-        self.tool_properties.properties_mut(tool)
-    }
-
-    pub(super) fn style_for(&self, tool: Tool) -> Style {
-        let Some(properties) = self.properties(tool) else {
-            return self.style;
-        };
-        let mut style = self.style;
-        style.size = properties.size;
-        style.color[3] = properties.opacity;
-        style.roundness = properties.roundness;
-        style.filled = properties.filled;
-        style
-    }
-
-    fn update_live_style(&mut self, tool: Tool, update: impl FnOnce(&mut Style)) {
-        let mut eraser = self.style;
+    fn update_live_style(&mut self, tool: ToolId, update: impl FnOnce(&mut Style)) {
+        let mut eraser = self.tool_style(tool);
         match &mut self.interaction {
-            Some(Interaction::Freehand(stroke)) if tool == Tool::Pen => {
+            Some(Interaction::Freehand(current, stroke)) if *current == tool => {
                 stroke.update_style(update);
             }
             Some(Interaction::Drawing {
-                tool: current,
+                preset: current,
                 style,
                 ..
             }) if *current == tool => update(style),
-            Some(Interaction::Erasing { size, .. }) if tool == Tool::Eraser => {
+            Some(Interaction::Erasing {
+                tool: current,
+                size,
+                ..
+            }) if *current == tool => {
                 eraser.size = *size;
                 update(&mut eraser);
                 *size = eraser.size;

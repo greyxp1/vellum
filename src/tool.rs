@@ -1,8 +1,6 @@
-#[derive(
-    Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, serde::Deserialize, clap::ValueEnum,
-)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub(crate) enum Tool {
+pub(crate) enum Primitive {
     #[default]
     Pen,
     Line,
@@ -15,8 +13,9 @@ pub(crate) enum Tool {
     Select,
 }
 
-impl Tool {
-    pub(crate) const SIZED: [Self; 8] = [
+impl Primitive {
+    pub(crate) const ALL: [Self; 9] = [
+        Self::Select,
         Self::Pen,
         Self::Line,
         Self::Arrow,
@@ -45,15 +44,6 @@ impl Tool {
         matches!(self, Self::Triangle | Self::Rectangle | Self::Ellipse)
     }
 
-    pub(crate) fn initial_size(self, stroke_size: f32) -> Option<f32> {
-        match self {
-            Self::Text => Some(16.0),
-            Self::Eraser => Some(10.0),
-            Self::Select => None,
-            _ => Some(stroke_size),
-        }
-    }
-
     pub(crate) fn supports_opacity(self) -> bool {
         !matches!(self, Self::Eraser | Self::Select)
     }
@@ -64,26 +54,37 @@ impl Tool {
             Self::Pen | Self::Line | Self::Arrow | Self::Triangle | Self::Rectangle | Self::Text
         )
     }
-
-    pub(super) fn initial_roundness(self) -> f32 {
-        match self {
-            Self::Pen => 1.0,
-            Self::Line => 0.5,
-            Self::Arrow => 0.25,
-            Self::Rectangle => 0.1,
-            Self::Text => 0.1,
-            _ => 0.0,
-        }
-    }
 }
 
-impl std::str::FromStr for Tool {
-    type Err = &'static str;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ToolId(pub usize);
 
-    fn from_str(name: &str) -> Result<Self, Self::Err> {
-        <Self as serde::Deserialize>::deserialize(serde::de::value::StrDeserializer::new(name))
-            .map_err(|_: serde::de::value::Error| {
-                "default tool must be pen, line, arrow, triangle, rectangle, ellipse, text, eraser, or select"
-            })
+#[derive(Debug, Clone, Copy, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum Icon {
+    Pen,
+    Line,
+    Arrow,
+    Triangle,
+    Rectangle,
+    Ellipse,
+    Text,
+    Eraser,
+    Select,
+}
+
+impl From<Primitive> for Icon {
+    fn from(primitive: Primitive) -> Self {
+        match primitive {
+            Primitive::Pen => Self::Pen,
+            Primitive::Line => Self::Line,
+            Primitive::Arrow => Self::Arrow,
+            Primitive::Triangle => Self::Triangle,
+            Primitive::Rectangle => Self::Rectangle,
+            Primitive::Ellipse => Self::Ellipse,
+            Primitive::Text => Self::Text,
+            Primitive::Eraser => Self::Eraser,
+            Primitive::Select => Self::Select,
+        }
     }
 }

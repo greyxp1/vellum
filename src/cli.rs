@@ -1,7 +1,8 @@
 use std::path::PathBuf;
 
-use crate::tool::Tool;
 use color::DynamicColor;
+
+pub(crate) const MAX_COMMAND_SIZE: usize = 8192;
 
 #[derive(clap::Parser)]
 #[command(version, about, long_about = None)]
@@ -29,12 +30,12 @@ pub(crate) enum Command {
         /// Show settings for a tool
         #[arg(
             long = "target",
-            value_enum,
+            value_parser = tool_name,
             hide_possible_values = true,
             next_line_help = true,
             long_help = tool_values_help()
         )]
-        tool: Option<Tool>,
+        tool: Option<String>,
         /// Output JSON
         #[arg(long)]
         json: bool,
@@ -45,24 +46,24 @@ pub(crate) enum Command {
     /// Select a tool
     Use {
         #[arg(
-            value_enum,
+            value_parser = tool_name,
             hide_possible_values = true,
             next_line_help = true,
             long_help = tool_values_help()
         )]
-        tool: Tool,
+        tool: String,
     },
     /// Change tool settings
     Set {
         #[arg(
             long = "target",
-            value_enum,
+            value_parser = tool_name,
             global = true,
             hide_possible_values = true,
             next_line_help = true,
             long_help = tool_values_help()
         )]
-        tool: Option<Tool>,
+        tool: Option<String>,
         #[command(subcommand)]
         setting: ToolSetting,
     },
@@ -98,14 +99,25 @@ pub(crate) enum Command {
 }
 
 fn tool_values_help() -> String {
-    use clap::ValueEnum;
+    "Tool name, such as pen or a name from [tools.<name>]".into()
+}
 
-    let mut help = String::from("Possible values:");
-    for tool in Tool::value_variants() {
-        help.push_str("\n- ");
-        help.push_str(tool.name());
+pub(crate) fn tool_name(value: &str) -> Result<String, String> {
+    // Leave room for a request's fields and the settings returned with the name.
+    const MAX_TOOL_NAME_SIZE: usize = MAX_COMMAND_SIZE / 2;
+    if value.len() > MAX_TOOL_NAME_SIZE {
+        return Err(format!(
+            "tool names must be at most {MAX_TOOL_NAME_SIZE} bytes"
+        ));
     }
-    help
+    if value.is_empty()
+        || !value
+            .bytes()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_' || c == b'-')
+    {
+        return Err("use lowercase ASCII letters, digits, underscores or hyphens".into());
+    }
+    Ok(value.into())
 }
 
 #[derive(clap::Subcommand)]
@@ -130,7 +142,7 @@ pub(crate) enum ToolSetting {
         #[arg(action = clap::ArgAction::Set)]
         value: bool,
     },
-    /// CSS color
+    /// Change the shared drawing color. Translucent colors also set tool opacity where supported
     Color {
         #[arg(value_parser = visible_color)]
         value: DynamicColor,
@@ -245,7 +257,13 @@ pub(crate) fn visible_color(value: &str) -> Result<DynamicColor, String> {
     let color: DynamicColor = value
         .parse()
         .map_err(|error| format!("invalid color: {error}"))?;
-    if !color.components.iter().all(|value| value.is_finite()) {
+    if !color
+        .convert(color::ColorSpaceTag::Srgb)
+        .clip()
+        .components
+        .iter()
+        .all(|value| value.is_finite())
+    {
         return Err("color components must be finite".into());
     }
     if color.components[3] < MIN_OPACITY {

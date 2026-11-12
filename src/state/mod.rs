@@ -94,7 +94,7 @@ impl State {
         self.freeze.on_activate = settings.freeze_on_activate;
         self.keyboard
             .reload(settings.keybinds.clone(), settings.text_keybinds.clone());
-        self.draw.reload(settings, previous);
+        self.draw.reload(settings);
         self.update_output_input();
         self.damage_presentation();
         self.refresh_cursor();
@@ -289,13 +289,13 @@ impl State {
         self.apply_action(Action::Clear);
     }
 
-    pub(crate) fn select_tool(&mut self, tool: crate::tool::Tool) -> Result<(), String> {
-        if tool != self.draw.tool_style(None).0
+    pub(crate) fn select_tool(&mut self, tool: String) -> Result<(), String> {
+        if tool != self.draw.tool_name()
             && (self.pointer.input_grab_active() || self.tablet.input_grab_active())
         {
             return Err("finish the current gesture before selecting a tool".into());
         }
-        if self.draw.select_tool(tool) {
+        if self.draw.select_tool(&tool)? {
             self.refresh_cursor();
             self.request_render();
         }
@@ -304,10 +304,10 @@ impl State {
 
     pub(crate) fn set_tool_setting(
         &mut self,
-        tool: Option<crate::tool::Tool>,
+        tool: Option<String>,
         setting: crate::cli::ToolSetting,
     ) -> Result<(), String> {
-        if self.draw.set_tool_setting(tool, setting)? {
+        if self.draw.set_tool_setting(tool.as_deref(), setting)? {
             self.refresh_cursor();
             self.request_render();
         }

@@ -1,8 +1,3 @@
-use std::collections::BTreeMap;
-
-use super::ToolDefaults;
-use crate::tool::Tool;
-
 const DEFAULT_TEXT_MIN_SIZE: f32 = 8.0;
 const DEFAULT_TEXT_MAX_SIZE: f32 = 500.0;
 
@@ -38,6 +33,12 @@ impl Default for SizeRange {
 }
 
 impl SizeRange {
+    pub(crate) fn text() -> Self {
+        Self {
+            min: DEFAULT_TEXT_MIN_SIZE,
+            max: DEFAULT_TEXT_MAX_SIZE,
+        }
+    }
     pub(super) fn validate(self, name: &str) -> Result<Self, String> {
         if !self.min.is_finite() || self.min <= 0.0 {
             return Err(format!("{name}.min must be greater than 0"));
@@ -65,32 +66,4 @@ impl SizeRange {
     pub(crate) fn max(&self) -> f32 {
         self.max
     }
-}
-
-pub(super) fn resolve_size_ranges(
-    tools: &ToolDefaults,
-    fallback: &SizeRange,
-    global: &SizeRangeConfig,
-) -> Result<BTreeMap<Tool, SizeRange>, String> {
-    Tool::SIZED
-        .into_iter()
-        .map(|tool| {
-            let name = format!("tools.{}.size_range", tool.name());
-            let mut fallback = *fallback;
-            if tool == Tool::Text {
-                if global.min.is_none() {
-                    fallback.min = DEFAULT_TEXT_MIN_SIZE;
-                }
-                if global.max.is_none() {
-                    fallback.max = DEFAULT_TEXT_MAX_SIZE;
-                }
-            }
-            let range = tools
-                .get(&tool)
-                .and_then(|defaults| defaults.size_range.as_ref())
-                .map_or(fallback, |range| range.resolve(&fallback))
-                .validate(&name)?;
-            Ok((tool, range))
-        })
-        .collect()
 }

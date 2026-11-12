@@ -40,9 +40,6 @@ fn run() -> Result<ExitCode, String> {
         match subcommand {
             Command::Set { .. } | Command::Use { .. } => {
                 let response = ipc::query(subcommand)?.ok_or("overlay is not running")?;
-                if let Some(error) = response.strip_prefix("error:") {
-                    return Err(error.into());
-                }
                 if response != "ok" {
                     return Err("invalid command response".into());
                 }

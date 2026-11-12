@@ -109,7 +109,7 @@ impl Drop for ControlSocket {
 impl Command {
     fn serialize(&self) -> Cow<'static, str> {
         match self {
-            Self::Use { tool } => format!("use={}", tool.name()).into(),
+            Self::Use { tool } => format!("use={tool}").into(),
             Self::Set { tool, setting } => {
                 let (property, value) = match setting {
                     ToolSetting::Size { value } => ("size", value.to_string()),
@@ -118,7 +118,9 @@ impl Command {
                     ToolSetting::Filled { value } => ("filled", value.to_string()),
                     ToolSetting::Color { value } => ("color", value.to_string()),
                 };
-                let target = tool.map_or(String::new(), |tool| format!("@{}", tool.name()));
+                let target = tool
+                    .as_ref()
+                    .map_or(String::new(), |tool| format!("@{tool}"));
                 format!("set{target}={property}={value}").into()
             }
             Self::Status {
@@ -126,7 +128,7 @@ impl Command {
             } => {
                 let name = if *json { "status_json" } else { "status" };
                 let name: Cow<'_, str> = match tool {
-                    Some(tool) => format!("{name}@{}", tool.name()).into(),
+                    Some(tool) => format!("{name}@{tool}").into(),
                     None => Cow::Borrowed(name),
                 };
                 match field {
@@ -171,7 +173,7 @@ impl Command {
             _ if let Some(tool) = message.strip_prefix(b"use=") => {
                 let tool = std::str::from_utf8(tool).map_err(|_| "invalid tool")?;
                 Ok(Self::Use {
-                    tool: clap::ValueEnum::from_str(tool, false).map_err(|_| "invalid tool")?,
+                    tool: crate::cli::tool_name(tool).map_err(|_| "invalid tool")?,
                 })
             }
             _ if message.starts_with(b"set=") || message.starts_with(b"set@") => {
@@ -179,10 +181,10 @@ impl Command {
                 let (target, setting) = message.split_once('=').ok_or("missing setting")?;
                 let tool = target
                     .strip_prefix("set@")
-                    .map(|tool| clap::ValueEnum::from_str(tool, false).map_err(|_| "invalid tool"))
+                    .map(|tool| crate::cli::tool_name(tool).map_err(|_| "invalid tool"))
                     .transpose()?;
                 let (property, value) = setting.split_once('=').ok_or("missing value")?;
-                use crate::cli::{opacity, positive_size, roundness, visible_color};
+                use crate::cli::{opacity, positive_size, roundness};
                 let setting = match property {
                     "size" => ToolSetting::Size {
                         value: positive_size(value).map_err(|_| "invalid size")?,
@@ -197,7 +199,7 @@ impl Command {
                         value: value.parse().map_err(|_| "invalid fill")?,
                     },
                     "color" => ToolSetting::Color {
-                        value: visible_color(value).map_err(|_| "invalid color")?,
+                        value: crate::cli::visible_color(value).map_err(|_| "invalid color")?,
                     },
                     _ => return Err("invalid tool property"),
                 };
@@ -217,9 +219,7 @@ impl Command {
                     _ => return Err("invalid status request"),
                 };
                 let tool = tool
-                    .map(|tool| {
-                        clap::ValueEnum::from_str(tool, false).map_err(|_| "invalid status tool")
-                    })
+                    .map(|tool| crate::cli::tool_name(tool).map_err(|_| "invalid status tool"))
                     .transpose()?;
                 let field = field
                     .map(|field| {

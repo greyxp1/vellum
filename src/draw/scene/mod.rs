@@ -11,6 +11,7 @@ pub(super) use shapes::{
 use crate::render::Geometry;
 use peniko::Fill;
 use std::borrow::Cow;
+use std::sync::Arc;
 use std::time::Instant;
 
 use crate::config::{ErasePace, PenEffect, PresentationSettings};
@@ -128,7 +129,7 @@ impl Bounds {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Style {
     pub size: f32,
-    pub color: [f32; 4],
+    pub color: crate::Rgba,
     pub roundness: f32,
     pub filled: bool,
 }
@@ -200,6 +201,7 @@ impl ElementKind {
 #[derive(Debug)]
 pub struct Element {
     pub id: ElementId,
+    pub preset: Arc<str>,
     pub kind: ElementKind,
     pub style: Style,
     pub bounds: Bounds,
@@ -258,13 +260,14 @@ impl Element {
         (Cow::Borrowed(&self.geometry), remaining)
     }
 
-    pub(super) fn new(id: ElementId, kind: ElementKind, style: Style) -> Self {
+    pub(super) fn new(id: ElementId, preset: Arc<str>, kind: ElementKind, style: Style) -> Self {
         let geometry = geometry(&kind, style);
-        Self::with_geometry(id, kind, style, geometry)
+        Self::with_geometry(id, preset, kind, style, geometry)
     }
 
     pub(super) fn with_geometry(
         id: ElementId,
+        preset: Arc<str>,
         mut kind: ElementKind,
         style: Style,
         geometry: Geometry,
@@ -273,6 +276,7 @@ impl Element {
         let bounds = bounds_for(&kind, style);
         Self {
             id,
+            preset,
             kind,
             style,
             bounds,
@@ -419,16 +423,16 @@ pub(super) fn kurbo_point(point: Point) -> kurbo::Point {
     kurbo::Point::new(f64::from(point.x), f64::from(point.y))
 }
 
-pub(super) fn tool_for(kind: &ElementKind) -> crate::tool::Tool {
-    use crate::tool::Tool;
+pub(super) fn tool_for(kind: &ElementKind) -> crate::tool::Primitive {
+    use crate::tool::Primitive;
 
     match kind {
-        ElementKind::Freehand { .. } => Tool::Pen,
-        ElementKind::Segment { arrow: true, .. } => Tool::Arrow,
-        ElementKind::Segment { arrow: false, .. } => Tool::Line,
-        ElementKind::Triangle { .. } => Tool::Triangle,
-        ElementKind::Rectangle { .. } => Tool::Rectangle,
-        ElementKind::Ellipse { .. } => Tool::Ellipse,
-        ElementKind::Text { .. } => Tool::Text,
+        ElementKind::Freehand { .. } => Primitive::Pen,
+        ElementKind::Segment { arrow: true, .. } => Primitive::Arrow,
+        ElementKind::Segment { arrow: false, .. } => Primitive::Line,
+        ElementKind::Triangle { .. } => Primitive::Triangle,
+        ElementKind::Rectangle { .. } => Primitive::Rectangle,
+        ElementKind::Ellipse { .. } => Primitive::Ellipse,
+        ElementKind::Text { .. } => Primitive::Text,
     }
 }

@@ -24,7 +24,10 @@ in {
       default = {};
       example = {
         default_tool = "arrow";
-        tools.pen.opacity = 0.75;
+        tools.pen = {
+          primitive = "pen";
+          opacity = 0.75;
+        };
       };
       description = ''
         Configuration written to {file}`/etc/xdg/vellum/config.toml`.

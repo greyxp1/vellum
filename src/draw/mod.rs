@@ -25,7 +25,7 @@ use self::text_edit::TextEdit;
 pub(crate) use self::text_edit::{
     CursorMove, Preedit, PreeditHint, PreeditSpan, TextInputBatch, TextInputSnapshot,
 };
-use crate::tool::Tool;
+use crate::tool::Primitive;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum ToolOverride {
@@ -39,23 +39,14 @@ impl ToolOverride {
     pub(crate) fn from_eraser(enabled: bool) -> Self {
         if enabled { Self::Eraser } else { Self::None }
     }
-
-    fn effective_tool(self, active: Tool) -> Tool {
-        match self {
-            Self::None => active,
-            Self::Eraser => Tool::Eraser,
-            Self::InvertEraser if active == Tool::Eraser => Tool::Pen,
-            Self::InvertEraser => Tool::Eraser,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct ToolCursor {
-    pub tool: Tool,
+    pub tool: Primitive,
     pub size: f32,
     pub roundness: f32,
-    pub color: [f32; 4],
+    pub color: crate::Rgba,
 }
 
 const CIRCLE_KAPPA: f64 = 0.552_284_749_830_793_6;
@@ -138,14 +129,14 @@ pub(crate) struct DrawState {
 }
 
 impl DrawState {
-    pub(crate) fn select_tool(&mut self, tool: Tool) -> bool {
-        let changed = self.editor.switch_tool(tool);
-        self.record(changed)
+    pub(crate) fn select_tool(&mut self, tool: &str) -> Result<bool, String> {
+        let changed = self.editor.switch_named_tool(tool)?;
+        Ok(self.record(changed))
     }
 
     pub(crate) fn set_tool_setting(
         &mut self,
-        tool: Option<Tool>,
+        tool: Option<&str>,
         setting: crate::cli::ToolSetting,
     ) -> Result<bool, String> {
         let changed = self.editor.set_tool_setting(tool, setting)?;
@@ -153,8 +144,15 @@ impl DrawState {
         Ok(changed)
     }
 
-    pub(crate) fn tool_style(&self, tool: Option<Tool>) -> (Tool, Style) {
-        self.editor.tool_style(tool)
+    pub(crate) fn tool_name(&self) -> &str {
+        self.editor.tool_name()
+    }
+
+    pub(crate) fn named_tool_style(
+        &self,
+        tool: Option<&str>,
+    ) -> Result<(Primitive, Style), String> {
+        self.editor.named_tool_style(tool)
     }
 
     pub(crate) fn switch_canvas(&mut self, canvas: Canvas) {
@@ -194,12 +192,8 @@ impl DrawState {
         }
     }
 
-    pub(crate) fn reload(
-        &mut self,
-        settings: &crate::config::Settings,
-        previous: &crate::config::Settings,
-    ) {
-        self.editor.reload(settings, previous);
+    pub(crate) fn reload(&mut self, settings: &crate::config::Settings) {
+        self.editor.reload(settings);
         self.feedback_duration = settings.feedback_duration;
         self.shadows = settings.annotation_shadows;
         self.shadow_overlap = settings.annotation_shadow_overlap;
@@ -235,7 +229,7 @@ impl DrawState {
         let mut effect = self.editor.handle_action(action);
         if let (Some(label), Some(at)) = (effect.feedback.take(), at) {
             self.feedback = Some(Feedback {
-                text: crate::text::Text::new(label, self.editor.text_font.clone(), 18.0),
+                text: crate::text::Text::new(label, self.editor.text_font(), 18.0),
                 anchor: at,
                 until: Instant::now() + self.feedback_duration,
             });
@@ -362,7 +356,7 @@ impl DrawState {
         self.record(adjustment.changed || adjustment.feedback.is_some());
         if let Some(text) = adjustment.feedback {
             self.feedback = Some(Feedback {
-                text: crate::text::Text::new(text, self.editor.text_font.clone(), 18.0),
+                text: crate::text::Text::new(text, self.editor.text_font(), 18.0),
                 anchor: at,
                 until: Instant::now() + self.feedback_duration,
             });

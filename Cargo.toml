@@ -60,9 +60,9 @@ kurbo = "0.13.1"
 perfect_freehand = "0.1.1"
 
 [build-dependencies]
-serde = { version = "1.0", features = ["derive"] }
 clap.workspace = true
 clap_complete = "4.6.9"
 clap_complete_nushell = "4.6.2"
 clap_mangen = "0.3.0"
 color.workspace = true
+serde = { version = "1.0", features = ["derive"] }
