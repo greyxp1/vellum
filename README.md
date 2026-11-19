@@ -104,32 +104,3 @@ systemctl --user enable --now vellum.service
 ```
 
 </details>
-
-## Controls
-
-### Mouse, trackpad, and pen
-
-| Action | Mouse | Trackpad | Pen |
-| --- | --- | --- | --- |
-| Draw or manipulate the selection | Left drag | One-finger drag | Drag with the pen tip |
-| Open the radial picker | Right-click | Two-finger click | Briefly press the barrel button while hovering |
-| Choose a tool or color | Hold the right mouse button, move, then release | Open the picker, move, then one-finger click | Hold the barrel button while hovering, move, then release |
-| Erase | Middle drag, or middle-click then left drag | Three-finger tap to toggle, then one-finger drag | Hold the barrel button while drawing or drag with the eraser tip |
-| Change size | Mouse wheel | Two-finger scroll | Mouse wheel or trackpad scroll |
-
-### Gestures and modifiers
-
-| Input | Action |
-| --- | --- |
-| <kbd>Ctrl</kbd> + click in selection mode | Add or remove an annotation from the selection |
-| Double-click selected text | Edit it |
-| <kbd>Shift</kbd> while drawing | Constrain the shape |
-| <kbd>Alt</kbd> while drawing | Draw triangles, rectangles, and ellipses from their center |
-| <kbd>Ctrl</kbd> + scroll | Change opacity |
-| <kbd>Shift</kbd> + scroll | Change roundness |
-| Drag a selection handle | Reshape the selection or stretch text |
-| <kbd>Shift</kbd> + drag a text handle | Resize text without stretching |
-
-## Configuration
-
-Configure Vellum in `~/.config/vellum/config.toml`. See the [default configuration](default-config.toml) for options and shortcuts.

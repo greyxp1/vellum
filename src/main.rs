@@ -36,12 +36,6 @@ fn main() -> ExitCode {
 
 fn run() -> Result<ExitCode, String> {
     let arguments = Cli::parse();
-    if arguments.print_default_config {
-        std::io::stdout()
-            .write_all(include_bytes!("../default-config.toml"))
-            .map_err(|error| format!("could not print default configuration: {error}"))?;
-        return Ok(ExitCode::SUCCESS);
-    }
     if let Some(subcommand) = &arguments.command {
         match subcommand {
             Command::Set { .. } | Command::Use { .. } => {

@@ -24,7 +24,6 @@ rustPlatform.buildRustPackage {
       ../Cargo.toml
       ../Cargo.lock
       ../build.rs
-      ../default-config.toml
       ../src
       ../xtask/Cargo.toml
       ../xtask/src

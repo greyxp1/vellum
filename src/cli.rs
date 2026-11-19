@@ -17,10 +17,6 @@ pub(super) struct Cli {
     /// Ignore config files
     #[arg(long)]
     pub(super) no_config: bool,
-
-    /// Print the annotated default configuration and exit
-    #[arg(long, conflicts_with_all = ["config", "no_config"])]
-    pub(super) print_default_config: bool,
 }
 
 #[derive(clap::Subcommand)]

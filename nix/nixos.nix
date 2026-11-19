@@ -28,7 +28,7 @@ in {
       };
       description = ''
         Configuration written to {file}`/etc/xdg/vellum/config.toml`.
-        See <https://github.com/greyxp1/vellum/blob/master/default-config.toml>.
+        See <https://github.com/greyxp1/vellum/wiki/Configuration>.
       '';
     };
     graphicsDriver = lib.mkOption {
