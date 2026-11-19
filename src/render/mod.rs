@@ -208,7 +208,7 @@ impl WgpuState {
         &mut self,
         items: &[SceneItem<'_>],
         previews: Previews<'_>,
-        picker: Option<&LocalGeometry>,
+        picker: Option<&LocalGeometry<'_>>,
         viewport: Viewport,
         before_present: impl FnOnce(),
     ) -> Result<bool, String> {

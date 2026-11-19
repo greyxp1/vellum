@@ -77,7 +77,7 @@ impl Editor {
     pub(in crate::draw) fn picker_geometry(
         &self,
         viewport: kurbo::Rect,
-    ) -> Option<crate::render::LocalGeometry> {
+    ) -> Option<crate::render::LocalGeometry<'_>> {
         let picker = self.picker?;
         let active = self
             .tool_wheel
@@ -94,7 +94,7 @@ impl Editor {
             .map(|id| {
                 let tool = &self.tools[id.0];
                 (
-                    tool.icon,
+                    &tool.icon,
                     tool.primitive.supports_fill() && self.tool_properties[id.0].filled,
                 )
             })

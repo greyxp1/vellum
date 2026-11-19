@@ -1,5 +1,7 @@
-use super::{LocalGeometry, Viewport, checked_target_size, replay_geometry};
-use kurbo::Affine;
+use super::{LocalGeometry, Viewport, checked_target_size, replay_geometry, vello_color};
+use crate::config::SvgCommand;
+use crate::tool::ICON_COLOR;
+use kurbo::{Affine, Rect, Shape};
 use vello_common::{TextureId, geometry::RectU16};
 
 const PICKER_RENDER_SCALE: u32 = 2;
@@ -62,7 +64,7 @@ impl PickerState {
         scene: &mut vello_hybrid::Scene,
         bindings: &mut vello_hybrid::TextureBindings,
         config: &wgpu::SurfaceConfiguration,
-        picker: &LocalGeometry,
+        picker: &LocalGeometry<'_>,
         viewport: &Viewport,
     ) -> Result<(), String> {
         let Viewport {
@@ -88,11 +90,40 @@ impl PickerState {
             bindings.insert(PICKER_TEXTURE, self.target.as_ref().unwrap().view.clone());
         }
         self.scene.reset_and_resize(scene_size[0], scene_size[1]);
-        self.scene.set_transform(
-            Affine::scale(f64::from(PICKER_RENDER_SCALE))
-                * Affine::scale_non_uniform(scale[0], scale[1]),
-        );
-        replay_geometry(&mut self.scene, &picker.geometry, config.format.is_srgb());
+        let transform = Affine::scale(f64::from(PICKER_RENDER_SCALE))
+            * Affine::scale_non_uniform(scale[0], scale[1]);
+        let is_srgb = config.format.is_srgb();
+        self.scene.set_transform(transform);
+        replay_geometry(&mut self.scene, &picker.geometry, is_srgb);
+        for (svg, position) in &picker.svg_icons {
+            let [x, y] = svg.size.map(|dimension| dimension * 0.5);
+            self.scene
+                .set_transform(transform * Affine::translate(*position));
+            self.scene.set_fill_rule(peniko::Fill::NonZero);
+            self.scene
+                .push_clip_path(&Rect::new(-x, -y, x, y).to_path(0.02));
+            for command in &svg.commands {
+                match command {
+                    SvgCommand::Fill {
+                        path,
+                        rule,
+                        opacity,
+                    } => {
+                        let mut color = ICON_COLOR;
+                        color[3] = *opacity;
+                        self.scene.set_fill_rule(*rule);
+                        self.scene.set_paint(vello_color(color, is_srgb));
+                        self.scene.fill_path(path);
+                    }
+                    SvgCommand::PushClip { path, rule } => {
+                        self.scene.set_fill_rule(*rule);
+                        self.scene.push_clip_path(path);
+                    }
+                    SvgCommand::PopClip => self.scene.pop_clip_path(),
+                }
+            }
+            self.scene.pop_clip_path();
+        }
         let origin = picker_origin.map(|value| (value - 0.5).ceil());
         let extent = [0, 1].map(|axis| {
             let end = picker_origin[axis] + picker.size[axis] as f32 * scale[axis] as f32;

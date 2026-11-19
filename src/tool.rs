@@ -59,10 +59,13 @@ impl Primitive {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ToolId(pub usize);
 
+pub(crate) const ICON_COLOR: [f32; 4] = [0.96, 0.97, 1.0, 1.0];
+
 #[derive(Debug, Clone, Copy, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum Icon {
     Pen,
+    Marker,
     Line,
     Arrow,
     Triangle,

@@ -1,8 +1,10 @@
 mod font;
+mod icon;
 mod keybinds;
 mod size;
 mod watch;
 
+pub(crate) use icon::{SvgCommand, SvgIcon, ToolIcon};
 pub(crate) use watch::Config;
 
 use font::FontConfig;
@@ -13,7 +15,7 @@ use size::SizeRangeConfig;
 use crate::Rgba;
 pub(crate) use crate::cli::MIN_OPACITY;
 use crate::draw::Style;
-use crate::tool::{Icon, Primitive, ToolId};
+use crate::tool::{Primitive, ToolId};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -29,6 +31,8 @@ const DEFAULT_PALETTE: [&str; 8] = [
 #[derive(Debug, Default, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct FileConfig {
+    #[serde(skip)]
+    directory: PathBuf,
     #[serde(default)]
     keybinds: keybinds::KeybindConfig,
     #[serde(default)]
@@ -173,7 +177,7 @@ pub(crate) enum DrawOn {
 #[serde(deny_unknown_fields)]
 struct ToolConfig {
     primitive: Primitive,
-    icon: Option<Icon>,
+    icon: Option<icon::IconConfig>,
     size: Option<f32>,
     size_range: Option<SizeRangeConfig>,
     #[serde(default)]
@@ -192,7 +196,7 @@ struct ToolConfig {
 pub(crate) struct ToolDefinition {
     pub id: Arc<str>,
     pub primitive: Primitive,
-    pub icon: Icon,
+    pub icon: ToolIcon,
     pub properties: ToolProperties,
     pub size_range: SizeRange,
     pub steps: Steps,
@@ -571,10 +575,16 @@ impl Settings {
                         .map(Arc::new)
                 })
                 .transpose()?;
+            let icon = match config.icon {
+                Some(icon) => icon
+                    .resolve(&file.directory)
+                    .map_err(|error| format!("{prefix}.icon: {error}"))?,
+                None => ToolIcon::Named(primitive.into()),
+            };
             tools.push(ToolDefinition {
                 id: id.into(),
                 primitive,
-                icon: config.icon.unwrap_or_else(|| primitive.into()),
+                icon,
                 properties: ToolProperties {
                     size,
                     opacity,
@@ -675,7 +685,10 @@ fn read_optional_config(path: &Path) -> Result<Option<FileConfig>, String> {
 }
 
 fn parse_config(path: &Path, contents: &str) -> Result<FileConfig, String> {
-    toml::from_str(contents).map_err(|error| format!("invalid {}: {error}", path.display()))
+    let mut file: FileConfig =
+        toml::from_str(contents).map_err(|error| format!("invalid {}: {error}", path.display()))?;
+    file.directory = path.parent().unwrap_or(Path::new("")).to_owned();
+    Ok(file)
 }
 
 fn read_first_config(paths: impl IntoIterator<Item = PathBuf>) -> Result<FileConfig, String> {

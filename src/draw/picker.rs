@@ -2,9 +2,10 @@ use std::ops::Range;
 
 use super::scene::Point;
 use crate::Rgba;
+use crate::config::ToolIcon;
 use crate::render::{Geometry, LocalGeometry, contrasting_color};
-use crate::tool::Icon;
-use kurbo::{Arc, BezPath, Circle, Shape};
+use crate::tool::{ICON_COLOR, Icon};
+use kurbo::{Arc, BezPath, Circle, Shape, Vec2};
 use peniko::Fill;
 
 const CENTER_RADIUS: f32 = 26.0;
@@ -160,15 +161,15 @@ fn push_palette(output: &mut Geometry, center: Point, hovered: Option<Choice>, p
     }
 }
 
-pub(super) fn picker_geometry(
+pub(super) fn picker_geometry<'a>(
     picker: Picker,
     active: Option<usize>,
     current_color: Rgba,
-    tools: &[(Icon, bool)],
+    tools: &[(&'a ToolIcon, bool)],
     palette: &[Rgba],
     viewport: kurbo::Rect,
     presentation: bool,
-) -> Option<LocalGeometry> {
+) -> Option<LocalGeometry<'a>> {
     let Picker { center, hovered } = picker;
     let origin = [
         (center.x - PICKER_LAYER_SIZE as f32 * 0.5).floor(),
@@ -228,15 +229,27 @@ pub(super) fn picker_geometry(
         );
     }
     push_palette(&mut output, local_center, hovered, palette);
+    let mut svg_icons = Vec::new();
     for (index, (tool, filled)) in tools.iter().copied().enumerate() {
         let (sin, cos) = (index as f32 * step).sin_cos();
         let tool_icon_center = Point::new(
             local_center.x + TOOL_ICON_RADIUS * cos,
             local_center.y + TOOL_ICON_RADIUS * sin,
         );
-        push_tool_icon(&mut output, tool_icon_center, tool, filled);
+        match tool {
+            ToolIcon::Named(icon) => push_tool_icon(&mut output, tool_icon_center, *icon, filled),
+            ToolIcon::Svg(svg) => svg_icons.push((
+                svg,
+                Vec2::new(f64::from(tool_icon_center.x), f64::from(tool_icon_center.y)),
+            )),
+        }
     }
-    Some(LocalGeometry::new(output, origin, [PICKER_LAYER_SIZE; 2]))
+    Some(LocalGeometry::new(
+        output,
+        svg_icons,
+        origin,
+        [PICKER_LAYER_SIZE; 2],
+    ))
 }
 
 const fn rgb_to_f32(r: u8, g: u8, b: u8, alpha: f32) -> [f32; 4] {
@@ -266,6 +279,17 @@ fn push_tool_icon(output: &mut Geometry, center: Point, tool: Icon, filled: bool
             path.line_to(p(7.8, 20.2));
             path.line_to(p(2.5, 21.5));
             path.close_path();
+        }
+        Icon::Marker => {
+            path.move_to(p(3.0, 16.0));
+            path.line_to(p(14.0, 5.0));
+            path.line_to(p(19.0, 10.0));
+            path.line_to(p(8.0, 21.0));
+            path.close_path();
+            path.move_to(p(6.0, 13.0));
+            path.line_to(p(11.0, 18.0));
+            path.move_to(p(2.0, 21.0));
+            path.line_to(p(5.0, 18.0));
         }
         Icon::Line => {
             path.move_to(p(5.0, 12.0));
@@ -326,9 +350,8 @@ fn push_tool_icon(output: &mut Geometry, center: Point, tool: Icon, filled: bool
             path.line_to(p(15.0, 17.0));
         }
     }
-    let icon_color = [0.96, 0.97, 1.0, 1.0];
     if filled {
-        output.push_fill(path.clone(), Fill::NonZero, icon_color);
+        output.push_fill(path.clone(), Fill::NonZero, ICON_COLOR);
     }
-    output.push_stroke(path, kurbo::Stroke::new(2.0), icon_color);
+    output.push_stroke(path, kurbo::Stroke::new(2.0), ICON_COLOR);
 }

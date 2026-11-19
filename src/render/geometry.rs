@@ -1,6 +1,8 @@
 use kurbo::{Affine, BezPath, ParamCurve, ParamCurveNearest, PathSeg, Rect, Shape, Stroke};
 use peniko::Fill;
 
+use crate::config::SvgIcon;
+
 #[derive(Debug, Clone)]
 pub(super) enum DrawCommand {
     Fill {
@@ -20,16 +22,23 @@ pub struct Geometry {
     pub(super) commands: Vec<DrawCommand>,
 }
 
-pub struct LocalGeometry {
+pub struct LocalGeometry<'a> {
     pub(super) geometry: Geometry,
+    pub(super) svg_icons: Vec<(&'a SvgIcon, kurbo::Vec2)>,
     pub(super) origin: [f32; 2],
     pub(super) size: [u32; 2],
 }
 
-impl LocalGeometry {
-    pub fn new(geometry: Geometry, origin: [f32; 2], size: [u32; 2]) -> Self {
+impl<'a> LocalGeometry<'a> {
+    pub fn new(
+        geometry: Geometry,
+        svg_icons: Vec<(&'a SvgIcon, kurbo::Vec2)>,
+        origin: [f32; 2],
+        size: [u32; 2],
+    ) -> Self {
         Self {
             geometry,
+            svg_icons,
             origin,
             size,
         }
