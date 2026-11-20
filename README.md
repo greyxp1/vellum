@@ -22,6 +22,13 @@ For Vellum main, use the flake module:
 ```nix
 {
   imports = [inputs.vellum.nixosModules.default];
+
+  # Optionally add cache settings for pre-built binaries.
+  nix.settings = {
+    extra-substituters = ["https://greyxp1.cachix.org"];
+    extra-trusted-public-keys = ["greyxp1.cachix.org-1:hUnQC8sjfKykPgkFdcXiuv4xjiISuWnBnPfW2F2df3k="];
+  };
+
   services.vellum = {
     enable = true;
     # Reduce driver memory use on NVIDIA. Disables software fallback.
