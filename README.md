@@ -2,7 +2,8 @@
 
 Vellum is a small native Wayland overlay for drawing directly over the live desktop.
 
-https://github.com/user-attachments/assets/f8171063-16a8-497f-ba20-9e11bc50727e
+<img width="2560" height="1440" alt="image" src="https://github.com/user-attachments/assets/034a27fe-c17e-41c7-b7bf-9affadfaab09" />
+
 
 Vellum began as a fork of [Chameleos](https://github.com/Treeniks/chameleos) by Thomas Lindae.
 
