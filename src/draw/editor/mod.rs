@@ -434,12 +434,7 @@ impl Editor {
     }
 
     fn toggle_eraser(&mut self) -> bool {
-        let next = if self.primitive() == Primitive::Eraser {
-            self.last_non_eraser_tool
-                .unwrap_or_else(|| self.builtin(Primitive::Pen))
-        } else {
-            self.builtin(Primitive::Eraser)
-        };
+        let next = self.effective_tool(super::ToolOverride::InvertEraser);
         self.switch_tool_id(next)
     }
 
@@ -490,9 +485,9 @@ impl Editor {
     fn effective_tool(&self, tool_override: super::ToolOverride) -> ToolId {
         match tool_override {
             super::ToolOverride::None => self.tool,
-            super::ToolOverride::InvertEraser if self.primitive() == Primitive::Eraser => {
-                self.builtin(Primitive::Pen)
-            }
+            super::ToolOverride::InvertEraser if self.primitive() == Primitive::Eraser => self
+                .last_non_eraser_tool
+                .unwrap_or_else(|| self.builtin(Primitive::Pen)),
             super::ToolOverride::Eraser | super::ToolOverride::InvertEraser => {
                 self.builtin(Primitive::Eraser)
             }
