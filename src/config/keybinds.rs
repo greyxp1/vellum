@@ -270,6 +270,7 @@ impl Keybinds {
                 (Erase, &["MouseMiddle"]),
                 (Cancel, &["Escape"]),
                 (Delete, &["Delete", "BackSpace"]),
+                (Clear, &["Ctrl+Delete"]),
                 (SelectAll, &["Ctrl+a"]),
                 (Undo, &["Ctrl+z", "MouseBack"]),
                 (Redo, &["Ctrl+Shift+z", "Ctrl+y", "MouseForward"]),
