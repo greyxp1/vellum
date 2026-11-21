@@ -1,0 +1,44 @@
+name: Sync configuration wiki
+
+on:
+  push:
+    branches: ["master"]
+    paths:
+      - ".github/workflows/wiki.yml"
+      - "docs/config/*.md"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: configuration-wiki
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: master
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ github.repository }}.wiki
+          ref: master
+          path: wiki
+      - name: Publish configuration reference
+        working-directory: wiki
+        run: |
+          pages=(../docs/config/*.md)
+          cp -- "${pages[@]}" .
+          git add -- "${pages[@]##*/}"
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'synced the configuration reference'
+          git push origin HEAD:master

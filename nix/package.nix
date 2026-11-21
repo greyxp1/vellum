@@ -24,6 +24,7 @@ rustPlatform.buildRustPackage {
       ../Cargo.toml
       ../Cargo.lock
       ../build.rs
+      ../docs/config
       ../src
       ../xtask/Cargo.toml
       ../xtask/src
@@ -54,7 +55,7 @@ rustPlatform.buildRustPackage {
       exit 1
     fi
     outputDir=''${outputDirs[0]}
-    installManPage "$outputDir"/man/*.1
+    installManPage "$outputDir"/man/*.1 "$outputDir"/man/vellum.5
     installShellCompletion "$outputDir"/completions/vellum.{bash,fish,nu} \
       --zsh "$outputDir"/completions/_vellum
     install -Dm644 "$outputDir"/completions/vellum.elv \

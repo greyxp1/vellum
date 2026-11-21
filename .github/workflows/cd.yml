@@ -42,7 +42,7 @@ jobs:
         run: cargo build --locked --release --target "${{ matrix.target }}"
       - name: Package
         run: |
-          mkdir -p "$PACKAGE/share/man/man1" "$PACKAGE/share/shell-completions"
+          mkdir -p "$PACKAGE/share/man/"{man1,man5} "$PACKAGE/share/shell-completions"
           cp README.md LICENSE "target/${{ matrix.target }}/release/vellum" "$PACKAGE"
 
           mapfile -d '' output_dirs < <(find "target/${{ matrix.target }}/release/build" -type d -path '*/vellum-*/out' \
@@ -53,6 +53,7 @@ jobs:
           fi
           output_dir=${output_dirs[0]}
           cp "$output_dir/man"/*.1 "$PACKAGE/share/man/man1"
+          cp "$output_dir/man/vellum.5" "$PACKAGE/share/man/man5"
           cp "$output_dir/completions"/* "$PACKAGE/share/shell-completions"
 
           tar -czf "$PACKAGE.tar.gz" "$PACKAGE"

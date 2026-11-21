@@ -11,6 +11,7 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "build.rs"
+      - "docs/config/*.md"
       - "src/**"
       - "xtask/Cargo.toml"
       - "xtask/src/**"

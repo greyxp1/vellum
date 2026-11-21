@@ -68,9 +68,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     for entry in fs::read_dir(man_dir)? {
         let source = entry?.path();
+        let section = source
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .ok_or("manual page has no section")?;
         install(
             &source,
-            &root.join("share/man/man1").join(file_name(&source)?),
+            &root
+                .join("share/man")
+                .join(format!("man{section}"))
+                .join(file_name(&source)?),
         )?;
     }
 
