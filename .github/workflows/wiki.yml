@@ -13,7 +13,6 @@ permissions:
 
 concurrency:
   group: configuration-wiki
-  cancel-in-progress: false
 
 jobs:
   sync:
@@ -32,12 +31,22 @@ jobs:
       - name: Publish configuration reference
         working-directory: wiki
         run: |
-          pages=(../docs/config/*.md)
-          cp -- "${pages[@]}" .
-          git add -- "${pages[@]##*/}"
-          if git diff --cached --quiet; then
-            exit 0
-          fi
+          shopt -s nullglob
+          # These pages were synced before the wiki tracked their ownership.
+          published=(Configuration.md Global-settings.md Keybinds.md Per-tool-settings.md)
+          [[ ! -f .configuration-pages ]] || mapfile -t published < .configuration-pages
+          for page in "${published[@]}"; do
+            [[ $page == *.md && $page != */* && ! -f "../docs/config/$page" ]] || continue
+            rm -f -- "$page"
+          done
+
+          for source in ../docs/config/*.md; do
+            cp -- "$source" .
+            printf '%s\n' "${source##*/}"
+          done > .configuration-pages
+          git add --all
+
+          git diff --cached --quiet && exit 0
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git commit -m 'synced the configuration reference'
