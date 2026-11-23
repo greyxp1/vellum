@@ -13,6 +13,8 @@ const OUTLINE_HIT_RADIUS: f32 = 5.0;
 const VISUAL_RADIUS: f32 = 4.5;
 const SELECTION_WIDTH: f32 = 1.5;
 const GAP: f32 = 4.0;
+/// How far selection outlines extend past their element.
+pub(super) const OUTLINE_EXTENT: f32 = GAP + SELECTION_WIDTH;
 const STYLE: Style = Style {
     size: SELECTION_WIDTH,
     color: [0.1, 0.75, 1.0, 0.8],

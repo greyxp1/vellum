@@ -235,9 +235,9 @@ impl TextSpec<'_> {
                     wgpu::util::TextureDataOrder::LayerMajor,
                     pixmap.data_as_u8_slice(),
                 );
-                // The picker owns texture 0.
+                // The picker and annotation cache own the textures before these.
                 bitmaps.next_texture += 1;
-                let id = TextureId(bitmaps.next_texture);
+                let id = TextureId(super::ANNOTATION_CACHE_TEXTURE.0 + bitmaps.next_texture);
                 target
                     .texture_bindings
                     .insert(id, texture.create_view(&Default::default()));

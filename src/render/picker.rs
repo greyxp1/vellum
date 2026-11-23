@@ -167,9 +167,12 @@ impl PickerState {
             .map_err(|error| format!("Vello picker render failed: {error}"))
     }
 
-    pub(super) fn release_target(&mut self, bindings: &mut vello_hybrid::TextureBindings) {
-        bindings.remove(PICKER_TEXTURE);
-        self.target = None;
+    pub(super) fn release(&mut self, bindings: &mut vello_hybrid::TextureBindings) {
+        if self.target.take().is_some() {
+            bindings.remove(PICKER_TEXTURE);
+            // Reset keeps the recorder's peak allocations.
+            self.scene = vello_hybrid::Scene::new(1, 1);
+        }
     }
 }
 

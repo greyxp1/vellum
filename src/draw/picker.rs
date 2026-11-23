@@ -161,6 +161,16 @@ fn push_palette(output: &mut Geometry, center: Point, hovered: Option<Choice>, p
     }
 }
 
+pub(super) fn picker_bounds(center: Point) -> kurbo::Rect {
+    kurbo::Rect::from_origin_size(
+        (
+            f64::from((center.x - PICKER_LAYER_SIZE as f32 * 0.5).floor()),
+            f64::from((center.y - PICKER_LAYER_SIZE as f32 * 0.5).floor()),
+        ),
+        (f64::from(PICKER_LAYER_SIZE), f64::from(PICKER_LAYER_SIZE)),
+    )
+}
+
 pub(super) fn picker_geometry<'a>(
     picker: Picker,
     active: Option<usize>,
@@ -171,14 +181,8 @@ pub(super) fn picker_geometry<'a>(
     presentation: bool,
 ) -> Option<LocalGeometry<'a>> {
     let Picker { center, hovered } = picker;
-    let origin = [
-        (center.x - PICKER_LAYER_SIZE as f32 * 0.5).floor(),
-        (center.y - PICKER_LAYER_SIZE as f32 * 0.5).floor(),
-    ];
-    let bounds = kurbo::Rect::from_origin_size(
-        (f64::from(origin[0]), f64::from(origin[1])),
-        (f64::from(PICKER_LAYER_SIZE), f64::from(PICKER_LAYER_SIZE)),
-    );
+    let bounds = picker_bounds(center);
+    let origin = [bounds.x0 as f32, bounds.y0 as f32];
     if bounds.intersect(viewport.inflate(1.0, 1.0)).area() == 0.0 {
         return None;
     }

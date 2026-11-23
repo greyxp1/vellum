@@ -39,12 +39,16 @@ impl DrawState {
             .canvas
             .map(|canvas| self.editor.canvas_elements(canvas))
             .unwrap_or_default();
+        // Committed items are cacheable while none of them animates or follows a gesture.
+        let mut cacheable = presentation.interactive && active_text.is_none();
         let items = {
             let mut items = Vec::with_capacity(elements.len());
             let now = std::time::Instant::now();
             for element in elements {
                 let remaining = self.editor.annotation_remaining(element, now);
                 if remaining <= 0.0 {
+                    // An annotation can expire before `handle_timeouts` bumps `committed_revision`.
+                    cacheable = false;
                     continue;
                 }
                 // The element's bounds do not follow uncommitted edits.
@@ -55,11 +59,10 @@ impl DrawState {
                 let preview = active_canvas
                     .then(|| self.editor.resize_preview(element.id))
                     .flatten();
-                let offset = if active_canvas {
-                    self.editor.moving_offset(element.id).unwrap_or_default()
-                } else {
-                    Point::default()
-                };
+                let moving = active_canvas
+                    .then(|| self.editor.moving_offset(element.id))
+                    .flatten();
+                let offset = moving.unwrap_or_default();
                 let bounds = preview.map_or(element.bounds, |current| current.bounds);
                 let (kind, style) = preview.map_or((&element.kind, element.style), |current| {
                     (&current.kind, current.style)
@@ -75,9 +78,12 @@ impl DrawState {
                     min: bounds.min + offset,
                     max: bounds.max + offset,
                 };
+                // Moving or resizing an element off-screen still invalidates its cached position.
+                cacheable &= preview.is_none() && moving.is_none();
                 if !bounds.expanded(overhang).intersects(visible) {
                     continue;
                 }
+                cacheable &= remaining >= 1.0;
                 let ElementKind::Text {
                     origin,
                     text,
@@ -190,13 +196,22 @@ impl DrawState {
             .then(|| self.editor.picker_geometry(viewport))
             .flatten();
         let (annotations, decorations) = previews.split_at(annotation_previews);
-        let cursor = self.tool_cursor.filter(|_| presentation.interactive);
+        let margin = if self.shadows { 10.0 } else { 1.0 };
+        let cursor = self
+            .tool_cursor
+            .filter(|_| presentation.interactive)
+            .map(|(point, cursor)| tool_cursor_geometry(point, cursor))
+            .filter(|geometry| {
+                geometry.bounds().is_some_and(|bounds| {
+                    bounds.inflate(margin, margin).intersect(viewport).area() > 0.0
+                })
+            });
         if wgpu.render(
             &items,
             Previews {
                 annotations,
                 decorations,
-                cursor: cursor.map(|(point, cursor)| tool_cursor_geometry(point, cursor)),
+                cursor,
             },
             picker.as_ref(),
             Viewport {
@@ -205,6 +220,8 @@ impl DrawState {
                 shadow_overlap: self.shadow_overlap,
                 origin: [origin.x, origin.y],
                 scale,
+                interactive: presentation.interactive,
+                revision: cacheable.then_some(self.committed_revision),
             },
             || {
                 before_present(

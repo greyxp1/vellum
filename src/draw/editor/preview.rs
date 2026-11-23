@@ -1,12 +1,19 @@
 use super::interaction::ResizeSnapshot;
 use super::{Editor, Interaction, drawing_kind};
-use crate::draw::picker::picker_geometry;
-use crate::draw::scene::{Bounds, ElementId, ElementKind, Point, geometry};
+use crate::draw::picker::{picker_bounds, picker_geometry};
+use crate::draw::scene::{Bounds, ElementId, ElementKind, Point, Style, bounds_for, geometry};
 use crate::draw::selection;
 use crate::render::Geometry;
 use crate::tool::Primitive;
 
 impl Editor {
+    pub(in crate::draw) fn has_preview(&self) -> bool {
+        matches!(
+            self.interaction,
+            Some(Interaction::Freehand(..) | Interaction::Drawing { .. })
+        )
+    }
+
     pub(in crate::draw) fn append_preview_geometry(&self, output: &mut Vec<Geometry>) {
         match &self.interaction {
             Some(Interaction::Freehand(_, stroke)) => output.push(stroke.tail_geometry()),
@@ -22,6 +29,71 @@ impl Editor {
                 *style,
             )),
             _ => {}
+        }
+    }
+
+    pub(in crate::draw) fn interaction_bounds(&self) -> Option<kurbo::Rect> {
+        let outline = |bounds: Bounds, style: Style, kind: &ElementKind| {
+            let overhang = match kind {
+                ElementKind::Text { scale, .. } => style.size * scale[0].abs().max(scale[1].abs()),
+                _ => 0.0,
+            };
+            bounds.expanded(overhang.max(selection::OUTLINE_EXTENT))
+        };
+        let interaction = match &self.interaction {
+            Some(Interaction::Freehand(_, stroke)) => Some(stroke.bounds()),
+            Some(Interaction::Drawing {
+                tool,
+                style,
+                start,
+                current,
+                modifiers,
+                ..
+            }) => Some(bounds_for(
+                &drawing_kind(*tool, *start, *current, *modifiers),
+                *style,
+            )),
+            Some(Interaction::Moving {
+                ids,
+                start,
+                current,
+            }) => {
+                let offset = *current - *start;
+                ids.iter()
+                    .filter_map(|&id| self.element(id))
+                    .map(|e| {
+                        let b = outline(e.bounds, e.style, &e.kind);
+                        Bounds {
+                            min: b.min + offset,
+                            max: b.max + offset,
+                        }
+                    })
+                    .reduce(|a, b| Bounds::from_points([a.min, a.max, b.min, b.max]))
+            }
+            Some(Interaction::Resizing { current, .. }) => {
+                Some(outline(current.bounds, current.style, &current.kind))
+            }
+            Some(Interaction::EditingText(_, edit)) => {
+                let overhang = edit.style.size * edit.scale[0].abs().max(edit.scale[1].abs());
+                Some(
+                    edit.bounds()
+                        .expanded(overhang.max(selection::OUTLINE_EXTENT)),
+                )
+            }
+            Some(Interaction::Erasing { .. }) | None => None,
+        }
+        .map(|b| {
+            kurbo::Rect::new(
+                f64::from(b.min.x),
+                f64::from(b.min.y),
+                f64::from(b.max.x),
+                f64::from(b.max.y),
+            )
+        });
+        let picker = self.picker.map(|p| picker_bounds(p.center));
+        match (interaction, picker) {
+            (Some(a), Some(b)) => Some(a.union(b)),
+            (bounds, None) | (None, bounds) => bounds,
         }
     }
 

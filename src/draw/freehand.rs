@@ -248,6 +248,11 @@ impl LiveStroke {
         true
     }
 
+    pub fn bounds(&self) -> super::scene::Bounds {
+        super::scene::Bounds::from_points(self.points.iter().copied())
+            .expanded(self.style.size * 0.5)
+    }
+
     pub fn tail_geometry(&self) -> Geometry {
         if self.cache_anchor.is_none() {
             return geometry(&self.points, self.style);

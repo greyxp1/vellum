@@ -250,6 +250,10 @@ impl Editor {
         matches!(self.interaction, Some(Interaction::EditingText(..)))
     }
 
+    pub(in crate::draw) fn is_erasing(&self) -> bool {
+        matches!(self.interaction, Some(Interaction::Erasing { .. }))
+    }
+
     pub(in crate::draw) fn is_drawing_pen(&self) -> bool {
         matches!(self.interaction, Some(Interaction::Freehand(..)))
     }
