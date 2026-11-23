@@ -67,14 +67,27 @@ impl WgpuState {
         let output_size = [width, height];
         let [width, height] = if can_shrink { [1, 1] } else { output_size };
         let capabilities = surface.get_capabilities(&gpu.adapter);
-        // Wayland blends encoded colors. Avoid encoding RGB after Vello has
-        // premultiplied edge coverage, which would brighten transparent fringes.
+        // Wayland blends encoded colors. Avoid sRGB targets (which encode RGB after
+        // Vello premultiplies edge coverage) and 2-bit alpha formats like Rgb10a2Unorm.
         let format = capabilities
             .formats
             .iter()
-            .find(|format| !format.is_srgb())
+            .find(|format| {
+                matches!(
+                    format,
+                    wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Rgba8Unorm
+                )
+            })
+            .or_else(|| {
+                capabilities.formats.iter().find(|format| {
+                    matches!(
+                        format,
+                        wgpu::TextureFormat::Bgra8UnormSrgb | wgpu::TextureFormat::Rgba8UnormSrgb
+                    )
+                })
+            })
+            .or_else(|| capabilities.formats.first())
             .copied()
-            .or_else(|| capabilities.formats.first().copied())
             .ok_or("GPU adapter does not support the Wayland surface")?;
         // Vello writes premultiplied alpha. Wayland composites inherited alpha as premultiplied.
         let alpha_mode = [
