@@ -1,4 +1,5 @@
 use kurbo::{BezPath, Cap, ParamCurve, ParamCurveArclen, Shape, Stroke, StrokeOpts};
+use std::borrow::Cow;
 use std::time::Instant;
 
 use super::scene::{
@@ -391,9 +392,11 @@ fn snapped_samples(
     points: &[Point],
     style: Style,
     scale: f32,
-) -> Option<Result<Vec<Point>, BezPath>> {
-    let mut points = pixel_aligned_points(points, style.size).into_owned();
-    points.dedup();
+) -> Option<Result<Cow<'_, [Point]>, BezPath>> {
+    let mut points = pixel_aligned_points(points, style.size);
+    if points.windows(2).any(|pair| pair[0] == pair[1]) {
+        points.to_mut().dedup();
+    }
     let (&first, &last) = (points.first()?, points.last()?);
     let radius = style.size * 0.5;
     if radius <= f32::EPSILON {

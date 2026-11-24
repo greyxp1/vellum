@@ -88,11 +88,13 @@ impl State {
                 .into(),
             ),
             StatusField::Whiteboard => Value::Boolean(self.is_whiteboard()),
-            StatusField::Presentation => Value::Boolean(self.draw.is_presenting()),
-            StatusField::TextEditing => Value::Boolean(self.is_text_editing()),
+            StatusField::Presentation => Value::Boolean(self.draw.editor().presentation),
+            StatusField::TextEditing => Value::Boolean(self.draw.editor().is_editing_text()),
             StatusField::AnnotationsVisible => Value::Boolean(self.annotations_visible),
             StatusField::WhiteboardColor => Value::Color(self.whiteboard_color),
-            StatusField::Tool => Value::Text(target.unwrap_or(self.draw.tool_name()).into()),
+            StatusField::Tool => {
+                Value::Text(target.unwrap_or(self.draw.editor().tool_name()).into())
+            }
             StatusField::Color => {
                 let [r, g, b, alpha] = settings.color;
                 Value::Color([r, g, b, if tool.supports_opacity() { alpha } else { 1.0 }])
@@ -119,7 +121,7 @@ impl State {
         json: bool,
     ) -> Result<Cow<'static, str>, String> {
         let tool = tool.as_deref();
-        let style = self.draw.named_tool_style(tool)?;
+        let style = self.draw.editor().named_tool_style(tool)?;
         let value = |field| self.status_value(field, tool, style);
         let fields = StatusField::value_variants()
             .iter()

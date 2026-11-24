@@ -1,5 +1,4 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::ffi::OsString;
 use std::io::ErrorKind;
 use std::mem::MaybeUninit;
 use std::os::fd::OwnedFd;
@@ -102,7 +101,7 @@ impl Config {
 
 struct Watcher {
     fd: OwnedFd,
-    entries: BTreeMap<i32, BTreeSet<OsString>>,
+    entries: BTreeMap<i32, BTreeSet<Vec<u8>>>,
 }
 
 impl Watcher {
@@ -138,7 +137,7 @@ impl Watcher {
                             .checked_sub(1)
                             .and_then(|index| ancestors[index].file_name())
                         {
-                            names.insert(OsString::from(name));
+                            names.insert(name.as_bytes().to_vec());
                         }
                     }
                     Err(
@@ -181,11 +180,9 @@ impl Watcher {
                 Ok(event) => {
                     changed |= event.events().contains(ReadFlags::QUEUE_OVERFLOW)
                         || self.entries.get(&event.wd()).is_some_and(|names| {
-                            event.file_name().is_none_or(|name| {
-                                names
-                                    .iter()
-                                    .any(|expected| expected.as_bytes() == name.to_bytes())
-                            })
+                            event
+                                .file_name()
+                                .is_none_or(|name| names.contains(name.to_bytes()))
                         });
                 }
                 Err(rustix::io::Errno::INTR) => continue,

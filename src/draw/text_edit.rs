@@ -193,7 +193,7 @@ impl TextEdit {
     pub(super) fn click(&mut self, point: Point, clicks: u8, extend: bool) -> bool {
         self.drag_point = Some(point);
         let (x, y) = self.local(point);
-        self.external_edit(None, |driver| match clicks {
+        self.edit(None, true, |driver| match clicks {
             2 => driver.select_word_at_point(x, y),
             3 => driver.select_line_at_point(x, y),
             _ if extend => driver.shift_click_extension(x, y),
@@ -207,7 +207,7 @@ impl TextEdit {
         }
         self.drag_point = Some(point);
         let (x, y) = self.local(point);
-        self.external_edit(None, |driver| driver.extend_selection_to_point(x, y))
+        self.edit(None, true, |driver| driver.extend_selection_to_point(x, y))
     }
 
     pub(super) fn end_drag(&mut self, point: Option<Point>) -> bool {
@@ -274,32 +274,24 @@ impl TextEdit {
         });
     }
 
-    /// Runs one Parley edit, recording an undo step when it has a kind.
+    /// Runs one Parley edit, recording an undo step when it has a kind. Changes made outside of
+    /// the input method are `external`, so it must then resynchronize.
     fn edit(
         &mut self,
         kind: Option<EditKind>,
+        external: bool,
         edit: impl FnOnce(&mut PlainEditorDriver<'_, ()>),
     ) -> bool {
         let cancelled = self.clear_preedit();
         let before = kind.map(|kind| (self.capture(), kind));
         let generation = self.editor.generation();
-        self.preedit_hints.clear();
         with_text_context(|fonts, layouts| edit(&mut self.editor.driver(fonts, layouts)));
         match before {
             Some((before, kind)) => self.record(before, kind),
             None => self.group = None,
         }
-        cancelled || self.editor.generation() != generation
-    }
-
-    /// Edits the text outside of the input method, which must then resynchronize.
-    fn external_edit(
-        &mut self,
-        kind: Option<EditKind>,
-        edit: impl FnOnce(&mut PlainEditorDriver<'_, ()>),
-    ) -> bool {
-        let changed = self.edit(kind, edit);
-        if changed {
+        let changed = cancelled || self.editor.generation() != generation;
+        if changed && external {
             self.external_revision = self.external_revision.wrapping_add(1);
         }
         changed
@@ -321,23 +313,23 @@ impl TextEdit {
         Some(match action {
             Action::Undo => self.step(false),
             Action::Redo => self.step(true),
-            Action::SelectAll => self.external_edit(None, |driver| driver.select_all()),
+            Action::SelectAll => self.edit(None, true, |driver| driver.select_all()),
             Action::Backspace => self.delete_grapheme(true),
             Action::Delete => self.delete_grapheme(false),
-            Action::BackspaceWord => {
-                self.external_edit(Some(EditKind::Atomic), |driver| driver.backdelete_word())
-            }
+            Action::BackspaceWord => self.edit(Some(EditKind::Atomic), true, |driver| {
+                driver.backdelete_word()
+            }),
             Action::MoveCursor(movement, extend) => self.move_cursor(*movement, *extend),
-            Action::InsertText(text) => self.external_edit(Some(insert(text)), |driver| {
+            Action::InsertText(text) => self.edit(Some(insert(text)), true, |driver| {
                 driver.insert_or_replace_selection(text)
             }),
-            Action::PasteText(text) => self.external_edit(Some(EditKind::Atomic), |driver| {
+            Action::PasteText(text) => self.edit(Some(EditKind::Atomic), true, |driver| {
                 driver.insert_or_replace_selection(text)
             }),
             Action::Cut if self.editor.selected_text().is_none() => false,
-            Action::Cut => {
-                self.external_edit(Some(EditKind::Atomic), |driver| driver.delete_selection())
-            }
+            Action::Cut => self.edit(Some(EditKind::Atomic), true, |driver| {
+                driver.delete_selection()
+            }),
             _ => return None,
         })
     }
@@ -369,7 +361,7 @@ impl TextEdit {
         } else {
             EditKind::Delete
         };
-        self.external_edit(Some(kind), |driver| {
+        self.edit(Some(kind), true, |driver| {
             if !driver.editor.raw_selection().is_collapsed() {
                 driver.delete_selection();
                 return;
@@ -394,7 +386,7 @@ impl TextEdit {
     }
 
     fn move_cursor(&mut self, movement: CursorMove, extend: bool) -> bool {
-        self.external_edit(None, |driver| {
+        self.edit(None, true, |driver| {
             let [to, select] = movement.motions();
             if extend { select(driver) } else { to(driver) }
         })
@@ -417,7 +409,7 @@ impl TextEdit {
     pub(super) fn apply_text_input(&mut self, batch: TextInputBatch) -> bool {
         let generation = self.editor.generation();
         let changed = if batch.commit.is_some() || batch.delete_surrounding.is_some() {
-            self.edit(Some(EditKind::Atomic), |driver| {
+            self.edit(Some(EditKind::Atomic), false, |driver| {
                 if let Some((before, after)) = batch.delete_surrounding {
                     let selection = driver.editor.raw_selection().text_range();
                     let text = driver.editor.raw_text();
@@ -455,21 +447,17 @@ impl TextEdit {
         changed || self.editor.generation() != generation
     }
 
-    pub(super) fn shows_caret(&self) -> bool {
-        self.editor.raw_selection().is_collapsed() && self.editor.cursor_geometry(1.0).is_some()
-    }
-
-    pub(super) fn caret(&self) -> Geometry {
-        let rect = self
-            .editor
-            .cursor_geometry(1.0)
-            .unwrap_or_else(|| self.editor.ime_cursor_area());
+    pub(super) fn caret(&self) -> Option<Geometry> {
+        if !self.editor.raw_selection().is_collapsed() {
+            return None;
+        }
+        let rect = self.editor.cursor_geometry(1.0)?;
         let [scale_x, scale_y] = self.scale;
-        text_caret(
+        Some(text_caret(
             self.origin.x + rect.x0 as f32 * scale_x,
             self.origin.y + rect.y0 as f32 * scale_y,
             self.style.size * scale_y,
-        )
+        ))
     }
 
     pub(super) fn ime_area(&self) -> parley::BoundingBox {

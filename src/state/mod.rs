@@ -75,7 +75,7 @@ impl State {
     pub(crate) fn can_reload(&self) -> bool {
         !self.pointer.input_grab_active()
             && !self.tablet.input_grab_active()
-            && !self.draw.is_editing_text()
+            && !self.draw.editor().is_editing_text()
             && !self.freeze.capturing()
     }
 
@@ -110,16 +110,8 @@ impl State {
         self.refresh_cursor();
     }
 
-    pub(crate) fn toggle_input(&mut self) {
-        self.set_input_active(!self.is_active());
-    }
-
     pub(crate) fn is_active(&self) -> bool {
         self.mode != Mode::Inactive
-    }
-
-    pub(crate) fn is_text_editing(&self) -> bool {
-        self.draw.is_editing_text()
     }
 
     pub(crate) fn is_whiteboard(&self) -> bool {
@@ -128,14 +120,10 @@ impl State {
 
     pub(crate) fn set_input_active(&mut self, active: bool) {
         if !active {
-            self.deactivate();
+            self.set_mode(Mode::Inactive);
         } else if !self.is_active() {
             self.set_mode(Mode::Desktop);
         }
-    }
-
-    fn deactivate(&mut self) {
-        self.set_mode(Mode::Inactive);
     }
 
     fn set_mode(&mut self, mode: Mode) {
@@ -143,7 +131,8 @@ impl State {
             return;
         }
         let was_active = self.is_active();
-        let preserve_picker = was_active && mode != Mode::Inactive && self.draw.picker_active();
+        let preserve_picker =
+            was_active && mode != Mode::Inactive && self.draw.editor().picker_active();
         self.stop_freeze(true);
         self.pending_pen_motion.reset(None);
         self.keyboard.cancel_repeat();
@@ -215,14 +204,14 @@ impl State {
     }
 
     pub(crate) fn set_presentation(&mut self, visibility: Visibility) {
-        let enabled = visibility.apply(self.draw.is_presenting());
+        let enabled = visibility.apply(self.draw.editor().presentation);
         if enabled && !self.is_active() {
             self.set_mode(Mode::Desktop);
         }
-        if enabled == self.draw.is_presenting() {
+        if enabled == self.draw.editor().presentation {
             return;
         }
-        let preserve_picker = self.draw.picker_active();
+        let preserve_picker = self.draw.editor().picker_active();
         self.flush_pen_motion();
         self.pending_pen_motion.reset(None);
         self.keyboard.cancel_repeat();
@@ -274,7 +263,7 @@ impl State {
     }
 
     pub(crate) fn select_tool(&mut self, tool: String) -> Result<(), String> {
-        if tool != self.draw.tool_name()
+        if tool != self.draw.editor().tool_name()
             && (self.pointer.input_grab_active() || self.tablet.input_grab_active())
         {
             return Err("finish the current gesture before selecting a tool".into());

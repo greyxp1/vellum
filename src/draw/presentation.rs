@@ -139,8 +139,10 @@ impl DrawState {
             let [scale_x, scale_y] = edit.scale;
             let area = edit.ime_area();
             cursor_rectangle = Some(text_cursor_rectangle(edit.origin, area, edit.scale, origin));
-            if self.caret_visible && edit.shows_caret() {
-                previews.push(edit.caret());
+            if self.caret_visible
+                && let Some(caret) = edit.caret()
+            {
+                previews.push(caret);
             }
             edit.decoration_rectangles(|[x, y, width, height], style| {
                 previews.push(text_preedit_span(

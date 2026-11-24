@@ -19,7 +19,8 @@ use crate::OutputId;
 use crate::config::Property;
 
 pub(crate) use self::editor::Action;
-use self::editor::{Editor, EditorEffect};
+pub(crate) use self::editor::Editor;
+use self::editor::EditorEffect;
 pub(crate) use self::scene::{Point, Style};
 pub(crate) use self::selection::CursorHint;
 use self::text_edit::TextEdit;
@@ -60,10 +61,6 @@ pub(crate) enum Cursor {
 }
 
 impl Cursor {
-    pub(crate) fn same_compositor_cursor(self, other: Self) -> bool {
-        self.shape() == other.shape()
-    }
-
     pub(crate) fn shape(self) -> Option<CursorHint> {
         match self {
             Self::Shape(hint) => Some(hint),
@@ -149,24 +146,13 @@ impl DrawState {
         Ok(changed)
     }
 
-    pub(crate) fn tool_name(&self) -> &str {
-        self.editor.tool_name()
-    }
-
-    pub(crate) fn named_tool_style(
-        &self,
-        tool: Option<&str>,
-    ) -> Result<(Primitive, Style), String> {
-        self.editor.named_tool_style(tool)
+    pub(crate) fn editor(&self) -> &Editor {
+        &self.editor
     }
 
     pub(crate) fn switch_canvas(&mut self, canvas: Canvas) {
         self.editor.switch_canvas(canvas);
         self.record(true);
-    }
-
-    pub(crate) fn is_presenting(&self) -> bool {
-        self.editor.presentation
     }
 
     pub(crate) fn set_presentation(&mut self, enabled: bool) {
@@ -221,14 +207,6 @@ impl DrawState {
         self.record(changed);
     }
 
-    pub(crate) fn is_editing_text(&self) -> bool {
-        self.editor.is_editing_text()
-    }
-
-    pub(crate) fn is_drawing_pen(&self) -> bool {
-        self.editor.is_drawing_pen()
-    }
-
     pub(crate) fn handle_action(&mut self, action: Action, at: Option<Point>) -> EditorEffect {
         let user_input = !matches!(action, Action::ApplyTextInput(_));
         let mut effect = self.editor.handle_action(action);
@@ -236,9 +214,7 @@ impl DrawState {
             self.show_feedback(label, at);
             effect.changed = true;
         }
-        if (user_input || effect.changed) && self.show_caret() {
-            effect.changed = true;
-        }
+        effect.changed |= (user_input || effect.changed) && self.show_caret();
         self.record(effect.changed);
         effect
     }
@@ -252,9 +228,7 @@ impl DrawState {
         let before = self.editor.interaction_bounds();
         let was_editing_text = self.editor.text_edit().is_some();
         let mut changed = self.editor.pointer_down(point, modifiers, tool_override);
-        if self.show_caret() {
-            changed = true;
-        }
+        changed |= self.show_caret();
         if !was_editing_text && self.editor.has_preview() {
             self.damage_interaction(changed, before)
         } else {
@@ -279,10 +253,6 @@ impl DrawState {
         self.interact(|editor| editor.pen_motion(motion, modifiers))
     }
 
-    pub(crate) fn pen_release_tip(&self, point: Point, modifiers: Modifiers) -> Option<Point> {
-        self.editor.pen_release_tip(point, modifiers)
-    }
-
     pub(crate) fn modifiers_changed(&mut self, modifiers: Modifiers) -> bool {
         self.interact(|editor| editor.modifiers_changed(modifiers))
     }
@@ -293,14 +263,6 @@ impl DrawState {
             self.show_caret();
         }
         self.record(changed)
-    }
-
-    pub(crate) fn picker_active(&self) -> bool {
-        self.editor.picker_active()
-    }
-
-    pub(crate) fn cursor(&self, point: Point, tool_override: ToolOverride) -> Cursor {
-        self.editor.cursor(point, tool_override)
     }
 
     pub(crate) fn finish_pointer_interaction(
@@ -514,7 +476,7 @@ impl DrawState {
         let mut changed = fading || feedback_expired;
         if self.caret_until.is_some_and(|until| now >= until) {
             if let Some(edit) = self.editor.text_edit() {
-                if let Some(bounds) = edit.caret().bounds() {
+                if let Some(bounds) = edit.caret().and_then(|caret| caret.bounds()) {
                     self.damage_region(bounds);
                 }
                 self.caret_visible = !self.caret_visible;
@@ -530,7 +492,11 @@ impl DrawState {
     }
 
     fn show_caret(&mut self) -> bool {
-        if !self.editor.text_edit().is_some_and(TextEdit::shows_caret) {
+        if !self
+            .editor
+            .text_edit()
+            .is_some_and(|edit| edit.caret().is_some())
+        {
             self.caret_until = None;
             return false;
         }

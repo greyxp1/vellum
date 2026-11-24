@@ -165,8 +165,8 @@ impl State {
             return;
         }
         if !self.freeze.capturing()
-            && (self.draw.is_editing_text()
-                || self.draw.picker_active()
+            && (self.draw.editor().is_editing_text()
+                || self.draw.editor().picker_active()
                 || self.pointer.input_grab_active()
                 || self.tablet.input_grab_active())
         {

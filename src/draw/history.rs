@@ -28,14 +28,10 @@ impl History {
                     updates.retain(|(id, ..)| expired.binary_search(id).is_err());
                     !updates.is_empty()
                 }
-                Entry::Remove(elements) => {
+                Entry::Remove(elements) | Entry::Clear(elements) => {
                     elements.retain(|element| expired.binary_search(&element.id).is_err());
-                    !elements.is_empty()
-                }
-                Entry::Clear(elements) => {
-                    elements.retain(|element| expired.binary_search(&element.id).is_err());
-                    // An empty snapshot still clears the current canvas on redo.
-                    true
+                    // An empty clear snapshot still clears the current canvas on redo.
+                    !elements.is_empty() || matches!(entry, Entry::Clear(_))
                 }
             });
         }

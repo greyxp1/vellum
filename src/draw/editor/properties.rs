@@ -132,12 +132,15 @@ impl Editor {
             });
         let definition = &self.tools[id.0];
         let primitive = definition.primitive;
+        let numeric = match setting {
+            ToolSetting::Size { value } => Some((Property::Size, value)),
+            ToolSetting::Opacity { value } => Some((Property::Opacity, value)),
+            ToolSetting::Roundness { value } => Some((Property::Roundness, value)),
+            ToolSetting::Filled { .. } | ToolSetting::Color { .. } => None,
+        };
         let supported = match setting {
-            ToolSetting::Size { .. } => Property::Size.supported(primitive),
-            ToolSetting::Opacity { .. } => Property::Opacity.supported(primitive),
-            ToolSetting::Color { .. } => true,
-            ToolSetting::Roundness { .. } => Property::Roundness.supported(primitive),
             ToolSetting::Filled { .. } => primitive.supports_fill() || primitive == Primitive::Text,
+            _ => numeric.is_none_or(|(property, _)| property.supported(primitive)),
         };
         if !supported {
             return Err(format!("property is not applicable to {}", definition.id));
@@ -145,25 +148,20 @@ impl Editor {
         let properties = &mut self.tool_properties[id.0];
         let before = *properties;
         let before_color = self.color;
-        match setting {
-            ToolSetting::Size { value } => {
-                if !definition.size_range.contains(value) {
-                    return Err(format!(
-                        "{} size must be between {} and {}",
-                        definition.id, definition.size_range.min, definition.size_range.max
-                    ));
-                }
-                properties.size = value;
+        if let Some((property, value)) = numeric {
+            let (min, max) = property.bounds(definition.size_range);
+            if !(min..=max).contains(&value) {
+                let (id, name) = (&definition.id, property.name());
+                return Err(format!("{id} {name} must be between {min} and {max}"));
             }
-            ToolSetting::Opacity { value } => properties.opacity = value,
-            ToolSetting::Roundness { value } => properties.roundness = value,
-            ToolSetting::Filled { value } => properties.filled = value,
-            ToolSetting::Color { value } => {
-                let [r, g, b, alpha] = crate::color_to_srgb(value);
-                self.color = [r, g, b];
-                if alpha < 1.0 && primitive.supports_opacity() {
-                    properties.opacity = alpha;
-                }
+            *property.tool_value(properties) = value;
+        } else if let ToolSetting::Filled { value } = setting {
+            properties.filled = value;
+        } else if let ToolSetting::Color { value } = setting {
+            let [r, g, b, alpha] = crate::color_to_srgb(value);
+            self.color = [r, g, b];
+            if alpha < 1.0 && primitive.supports_opacity() {
+                properties.opacity = alpha;
             }
         }
         Ok(before != *properties || before_color != self.color)
@@ -315,10 +313,7 @@ impl Editor {
         }
     }
 
-    pub(in crate::draw) fn named_tool_style(
-        &self,
-        id: Option<&str>,
-    ) -> Result<(Primitive, Style), String> {
+    pub(crate) fn named_tool_style(&self, id: Option<&str>) -> Result<(Primitive, Style), String> {
         let id = id
             .map(|name| self.resolve_tool(name))
             .transpose()?

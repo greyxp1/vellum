@@ -49,9 +49,8 @@ impl GpuContext {
             }
             Err(std::env::VarError::NotPresent) => {
                 pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-                    power_preference: wgpu::PowerPreference::default(),
-                    force_fallback_adapter: false,
                     compatible_surface: Some(&surface),
+                    ..Default::default()
                 }))
                 .map_err(|error| format!("could not select a Vulkan adapter: {error}"))?
             }
@@ -59,22 +58,16 @@ impl GpuContext {
         };
         log::info!("GPU: {:?}", adapter.get_info());
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: None,
-            required_features: wgpu::Features::empty(),
             required_limits: wgpu::Limits {
                 max_texture_dimension_2d: adapter.limits().max_texture_dimension_2d,
                 ..Default::default()
             },
-            experimental_features: wgpu::ExperimentalFeatures::disabled(),
             memory_hints: wgpu::MemoryHints::Manual {
                 // Fixed blocks avoid retaining large unused regions after drawing.
                 // Larger resources still receive dedicated allocations.
-                suballocated_device_memory_block_size: std::ops::Range {
-                    start: 4 * 1024 * 1024,
-                    end: 4 * 1024 * 1024,
-                },
+                suballocated_device_memory_block_size: (4 << 20)..(4 << 20),
             },
-            trace: wgpu::Trace::Off,
+            ..Default::default()
         }))
         .map_err(|error| format!("could not create the GPU device: {error}"))?;
         let lost = Arc::new(OnceLock::new());

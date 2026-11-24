@@ -136,7 +136,7 @@ pub(crate) fn tool_name(value: &str) -> Result<String, String> {
     Ok(value.into())
 }
 
-#[derive(Clone, PartialEq, clap::Subcommand)]
+#[derive(Clone, Copy, PartialEq, clap::Subcommand)]
 pub(crate) enum ToolSetting {
     /// Size in logical pixels
     Size {

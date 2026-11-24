@@ -364,7 +364,7 @@ impl Dispatch<WlKeyboard, ()> for State {
                     .text_input_snapshot()
                     .map(|snapshot| snapshot.session);
                 state.keyboard.sync_text_session(session);
-                let editing = state.draw.is_editing_text();
+                let editing = state.draw.editor().is_editing_text();
                 let chord = state.keyboard.chord(key, editing, true);
                 let binding = chord.as_ref().and_then(|chord| chord.binding);
                 if state.keyboard_gesture(key, binding, true, time)

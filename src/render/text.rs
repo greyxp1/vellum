@@ -46,20 +46,8 @@ struct BitmapImage {
     used: bool,
 }
 
-// Bitmaps use their own textures because Hybrid's upload_image panics once the atlases it
-// shares with the glyph cache are full.
-#[derive(Default)]
-struct Bitmaps {
-    images: HashMap<BitmapKey, BitmapImage>,
-    next_texture: u64,
-}
-
 impl TextSpec<'_> {
     pub(super) fn append_to_scene(&self, target: &mut TextTarget<'_>, text: &mut TextState) {
-        let TextState {
-            bitmaps,
-            outline_glyphs,
-        } = text;
         let scene = &mut *target.scene;
         let layout = self.layout;
         let target_is_srgb = target.is_srgb;
@@ -123,16 +111,16 @@ impl TextSpec<'_> {
                         if bitmap.bearing_y == 0.0 && is_sbix {
                             bitmap.bearing_y = 100.0;
                         }
-                        self.draw_bitmap(target, bitmaps, run, glyph, &bitmap, units_per_em);
+                        self.draw_bitmap(target, text, run, glyph, &bitmap, units_per_em);
                     } else {
-                        outline_glyphs.push(glifo::Glyph {
+                        text.outline_glyphs.push(glifo::Glyph {
                             id: glyph.id,
                             x: self.left + scale_x * glyph.x,
                             y: self.top + scale_y * glyph.y,
                         });
                     }
                 }
-                if outline_glyphs.is_empty() {
+                if text.outline_glyphs.is_empty() {
                     continue;
                 }
                 target
@@ -149,8 +137,8 @@ impl TextSpec<'_> {
                         emboldening,
                         emboldening,
                     )))
-                    .fill_glyphs(outline_glyphs.iter().copied());
-                outline_glyphs.clear();
+                    .fill_glyphs(text.outline_glyphs.iter().copied());
+                text.outline_glyphs.clear();
             }
         }
     }
@@ -158,7 +146,7 @@ impl TextSpec<'_> {
     fn draw_bitmap(
         &self,
         target: &mut TextTarget<'_>,
-        bitmaps: &mut Bitmaps,
+        text: &mut TextState,
         run: &parley::Run<'_, ()>,
         glyph: parley::Glyph,
         bitmap: &BitmapGlyph<'_>,
@@ -174,7 +162,7 @@ impl TextSpec<'_> {
             bitmap.ppem_x.to_bits(),
             bitmap.ppem_y.to_bits(),
         );
-        let image = match bitmaps.images.entry(key) {
+        let image = match text.bitmaps.entry(key) {
             std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
             std::collections::hash_map::Entry::Vacant(entry) => {
                 let Ok(mut pixmap) = vello_hybrid::Pixmap::from_png(std::io::Cursor::new(data))
@@ -204,8 +192,8 @@ impl TextSpec<'_> {
                     pixmap.data_as_u8_slice(),
                 );
                 // The picker and annotation cache own the textures before these.
-                bitmaps.next_texture += 1;
-                let id = TextureId(super::ANNOTATION_CACHE_TEXTURE.0 + bitmaps.next_texture);
+                text.next_texture += 1;
+                let id = TextureId(super::ANNOTATION_CACHE_TEXTURE.0 + text.next_texture);
                 target
                     .texture_bindings
                     .insert(id, texture.create_view(&Default::default()));
@@ -235,15 +223,18 @@ impl TextSpec<'_> {
     }
 }
 
+// Bitmaps use their own textures because Hybrid's upload_image panics once the atlases it
+// shares with the glyph cache are full.
 #[derive(Default)]
 pub(super) struct TextState {
-    bitmaps: Bitmaps,
+    bitmaps: HashMap<BitmapKey, BitmapImage>,
+    next_texture: u64,
     outline_glyphs: Vec<glifo::Glyph>,
 }
 
 impl TextState {
     pub(super) fn finish_frame(&mut self, target: &mut TextTarget<'_>) {
-        self.bitmaps.images.retain(|_, image| {
+        self.bitmaps.retain(|_, image| {
             let used = std::mem::take(&mut image.used);
             if !used {
                 target.texture_bindings.remove(image.texture);

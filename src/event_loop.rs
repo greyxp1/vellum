@@ -158,7 +158,7 @@ fn handle(state: &mut State, command: Command) -> Option<Result<Cow<'static, str
         Command::Status {
             field, tool, json, ..
         } => return Some(state.status_reply(field, tool, json)),
-        Command::Toggle => state.toggle_input(),
+        Command::Toggle => state.set_input_active(!state.is_active()),
         Command::Activate => state.set_input_active(true),
         Command::Deactivate => state.set_input_active(false),
         Command::Clear { deactivate } => {

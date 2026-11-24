@@ -40,9 +40,21 @@ pub(crate) enum BindingAction {
     TextEnd,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Gesture {
+    Draw,
+    Picker,
+    Eraser,
+}
+
 impl BindingAction {
-    pub(crate) fn pointer_gesture(self) -> bool {
-        matches!(self, Self::Draw | Self::OpenPicker | Self::Erase)
+    pub(crate) fn gesture(self) -> Option<Gesture> {
+        match self {
+            Self::Draw => Some(Gesture::Draw),
+            Self::OpenPicker => Some(Gesture::Picker),
+            Self::Erase => Some(Gesture::Eraser),
+            _ => None,
+        }
     }
 
     pub(crate) fn repeatable(self) -> bool {
@@ -398,7 +410,7 @@ impl Keybinds {
             self.0.iter().find(|entry| {
                 entry.key == key
                     && (automatic || !entry.automatic_selection)
-                    && (!gestures || entry.action.pointer_gesture())
+                    && (!gestures || entry.action.gesture().is_some())
             })
         })
         .map(|entry| entry.action)

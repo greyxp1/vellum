@@ -127,7 +127,7 @@ impl TabletState {
     }
 }
 
-impl Dispatch<ZwpTabletSeatV2, (), State> for TabletState {
+impl Dispatch<ZwpTabletSeatV2, (), State> for State {
     fn event(
         state: &mut State,
         _tablet_seat: &ZwpTabletSeatV2,
@@ -156,7 +156,7 @@ impl Dispatch<ZwpTabletSeatV2, (), State> for TabletState {
     ]);
 }
 
-impl Dispatch<ZwpTabletV2, (), State> for TabletState {
+impl Dispatch<ZwpTabletV2, (), State> for State {
     fn event(
         _state: &mut State,
         tablet: &ZwpTabletV2,
@@ -171,7 +171,7 @@ impl Dispatch<ZwpTabletV2, (), State> for TabletState {
     }
 }
 
-impl Dispatch<ZwpTabletPadV2, (), State> for TabletState {
+impl Dispatch<ZwpTabletPadV2, (), State> for State {
     fn event(
         _state: &mut State,
         pad: &ZwpTabletPadV2,
@@ -192,7 +192,7 @@ impl Dispatch<ZwpTabletPadV2, (), State> for TabletState {
     ]);
 }
 
-impl Dispatch<ZwpTabletPadGroupV2, (), State> for TabletState {
+impl Dispatch<ZwpTabletPadGroupV2, (), State> for State {
     fn event(
         _state: &mut State,
         group: &ZwpTabletPadGroupV2,
@@ -216,7 +216,7 @@ impl Dispatch<ZwpTabletPadGroupV2, (), State> for TabletState {
     ]);
 }
 
-impl Dispatch<ZwpTabletToolV2, (), State> for TabletState {
+impl Dispatch<ZwpTabletToolV2, (), State> for State {
     fn event(
         state: &mut State,
         tablet_tool: &ZwpTabletToolV2,
@@ -323,7 +323,7 @@ impl Dispatch<ZwpTabletToolV2, (), State> for TabletState {
         } else if tablet.cursor_tool.as_ref() == Some(tablet_tool) {
             tablet.cursor_tool = None;
         }
-        let modifiers = state.modifiers();
+        let modifiers = state.keyboard.modifiers();
         if state.tablet.gesture_owner.as_ref() == Some(tablet_tool)
             && let Some(pos) = pos
         {
@@ -342,13 +342,13 @@ impl Dispatch<ZwpTabletToolV2, (), State> for TabletState {
             if button_released && pen_held && !pen_released {
                 state.pointer_up(pos, modifiers, false);
                 state.pointer_down(pos, modifiers, ToolOverride::from_eraser(eraser));
-            } else if button_released && state.draw.picker_active() {
+            } else if button_released && state.draw.editor().picker_active() {
                 state.pointer_up(pos, modifiers, short_button_click);
             }
             if !button_pressed
                 && !button_released
                 && frame.motion.is_some()
-                && (pen_held || (state.draw.picker_active() && button_held))
+                && (pen_held || (state.draw.editor().picker_active() && button_held))
             {
                 state.pointer_motion(pos, modifiers);
             }
@@ -433,10 +433,5 @@ impl ToolFrame {
 use wayland_protocols::wp::tablet::zv2::client::zwp_tablet_manager_v2::ZwpTabletManagerV2;
 
 wayland_client::delegate_noop!(State: ignore ZwpTabletManagerV2);
-wayland_client::delegate_dispatch!(State: [ZwpTabletSeatV2: ()] => TabletState);
-wayland_client::delegate_dispatch!(State: [ZwpTabletV2: ()] => TabletState);
-wayland_client::delegate_dispatch!(State: [ZwpTabletToolV2: ()] => TabletState);
-wayland_client::delegate_dispatch!(State: [ZwpTabletPadV2: ()] => TabletState);
-wayland_client::delegate_dispatch!(State: [ZwpTabletPadGroupV2: ()] => TabletState);
 wayland_client::delegate_noop!(State: ignore ZwpTabletPadRingV2);
 wayland_client::delegate_noop!(State: ignore ZwpTabletPadStripV2);

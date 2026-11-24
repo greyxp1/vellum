@@ -7,7 +7,7 @@ use self::interaction::Interaction;
 pub(super) use self::preview::LiveElement;
 use super::Modifiers;
 use super::history::{Entry as HistoryEntry, History};
-use super::picker::{Choice, Picker, choice};
+use super::picker::{Choice, Picker};
 use super::scene::{Element, ElementId, ElementKind, Point, Style};
 use super::selection;
 use super::text_edit::{CursorMove, TextEdit, TextInputBatch};
@@ -94,7 +94,7 @@ pub(crate) struct EditorEffect {
     pub feedback: Option<String>,
 }
 
-pub(super) struct Editor {
+pub(crate) struct Editor {
     tool: ToolId,
     tools: Arc<[ToolDefinition]>,
     tool_properties: Vec<ToolProperties>,
@@ -105,7 +105,7 @@ pub(super) struct Editor {
     document: Document,
     other_document: Document,
     pub(in crate::draw) canvas: super::Canvas,
-    pub(in crate::draw) presentation: bool,
+    pub(crate) presentation: bool,
     pub(in crate::draw) presentation_settings: crate::config::PresentationSettings,
     selected: Vec<ElementId>,
     interaction: Option<Interaction>,
@@ -270,7 +270,7 @@ impl Editor {
         true
     }
 
-    pub(in crate::draw) fn is_editing_text(&self) -> bool {
+    pub(crate) fn is_editing_text(&self) -> bool {
         matches!(self.interaction, Some(Interaction::EditingText(..)))
     }
 
@@ -278,7 +278,7 @@ impl Editor {
         matches!(self.interaction, Some(Interaction::Erasing { .. }))
     }
 
-    pub(in crate::draw) fn is_drawing_pen(&self) -> bool {
+    pub(crate) fn is_drawing_pen(&self) -> bool {
         matches!(self.interaction, Some(Interaction::Freehand(..)))
     }
 
@@ -306,7 +306,7 @@ impl Editor {
         }
     }
 
-    pub(in crate::draw) fn picker_active(&self) -> bool {
+    pub(crate) fn picker_active(&self) -> bool {
         self.picker.is_some()
     }
 
@@ -370,12 +370,7 @@ impl Editor {
         let Some(picker) = &mut self.picker else {
             return false;
         };
-        let choice = choice(
-            picker.center,
-            point,
-            self.palette.len(),
-            self.tool_wheel.len(),
-        );
+        let choice = picker.choice(point, self.palette.len(), self.tool_wheel.len());
         let changed = picker.hovered != choice;
         picker.hovered = choice;
         changed
@@ -385,12 +380,7 @@ impl Editor {
         let Some(picker) = self.picker else {
             return false;
         };
-        let choice = choice(
-            picker.center,
-            point,
-            self.palette.len(),
-            self.tool_wheel.len(),
-        );
+        let choice = picker.choice(point, self.palette.len(), self.tool_wheel.len());
         if choice.is_none() && latch_center {
             return false;
         }
@@ -445,10 +435,6 @@ impl Editor {
         TextEdit::new(session, id, origin, content, style, scale, font)
     }
 
-    pub(in crate::draw) fn switch_tool(&mut self, primitive: Primitive) -> bool {
-        self.switch_tool_id(self.builtin(primitive))
-    }
-
     fn builtin(&self, primitive: Primitive) -> ToolId {
         ToolDefinition::builtin(&self.tools, primitive)
     }
@@ -473,7 +459,7 @@ impl Editor {
         }
     }
 
-    pub(in crate::draw) fn tool_name(&self) -> &str {
+    pub(crate) fn tool_name(&self) -> &str {
         &self.tools[self.tool.0].id
     }
 

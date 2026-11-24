@@ -311,11 +311,7 @@ impl Editor {
         stroke.push_motion(motion, modifiers.shift)
     }
 
-    pub(in crate::draw) fn pen_release_tip(
-        &self,
-        point: Point,
-        modifiers: Modifiers,
-    ) -> Option<Point> {
+    pub(crate) fn pen_release_tip(&self, point: Point, modifiers: Modifiers) -> Option<Point> {
         let Some(Interaction::Freehand(_, stroke)) = &self.interaction else {
             return None;
         };
@@ -376,7 +372,7 @@ impl Editor {
         }
     }
 
-    pub(in crate::draw) fn cursor(&self, point: Point, tool_override: ToolOverride) -> Cursor {
+    pub(crate) fn cursor(&self, point: Point, tool_override: ToolOverride) -> Cursor {
         let effective_id = self.effective_tool(tool_override);
         let cursor = self.default_cursor(point, tool_override);
         let cursor_tool = match &self.interaction {

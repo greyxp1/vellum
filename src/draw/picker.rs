@@ -33,19 +33,21 @@ pub(super) struct Picker {
     pub hovered: Option<Choice>,
 }
 
-pub(super) fn choice(
-    center: Point,
-    point: Point,
-    color_count: usize,
-    tool_count: usize,
-) -> Option<Choice> {
-    let distance = (point - center).length();
-    if distance < CENTER_RADIUS {
-        None
-    } else if distance < (COLOR_OUTER_RADIUS + TOOL_INNER_RADIUS) * 0.5 {
-        Some(Choice::Color(radial_index(center, point, color_count)))
-    } else {
-        Some(Choice::Tool(radial_index(center, point, tool_count)))
+impl Picker {
+    pub(super) fn choice(
+        self,
+        point: Point,
+        color_count: usize,
+        tool_count: usize,
+    ) -> Option<Choice> {
+        let distance = (point - self.center).length();
+        if distance < CENTER_RADIUS {
+            None
+        } else if distance < (COLOR_OUTER_RADIUS + TOOL_INNER_RADIUS) * 0.5 {
+            Some(Choice::Color(radial_index(self.center, point, color_count)))
+        } else {
+            Some(Choice::Tool(radial_index(self.center, point, tool_count)))
+        }
     }
 }
 
@@ -200,92 +202,87 @@ fn opaque([red, green, blue, _]: [f32; 4]) -> [f32; 4] {
 
 fn push_tool_icon(output: &mut Geometry, center: Point, tool: Icon, filled: bool) {
     const SCALE: f32 = 0.82;
-    let p = |x: f32, y: f32| {
+    let p = |(x, y): (f32, f32)| {
         (
             f64::from(center.x + (x - 12.0) * SCALE),
             f64::from(center.y + (y - 12.0) * SCALE),
         )
     };
     let mut path = BezPath::new();
-    match tool {
-        Icon::Pen => {
-            path.move_to(p(13.0, 21.0));
-            path.line_to(p(21.0, 21.0));
-            path.move_to(p(3.8, 16.2));
-            path.line_to(p(17.2, 2.8));
-            path.line_to(p(21.2, 6.8));
-            path.line_to(p(7.8, 20.2));
-            path.line_to(p(2.5, 21.5));
-            path.close_path();
-        }
-        Icon::Marker => {
-            path.move_to(p(3.0, 16.0));
-            path.line_to(p(14.0, 5.0));
-            path.line_to(p(19.0, 10.0));
-            path.line_to(p(8.0, 21.0));
-            path.close_path();
-            path.move_to(p(6.0, 13.0));
-            path.line_to(p(11.0, 18.0));
-            path.move_to(p(2.0, 21.0));
-            path.line_to(p(5.0, 18.0));
-        }
-        Icon::Line => {
-            path.move_to(p(5.0, 12.0));
-            path.line_to(p(19.0, 12.0));
-        }
-        Icon::Arrow => {
-            path.move_to(p(7.0, 7.0));
-            path.line_to(p(17.0, 7.0));
-            path.line_to(p(17.0, 17.0));
-            path.move_to(p(7.0, 17.0));
-            path.line_to(p(17.0, 7.0));
-        }
-        Icon::Triangle => {
-            path.move_to(p(12.0, 3.0));
-            path.line_to(p(21.0, 20.0));
-            path.line_to(p(3.0, 20.0));
-            path.close_path();
-        }
-        Icon::Rectangle => {
-            path.move_to(p(5.0, 3.0));
-            path.line_to(p(19.0, 3.0));
-            path.line_to(p(21.0, 5.0));
-            path.line_to(p(21.0, 19.0));
-            path.line_to(p(19.0, 21.0));
-            path.line_to(p(5.0, 21.0));
-            path.line_to(p(3.0, 19.0));
-            path.line_to(p(3.0, 5.0));
-            path.close_path();
-        }
+    // Each subpath is an SVG-style polyline that closes into a polygon when flagged.
+    let subpaths: &[(bool, &[(f32, f32)])] = match tool {
+        Icon::Pen => &[
+            (false, &[(13.0, 21.0), (21.0, 21.0)]),
+            (
+                true,
+                &[
+                    (3.8, 16.2),
+                    (17.2, 2.8),
+                    (21.2, 6.8),
+                    (7.8, 20.2),
+                    (2.5, 21.5),
+                ],
+            ),
+        ],
+        Icon::Marker => &[
+            (true, &[(3.0, 16.0), (14.0, 5.0), (19.0, 10.0), (8.0, 21.0)]),
+            (false, &[(6.0, 13.0), (11.0, 18.0)]),
+            (false, &[(2.0, 21.0), (5.0, 18.0)]),
+        ],
+        Icon::Line => &[(false, &[(5.0, 12.0), (19.0, 12.0)])],
+        Icon::Arrow => &[
+            (false, &[(7.0, 7.0), (17.0, 7.0), (17.0, 17.0)]),
+            (false, &[(7.0, 17.0), (17.0, 7.0)]),
+        ],
+        Icon::Triangle => &[(true, &[(12.0, 3.0), (21.0, 20.0), (3.0, 20.0)])],
+        Icon::Rectangle => &[(
+            true,
+            &[
+                (5.0, 3.0),
+                (19.0, 3.0),
+                (21.0, 5.0),
+                (21.0, 19.0),
+                (19.0, 21.0),
+                (5.0, 21.0),
+                (3.0, 19.0),
+                (3.0, 5.0),
+            ],
+        )],
         Icon::Ellipse => {
-            path = Circle::new(p(12.0, 12.0), f64::from(10.0 * SCALE)).to_path(0.02);
+            path = Circle::new(p((12.0, 12.0)), f64::from(10.0 * SCALE)).to_path(0.02);
+            &[]
         }
-        Icon::Text => {
-            path.move_to(p(12.0, 4.0));
-            path.line_to(p(12.0, 20.0));
-            path.move_to(p(4.0, 7.0));
-            path.line_to(p(4.0, 4.0));
-            path.line_to(p(20.0, 4.0));
-            path.line_to(p(20.0, 7.0));
-            path.move_to(p(9.0, 20.0));
-            path.line_to(p(15.0, 20.0));
+        Icon::Text => &[
+            (false, &[(12.0, 4.0), (12.0, 20.0)]),
+            (false, &[(4.0, 7.0), (4.0, 4.0), (20.0, 4.0), (20.0, 7.0)]),
+            (false, &[(9.0, 20.0), (15.0, 20.0)]),
+        ],
+        Icon::Select => &[(
+            true,
+            &[(4.0, 4.7), (20.7, 11.0), (14.5, 13.0), (12.0, 20.7)],
+        )],
+        Icon::Eraser => &[
+            (
+                true,
+                &[
+                    (3.0, 15.0),
+                    (14.0, 4.0),
+                    (21.0, 11.0),
+                    (12.0, 20.0),
+                    (8.0, 20.0),
+                ],
+            ),
+            (false, &[(8.0, 10.0), (15.0, 17.0)]),
+        ],
+    };
+    for &(closed, points) in subpaths {
+        let [start, rest @ ..] = points else { continue };
+        path.move_to(p(*start));
+        for &point in rest {
+            path.line_to(p(point));
         }
-        Icon::Select => {
-            path.move_to(p(4.0, 4.7));
-            path.line_to(p(20.7, 11.0));
-            path.line_to(p(14.5, 13.0));
-            path.line_to(p(12.0, 20.7));
+        if closed {
             path.close_path();
-        }
-        Icon::Eraser => {
-            path.move_to(p(3.0, 15.0));
-            path.line_to(p(14.0, 4.0));
-            path.line_to(p(21.0, 11.0));
-            path.line_to(p(12.0, 20.0));
-            path.line_to(p(8.0, 20.0));
-            path.close_path();
-            path.move_to(p(8.0, 10.0));
-            path.line_to(p(15.0, 17.0));
         }
     }
     if filled {

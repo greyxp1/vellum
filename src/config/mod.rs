@@ -8,7 +8,7 @@ pub(crate) use icon::{SvgCommand, SvgIcon, ToolIcon};
 pub(crate) use watch::Config;
 
 use font::FontConfig;
-pub(crate) use keybinds::{BindingAction, Input, Keybinds, MouseButton};
+pub(crate) use keybinds::{BindingAction, Gesture, Input, Keybinds, MouseButton};
 pub(crate) use size::SizeRange;
 use size::SizeRangeConfig;
 
@@ -72,7 +72,7 @@ struct PresentationConfig {
     hold_ms: Option<u64>,
     fade_duration_ms: Option<u64>,
     pen_effect: PenEffect,
-    erase_duration_ms: EraseDuration,
+    erase_duration_ms: Option<EraseDuration>,
     erase_pace: ErasePace,
 }
 
@@ -84,12 +84,6 @@ struct PresentationConfig {
 enum EraseDuration {
     Fixed(u64),
     Drawn(DrawnDuration),
-}
-
-impl Default for EraseDuration {
-    fn default() -> Self {
-        Self::Drawn(DrawnDuration::Drawn)
-    }
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -139,8 +133,10 @@ impl PresentationConfig {
             )?,
             pen_effect: self.pen_effect,
             erase_duration: match self.erase_duration_ms {
-                EraseDuration::Fixed(ms) => Some(duration(&name("erase_duration_ms"), ms, 1)?),
-                EraseDuration::Drawn(_) => None,
+                Some(EraseDuration::Fixed(ms)) => {
+                    Some(duration(&name("erase_duration_ms"), ms, 1)?)
+                }
+                Some(EraseDuration::Drawn(_)) | None => None,
             },
             erase_pace: self.erase_pace,
         })
@@ -261,7 +257,7 @@ pub(crate) enum Property {
 impl Property {
     const ALL: [Self; 3] = [Self::Size, Self::Opacity, Self::Roundness];
 
-    fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             Self::Size => "size",
             Self::Opacity => "opacity",

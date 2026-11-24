@@ -125,7 +125,7 @@ impl CursorFocus {
         hide: impl FnOnce(u32),
     ) -> Option<bool> {
         let point = self.position?;
-        let cursor = draw.cursor(point, tool_override);
+        let cursor = draw.editor().cursor(point, tool_override);
         let changed = draw.set_tool_cursor(match cursor.tool() {
             Some(preview) if self.device.is_some() => {
                 let pen_tip = pen_tip.filter(|_| preview.tool == Primitive::Pen);
@@ -136,7 +136,7 @@ impl CursorFocus {
         if let (Some(serial), Some(device)) = (self.serial, &self.device)
             && !self
                 .shown
-                .is_some_and(|shown| shown.same_compositor_cursor(cursor))
+                .is_some_and(|shown| shown.shape() == cursor.shape())
         {
             match cursor.shape() {
                 Some(hint) => device.set_shape(serial, cursor_shape(hint)),
@@ -179,7 +179,7 @@ impl State {
             self.damage_presentation();
             self.freeze_output_selected();
         }
-        if self.draw.is_editing_text() || self.pointer.keyboard_grab_active() {
+        if self.draw.editor().is_editing_text() || self.pointer.keyboard_grab_active() {
             return;
         }
         if self.keyboard_output != Some(output) || selection_changed {
@@ -189,7 +189,7 @@ impl State {
     }
 
     fn restore_keyboard_focus(&mut self) {
-        if self.draw.is_editing_text() {
+        if self.draw.editor().is_editing_text() {
             return;
         }
         self.focus_keyboard_on_input();
@@ -274,7 +274,7 @@ impl State {
 
     pub(super) fn finish_interrupted_gesture(&mut self, position: Option<Point>) {
         self.flush_pen_motion();
-        let modifiers = self.modifiers();
+        let modifiers = self.keyboard.modifiers();
         self.render_requested |= self.draw.finish_pointer_interaction(position, modifiers);
         self.pending_pen_motion.reset(None);
     }
@@ -321,19 +321,15 @@ impl State {
             if clear_on_cancel {
                 self.clear();
             }
-            self.deactivate();
+            self.set_mode(super::Mode::Inactive);
         }
         self.restore_keyboard_focus();
         self.refresh_cursor();
     }
 
-    pub(super) fn modifiers(&self) -> Modifiers {
-        self.keyboard.modifiers()
-    }
-
     pub(super) fn modifiers_changed(&mut self) {
         self.flush_pen_motion();
-        let modifiers = self.modifiers();
+        let modifiers = self.keyboard.modifiers();
         self.render_requested |= self.draw.modifiers_changed(modifiers);
         self.refresh_cursor();
     }
@@ -345,7 +341,7 @@ impl State {
         tool_override: ToolOverride,
     ) {
         self.pending_pen_motion.reset(None);
-        if self.draw.picker_active() {
+        if self.draw.editor().picker_active() {
             if tool_override != ToolOverride::Eraser {
                 self.render_requested |= self.draw.picker_motion(point);
                 return;
@@ -354,19 +350,19 @@ impl State {
         }
         self.focus_keyboard_on_input();
         self.render_requested |= self.draw.pointer_down(point, modifiers, tool_override);
-        if self.draw.is_drawing_pen() {
+        if self.draw.editor().is_drawing_pen() {
             self.pending_pen_motion.reset(Some(point));
         }
     }
 
     pub(super) fn pointer_motion(&mut self, point: Point, modifiers: Modifiers) {
-        if self.draw.picker_active() {
+        if self.draw.editor().picker_active() {
             self.render_requested |= self.draw.picker_motion(point);
             return;
         }
         // Preserve one real bend inside each display frame without letting a
         // high-polling-rate device grow the stroke without bound.
-        if self.draw.is_drawing_pen() {
+        if self.draw.editor().is_drawing_pen() {
             if self.pending_pen_motion.modifiers != modifiers {
                 self.flush_pen_motion();
             }
@@ -388,14 +384,14 @@ impl State {
             return None;
         }
         self.flush_pen_motion();
-        if self.draw.picker_active() {
+        if self.draw.editor().picker_active() {
             if self.draw.picker_release(point, latch_picker) {
                 self.request_render();
                 self.restore_keyboard_focus();
             }
             return None;
         }
-        let pen_tip = self.draw.pen_release_tip(point, modifiers);
+        let pen_tip = self.draw.editor().pen_release_tip(point, modifiers);
         self.render_requested |= self.draw.pointer_up(point, modifiers);
         self.pending_pen_motion.reset(None);
         pen_tip
@@ -408,7 +404,7 @@ impl State {
     }
 
     fn toggle_picker(&mut self, point: Point) {
-        if self.draw.picker_active() {
+        if self.draw.editor().picker_active() {
             self.dismiss_picker();
         } else {
             self.open_picker(point);

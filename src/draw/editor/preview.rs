@@ -30,38 +30,36 @@ impl Editor {
         )
     }
 
+    /// The kind and style of the shape being drawn.
+    fn drawing(&self) -> Option<(ElementKind, Style)> {
+        let Some(Interaction::Drawing {
+            tool,
+            style,
+            start,
+            current,
+            modifiers,
+            ..
+        }) = &self.interaction
+        else {
+            return None;
+        };
+        Some((drawing_kind(*tool, *start, *current, *modifiers), *style))
+    }
+
     pub(in crate::draw) fn append_preview_geometry(&self, output: &mut Vec<Geometry>) {
-        match &self.interaction {
-            Some(Interaction::Freehand(_, stroke)) => output.push(stroke.tail_geometry()),
-            Some(Interaction::Drawing {
-                tool,
-                style,
-                start,
-                current,
-                modifiers,
-                ..
-            }) => output.push(geometry(
-                &drawing_kind(*tool, *start, *current, *modifiers),
-                *style,
-            )),
-            _ => {}
+        if let Some(Interaction::Freehand(_, stroke)) = &self.interaction {
+            output.push(stroke.tail_geometry());
+        } else if let Some((kind, style)) = self.drawing() {
+            output.push(geometry(&kind, style));
         }
     }
 
     pub(in crate::draw) fn interaction_bounds(&self) -> Option<kurbo::Rect> {
         let interaction = match &self.interaction {
             Some(Interaction::Freehand(_, stroke)) => Some(stroke.bounds()),
-            Some(Interaction::Drawing {
-                tool,
-                style,
-                start,
-                current,
-                modifiers,
-                ..
-            }) => Some(bounds_for(
-                &drawing_kind(*tool, *start, *current, *modifiers),
-                *style,
-            )),
+            Some(Interaction::Drawing { .. }) => {
+                self.drawing().map(|(kind, style)| bounds_for(&kind, style))
+            }
             Some(Interaction::Moving {
                 ids,
                 start,

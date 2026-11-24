@@ -6,7 +6,7 @@ use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::
 
 use super::{CursorFocus, MULTI_CLICK_INTERVAL_MS, short_click};
 use crate::OutputId;
-use crate::config::{BindingAction, MouseButton};
+use crate::config::{BindingAction, Gesture, MouseButton};
 use crate::draw::{Action, DrawState, Modifiers, Point, ToolOverride};
 use crate::state::State;
 
@@ -21,24 +21,6 @@ const WHEEL_ACCEL_CURVE_SCALE: f64 = 12.0;
 enum GestureInput {
     Mouse(MouseButton),
     Key(u32),
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Gesture {
-    Draw,
-    Picker,
-    Eraser,
-}
-
-impl Gesture {
-    fn from_binding(binding: BindingAction) -> Option<Self> {
-        match binding {
-            BindingAction::Draw => Some(Self::Draw),
-            BindingAction::OpenPicker => Some(Self::Picker),
-            BindingAction::Erase => Some(Self::Eraser),
-            _ => None,
-        }
-    }
 }
 
 /// One logical pointer change, applied in frame order.
@@ -363,7 +345,7 @@ impl Dispatch<WlPointer, (), State> for PointerState {
         }
         let pending = PointerEvent {
             event,
-            modifiers: state.modifiers(),
+            modifiers: state.keyboard.modifiers(),
             logo: state.keyboard.logo(),
         };
         // Coalesce motion without crossing a button or focus transition.
@@ -387,7 +369,10 @@ impl State {
             .retain(|(input, _)| matches!(input, GestureInput::Mouse(_)));
         for (gesture, was_held) in was_held {
             if was_held && !self.pointer.held(gesture) {
-                self.pointer_input(PointerInput::Release(gesture, None), self.modifiers());
+                self.pointer_input(
+                    PointerInput::Release(gesture, None),
+                    self.keyboard.modifiers(),
+                );
             }
         }
     }
@@ -400,7 +385,7 @@ impl State {
         time: u32,
     ) -> bool {
         let input = GestureInput::Key(key);
-        let gesture = binding.and_then(Gesture::from_binding);
+        let gesture = binding.and_then(BindingAction::gesture);
         if (pressed && gesture.is_none())
             || (!pressed && !self.pointer.bindings.iter().any(|(held, _)| *held == input))
         {
@@ -411,7 +396,7 @@ impl State {
             return true;
         }
         if let Some(input) = self.pointer.bind_gesture(input, gesture, pressed, time) {
-            self.pointer_input(input, self.modifiers());
+            self.pointer_input(input, self.keyboard.modifiers());
         }
         if !pressed {
             self.focus_keyboard_on_input();
@@ -465,7 +450,7 @@ impl State {
                         continue;
                     } else {
                         self.clipboard.serial = Some(serial);
-                        let editing = self.draw.is_editing_text();
+                        let editing = self.draw.editor().is_editing_text();
                         let Some(binding) =
                             self.keyboard
                                 .mouse_binding(button, editing, modifiers, pending.logo)
@@ -473,7 +458,7 @@ impl State {
                             continue;
                         };
                         self.keyboard.reset_compose();
-                        let gesture = Gesture::from_binding(binding);
+                        let gesture = binding.gesture();
                         if gesture.is_none()
                             && !self.tablet.input_grab_active()
                             && !self.pointer.suppressed_gesture
@@ -607,7 +592,7 @@ impl State {
                     pointer.eraser_dragging = true;
                     self.pointer_down(start, modifiers, ToolOverride::InvertEraser);
                 }
-                if self.draw.picker_active()
+                if self.draw.editor().picker_active()
                     || self.pointer.held(Gesture::Draw)
                     || self.pointer.held(Gesture::Picker)
                     || self.pointer.eraser_dragging
@@ -617,7 +602,7 @@ impl State {
             }
             PointerInput::Press(Gesture::Draw, time) => {
                 pointer.draw_press = Some(pos);
-                pointer.draw_in_picker = self.draw.picker_active();
+                pointer.draw_in_picker = self.draw.editor().picker_active();
                 let clicks = pointer
                     .last_draw_click
                     .filter(|(previous, previous_pos, _)| {
@@ -643,7 +628,9 @@ impl State {
             }
             PointerInput::Release(Gesture::Draw, _) => {
                 pointer.draw_press = None;
-                if !std::mem::take(&mut pointer.draw_in_picker) || self.draw.picker_active() {
+                if !std::mem::take(&mut pointer.draw_in_picker)
+                    || self.draw.editor().picker_active()
+                {
                     self.pointer.released_pen_tip = self.pointer_up(pos, modifiers, false);
                 }
             }
@@ -659,7 +646,7 @@ impl State {
                     self.apply_action(Action::ToggleEraser);
                 }
             }
-            PointerInput::Scroll(scroll) if self.draw.picker_active() => {
+            PointerInput::Scroll(scroll) if self.draw.editor().picker_active() => {
                 if scroll.stopped {
                     pointer.reset_scroll();
                 }

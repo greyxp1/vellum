@@ -34,9 +34,8 @@ pub(super) enum Handle {
     Outline(i8, i8),
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CursorHint {
-    #[default]
     Crosshair,
     Move,
     NsResize,

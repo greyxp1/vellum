@@ -156,7 +156,7 @@ impl State {
             return;
         };
         if self.selected_output == Some(id)
-            || (self.keyboard_output == Some(id) && self.draw.is_editing_text())
+            || (self.keyboard_output == Some(id) && self.draw.editor().is_editing_text())
         {
             self.pending_pen_motion.reset(None);
             self.keyboard.cancel_repeat();

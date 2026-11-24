@@ -122,7 +122,7 @@ impl Editor {
         if self.document.elements.is_empty() {
             return cancelled;
         }
-        let changed = cancelled | self.switch_tool(crate::tool::Primitive::Select);
+        let changed = cancelled | self.switch_tool_id(self.builtin(crate::tool::Primitive::Select));
         let selected = self
             .document
             .elements
