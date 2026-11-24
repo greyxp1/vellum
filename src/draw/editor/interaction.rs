@@ -1,10 +1,11 @@
-use super::{Editor, HistoryEntry, drawing_kind};
-use crate::draw::scene::{Bounds, Element, ElementId, ElementKind, Point, Style, bounds_for};
-use crate::draw::selection::{self, Handle};
+use super::{Editor, ToolDefinition, drawing_kind};
+use crate::draw::scene::{Bounds, ElementId, ElementKind, Point, Style, bounds_for};
+use crate::draw::selection::{self, CursorHint, Handle};
 use crate::draw::text_edit::TextEdit;
 use crate::draw::{Cursor, Modifiers, PenMotion, ToolCursor, ToolOverride, freehand};
 use crate::text::text_line_height;
 use crate::tool::Primitive;
+use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(in crate::draw) struct ResizeSnapshot {
@@ -13,18 +14,8 @@ pub(in crate::draw) struct ResizeSnapshot {
     pub(in crate::draw) bounds: Bounds,
 }
 
-impl From<&Element> for ResizeSnapshot {
-    fn from(element: &Element) -> Self {
-        Self {
-            kind: element.kind.clone(),
-            style: element.style,
-            bounds: element.bounds,
-        }
-    }
-}
-
 impl ResizeSnapshot {
-    pub(super) fn set_style(&mut self, style: Style) {
+    fn set_style(&mut self, style: Style) {
         self.kind.prepare(style);
         if !matches!(self.kind, ElementKind::Text { .. })
             || style.size != self.style.size
@@ -34,6 +25,87 @@ impl ResizeSnapshot {
             self.bounds = bounds_for(&self.kind, style);
         }
         self.style = style;
+    }
+}
+
+#[derive(Debug)]
+pub(super) struct Resize {
+    pub(super) id: ElementId,
+    pub(super) preset: Arc<str>,
+    pub(super) handle: Handle,
+    pub(super) current: ResizeSnapshot,
+    text_size_range: [f32; 2],
+    start: Point,
+    point: Point,
+    original: ResizeSnapshot,
+    /// The resized element's style without font size changes made by resizing text.
+    properties: Style,
+    equal_side_anchor: Option<usize>,
+}
+
+impl Resize {
+    /// Recomputes the preview for a pointer position, returning whether it changed.
+    fn update(&mut self, point: Point, modifiers: Modifiers) -> bool {
+        self.point = point;
+        let delta = point - self.start;
+        let original = &self.original;
+        let resized = if matches!(original.kind, ElementKind::Text { .. }) {
+            let mut resized = selection::resize_text(
+                &original.kind,
+                original.style,
+                original.bounds,
+                self.handle,
+                delta,
+                modifiers,
+                self.text_size_range,
+            )
+            .map_or_else(
+                || original.clone(),
+                |(kind, style, bounds)| ResizeSnapshot {
+                    kind,
+                    style,
+                    bounds,
+                },
+            );
+            let [min, max] = self.text_size_range;
+            let size = resized.style.size + (self.properties.size - original.style.size);
+            resized.set_style(Style {
+                size: size.clamp(min, max),
+                ..self.properties
+            });
+            resized
+        } else {
+            let kind = selection::resize(
+                &original.kind,
+                self.handle,
+                delta,
+                original.style.roundness,
+                modifiers,
+                &mut self.equal_side_anchor,
+            );
+            ResizeSnapshot {
+                bounds: bounds_for(&kind, self.properties),
+                kind,
+                style: self.properties,
+            }
+        };
+        let changed = resized != self.current;
+        self.current = resized;
+        changed
+    }
+
+    /// Applies a style adjustment made during the resize.
+    pub(super) fn set_style(&mut self, style: Style) -> bool {
+        if style == self.current.style {
+            return false;
+        }
+        // Text resizing also changes font size; retain only the user's adjustment.
+        self.properties = Style {
+            size: self.properties.size + (style.size - self.current.style.size),
+            ..style
+        };
+        self.current.set_style(style);
+        true
     }
 }
 
@@ -53,19 +125,8 @@ pub(super) enum Interaction {
         start: Point,
         current: Point,
     },
-    Resizing {
-        id: ElementId,
-        preset: std::sync::Arc<str>,
-        text_size_range: [f32; 2],
-        handle: Handle,
-        start: Point,
-        point: Point,
-        original: ResizeSnapshot,
-        properties: Style,
-        current: ResizeSnapshot,
-        equal_side_anchor: Option<usize>,
-    },
-    EditingText(std::sync::Arc<str>, TextEdit),
+    Resizing(Resize),
+    EditingText(Arc<str>, TextEdit),
     Erasing {
         tool: crate::tool::ToolId,
         previous: Point,
@@ -82,33 +143,7 @@ impl Editor {
                 *current = modifiers;
                 true
             }
-            Some(Interaction::Resizing {
-                text_size_range,
-                handle,
-                start,
-                point,
-                original,
-                properties,
-                current,
-                equal_side_anchor,
-                ..
-            }) => {
-                let resized = resize_element(
-                    original,
-                    *handle,
-                    *point - *start,
-                    modifiers,
-                    equal_side_anchor,
-                    *text_size_range,
-                    *properties,
-                );
-                if resized == *current {
-                    false
-                } else {
-                    *current = resized;
-                    true
-                }
-            }
+            Some(Interaction::Resizing(resize)) => resize.update(resize.point, modifiers),
             _ => false,
         }
     }
@@ -129,17 +164,16 @@ impl Editor {
         let effective_id = self.effective_tool(tool_override);
         let effective_tool = self.tools[effective_id.0].primitive;
         let effective_style = self.tool_style(effective_id);
-        if effective_tool == Primitive::Eraser {
-            let size = effective_style.size;
-            self.interaction = Some(Interaction::Erasing {
-                tool: effective_id,
-                previous: point,
-                size,
-            });
-            return previous | self.erase_between(point, point, size);
-        }
-
         match effective_tool {
+            Primitive::Eraser => {
+                let size = effective_style.size;
+                self.interaction = Some(Interaction::Erasing {
+                    tool: effective_id,
+                    previous: point,
+                    size,
+                });
+                previous | self.erase_between(point, point, size)
+            }
             Primitive::Pen => {
                 self.interaction = Some(Interaction::Freehand(
                     effective_id,
@@ -183,26 +217,30 @@ impl Editor {
             }
             Primitive::Select => {
                 if !modifiers.ctrl
-                    && self.selected.len() == 1
-                    && let Some(id) = self.selected.first().copied()
-                    && let Some(handle) = self.hit_handle(id, point)
+                    && let [id] = self.selected[..]
                     && let Some(element) = self.element(id)
+                    && let Some(handle) = selection::hit_handle(element, point)
                 {
-                    let text_size_range = self.text_size_range(element);
-                    let preset = element.preset.clone();
-                    let original = ResizeSnapshot::from(element);
-                    self.interaction = Some(Interaction::Resizing {
+                    let tool =
+                        ToolDefinition::preset(&self.tools, &element.preset, Primitive::Text);
+                    let range = self.tools[tool.0].size_range;
+                    let original = ResizeSnapshot {
+                        kind: element.kind.clone(),
+                        style: element.style,
+                        bounds: element.bounds,
+                    };
+                    self.interaction = Some(Interaction::Resizing(Resize {
                         id,
-                        preset,
-                        text_size_range,
+                        preset: element.preset.clone(),
                         handle,
+                        current: original.clone(),
+                        text_size_range: [range.min, range.max],
                         start: point,
                         point,
-                        current: original.clone(),
                         properties: original.style,
                         original,
                         equal_side_anchor: None,
-                    });
+                    }));
                     return true;
                 }
                 let hit = self.hit_test(point);
@@ -237,7 +275,6 @@ impl Editor {
                 });
                 true
             }
-            Primitive::Eraser => unreachable!(),
         }
     }
 
@@ -257,29 +294,7 @@ impl Editor {
                 *current = point;
                 true
             }
-            Some(Interaction::Resizing {
-                text_size_range,
-                handle,
-                start,
-                point: current_point,
-                original,
-                properties,
-                current,
-                equal_side_anchor,
-                ..
-            }) => {
-                *current = resize_element(
-                    original,
-                    *handle,
-                    point - *start,
-                    modifiers,
-                    equal_side_anchor,
-                    *text_size_range,
-                    *properties,
-                );
-                *current_point = point;
-                true
-            }
+            Some(Interaction::Resizing(resize)) => resize.update(point, modifiers),
             Some(Interaction::Erasing { previous, size, .. }) => {
                 let start = std::mem::replace(previous, point);
                 let size = *size;
@@ -314,13 +329,8 @@ impl Editor {
         match self.interaction.take() {
             Some(Interaction::Freehand(preset, stroke)) => {
                 let (kind, style, geometry) = stroke.finish(point, modifiers.shift);
-                self.insert_element(Element::with_geometry(
-                    self.next_id,
-                    self.tools[preset.0].id.clone(),
-                    kind,
-                    style,
-                    geometry,
-                ));
+                let preset = self.tools[preset.0].id.clone();
+                self.insert(preset, kind, style, Some(geometry));
                 true
             }
             Some(Interaction::Drawing {
@@ -335,57 +345,24 @@ impl Editor {
                     || tool == Primitive::Rectangle
                     || (tool == Primitive::Ellipse && style.filled)
                 {
-                    self.insert_kind(
-                        self.tools[preset.0].id.clone(),
-                        drawing_kind(tool, start, point, modifiers),
-                        style,
-                    );
+                    let kind = drawing_kind(tool, start, point, modifiers);
+                    self.insert(self.tools[preset.0].id.clone(), kind, style, None);
                 }
                 true
             }
             Some(Interaction::Moving { ids, start, .. }) => {
                 if point != start {
-                    let delta = point - start;
-                    let mut elements = Vec::with_capacity(ids.len());
-                    for id in ids {
-                        let element = self.element_mut(id).expect("moving element exists");
-                        let after = element.kind.translated(delta);
-                        let style = element.style;
-                        let (kind, style) = element.replace(after, style);
-                        elements.push((id, kind, style));
-                    }
-                    self.document.history.record(HistoryEntry::Update(elements));
+                    self.document.update(false, ids, |element| {
+                        Some((element.kind.translated(point - start), element.style))
+                    });
                 }
                 true
             }
-            Some(Interaction::Resizing {
-                id,
-                text_size_range,
-                handle,
-                start,
-                original,
-                properties,
-                mut equal_side_anchor,
-                ..
-            }) => {
-                let current = resize_element(
-                    &original,
-                    handle,
-                    point - start,
-                    modifiers,
-                    &mut equal_side_anchor,
-                    text_size_range,
-                    properties,
-                );
-                if current != original
-                    && let Some(element) = self.element_mut(id)
-                {
-                    element.replace(current.kind, current.style);
-                    self.document.history.record(HistoryEntry::Update(vec![(
-                        id,
-                        original.kind,
-                        original.style,
-                    )]));
+            Some(Interaction::Resizing(mut resize)) => {
+                resize.update(point, modifiers);
+                if resize.current != resize.original {
+                    let mut next = Some((resize.current.kind, resize.current.style));
+                    self.document.update(false, [resize.id], |_| next.take());
                 }
                 true
             }
@@ -397,17 +374,6 @@ impl Editor {
                 false
             }
         }
-    }
-
-    fn hit_handle(&self, id: ElementId, point: Point) -> Option<Handle> {
-        let element = self.element(id)?;
-        selection::hit_handle(&element.kind, element.style, element.bounds, point)
-    }
-
-    fn text_size_range(&self, element: &Element) -> [f32; 2] {
-        let id = super::ToolDefinition::preset(&self.tools, &element.preset, Primitive::Text);
-        let range = self.tools[id.0].size_range;
-        [range.min, range.max]
     }
 
     pub(in crate::draw) fn cursor(&self, point: Point, tool_override: ToolOverride) -> Cursor {
@@ -431,9 +397,7 @@ impl Editor {
             return Cursor::Hidden;
         }
         match cursor {
-            Cursor::Hidden | Cursor::Tool(_) if visible => {
-                Cursor::Shape(selection::CursorHint::Crosshair)
-            }
+            Cursor::Hidden | Cursor::Tool(_) if visible => Cursor::Shape(CursorHint::Crosshair),
             _ => cursor,
         }
     }
@@ -447,54 +411,37 @@ impl Editor {
         if tool_override != ToolOverride::None && effective_tool == Primitive::Eraser {
             return self.tool_cursor(effective_id);
         }
-        match &self.interaction {
-            Some(Interaction::Resizing { handle, .. }) => {
-                return Cursor::Shape(selection::cursor(*handle));
-            }
+        Cursor::Shape(match &self.interaction {
+            Some(Interaction::Resizing(resize)) => selection::cursor(resize.handle),
             Some(Interaction::Freehand(..)) => return Cursor::Hidden,
-            Some(Interaction::Drawing { .. }) => {
-                return Cursor::Shape(selection::CursorHint::Crosshair);
-            }
-            Some(Interaction::Moving { .. }) => {
-                return Cursor::Shape(selection::CursorHint::Move);
-            }
-            Some(Interaction::EditingText(..)) => {
-                return Cursor::Shape(selection::CursorHint::Text);
-            }
-            _ => {}
-        }
-        if self.picker.is_some() {
-            return Cursor::Shape(selection::CursorHint::Crosshair);
-        }
-        if effective_tool == Primitive::Text {
-            return Cursor::Shape(selection::CursorHint::Text);
-        }
-        if matches!(
-            effective_tool,
-            Primitive::Line
+            Some(Interaction::Drawing { .. }) => CursorHint::Crosshair,
+            Some(Interaction::Moving { .. }) => CursorHint::Move,
+            Some(Interaction::EditingText(..)) => CursorHint::Text,
+            _ if self.picker.is_some() => CursorHint::Crosshair,
+            _ => match effective_tool {
+                Primitive::Text => CursorHint::Text,
+                Primitive::Line
                 | Primitive::Arrow
                 | Primitive::Triangle
                 | Primitive::Rectangle
-                | Primitive::Ellipse
-        ) {
-            return Cursor::Shape(selection::CursorHint::Crosshair);
-        }
-        if effective_tool != Primitive::Select {
-            return self.tool_cursor(effective_id);
-        }
-        if self.selected.len() != 1 {
-            return Cursor::Shape(selection::CursorHint::Crosshair);
-        }
-        let id = self.selected[0];
-        Cursor::Shape(match self.hit_handle(id, point) {
-            Some(handle) => selection::cursor(handle),
-            None if self.element(id).is_some_and(|element| {
-                element.hit_test(point, 1.0, self.presentation_settings)
-            }) =>
-            {
-                selection::CursorHint::Move
-            }
-            None => selection::CursorHint::Crosshair,
+                | Primitive::Ellipse => CursorHint::Crosshair,
+                Primitive::Pen | Primitive::Eraser => return self.tool_cursor(effective_id),
+                Primitive::Select => {
+                    let element = match self.selected[..] {
+                        [id] => self.element(id),
+                        _ => None,
+                    };
+                    match element.map(|element| (element, selection::hit_handle(element, point))) {
+                        Some((_, Some(handle))) => selection::cursor(handle),
+                        Some((element, None))
+                            if element.hit_test(point, 1.0, self.presentation_settings) =>
+                        {
+                            CursorHint::Move
+                        }
+                        _ => CursorHint::Crosshair,
+                    }
+                }
+            },
         })
     }
 
@@ -543,52 +490,5 @@ impl Editor {
         } else {
             self.cancel_interaction()
         }
-    }
-}
-
-fn resize_element(
-    original: &ResizeSnapshot,
-    handle: Handle,
-    delta: Point,
-    modifiers: Modifiers,
-    equal_side_anchor: &mut Option<usize>,
-    text_size_range: [f32; 2],
-    properties: Style,
-) -> ResizeSnapshot {
-    if matches!(original.kind, ElementKind::Text { .. }) {
-        let mut resized = selection::resize_text(
-            &original.kind,
-            original.style,
-            original.bounds,
-            handle,
-            delta,
-            modifiers,
-            text_size_range,
-        )
-        .map_or_else(
-            || original.clone(),
-            |(kind, style, bounds)| ResizeSnapshot {
-                kind,
-                style,
-                bounds,
-            },
-        );
-        let size = (resized.style.size + (properties.size - original.style.size))
-            .clamp(text_size_range[0], text_size_range[1]);
-        resized.set_style(Style { size, ..properties });
-        return resized;
-    }
-    let kind = selection::resize(
-        &original.kind,
-        handle,
-        delta,
-        original.style.roundness,
-        modifiers,
-        equal_side_anchor,
-    );
-    ResizeSnapshot {
-        bounds: bounds_for(&kind, properties),
-        kind,
-        style: properties,
     }
 }

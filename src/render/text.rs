@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::text::{TextSpec, text_bounds};
+use crate::text::TextSpec;
 use parley::PositionedLayoutItem;
 use skrifa::MetadataProvider;
 use skrifa::bitmap::{BitmapData, BitmapFormat, BitmapGlyph};
@@ -76,22 +76,10 @@ impl TextSpec<'_> {
         };
         if let Some((background_color, roundness)) = automatic_background {
             use kurbo::Shape;
-            let [[min_x, min_y], [max_x, max_y]] = text_bounds(
-                [self.left, self.top],
-                [layout.full_width(), layout.height()],
-                self.font_size,
-                Some(roundness),
-                self.scale,
-            );
-            let radius = (max_y - min_y) * 0.5 * roundness;
-            let background = kurbo::RoundedRect::new(
-                f64::from(min_x),
-                f64::from(min_y),
-                f64::from(max_x),
-                f64::from(max_y),
-                f64::from(radius),
-            )
-            .to_path(0.1);
+            let bounds = self.bounds();
+            let background = bounds
+                .to_rounded_rect(bounds.height() * 0.5 * f64::from(roundness))
+                .to_path(0.1);
             scene.set_paint(vello_color(background_color, target_is_srgb));
             scene.fill_path(&background);
         }

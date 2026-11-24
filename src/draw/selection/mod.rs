@@ -4,7 +4,9 @@ pub(super) use transform::{
     constrained_box, constrained_endpoint, resize, resize_text, triangle_from_drag,
 };
 
-use super::scene::{Bounds, ElementKind, Point, Style, geometry, rendered_segment_endpoints};
+use super::scene::{
+    Bounds, Element, ElementKind, Point, Style, geometry, rendered_segment_endpoints,
+};
 use crate::render::Geometry;
 use peniko::Fill;
 
@@ -22,13 +24,14 @@ const STYLE: Style = Style {
     filled: false,
 };
 const HANDLE_FILL: [f32; 4] = [0.04, 0.04, 0.04, 1.0];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Handle {
     Start,
     End,
     Vertex(usize),
-    Corner(Corner),
-    Edge(Edge),
+    /// A side or corner of the outline, with -1, 0 or 1 for each axis.
+    Outline(i8, i8),
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -43,133 +46,77 @@ pub(crate) enum CursorHint {
     Text,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Corner {
-    TopLeft,
-    TopRight,
-    BottomRight,
-    BottomLeft,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Edge {
-    Top,
-    Right,
-    Bottom,
-    Left,
-}
-
 pub(super) fn cursor(handle: Handle) -> CursorHint {
     match handle {
-        Handle::Corner(Corner::TopLeft | Corner::BottomRight) => CursorHint::NwseResize,
-        Handle::Corner(Corner::TopRight | Corner::BottomLeft) => CursorHint::NeswResize,
-        Handle::Edge(Edge::Top | Edge::Bottom) => CursorHint::NsResize,
-        Handle::Edge(Edge::Left | Edge::Right) => CursorHint::EwResize,
+        Handle::Outline(0, _) => CursorHint::NsResize,
+        Handle::Outline(_, 0) => CursorHint::EwResize,
+        Handle::Outline(x, y) if x == y => CursorHint::NwseResize,
+        Handle::Outline(..) => CursorHint::NeswResize,
         Handle::Start | Handle::End | Handle::Vertex(_) => CursorHint::Crosshair,
     }
 }
 
-pub(super) fn hit_handle(
-    kind: &ElementKind,
-    style: Style,
-    bounds: Bounds,
-    point: Point,
-) -> Option<Handle> {
-    triangle_vertex_handle(kind, style, point)
-        .or_else(|| {
-            rendered_segment_endpoints(kind, style).and_then(|[start, end]| {
-                let radius_squared = ENDPOINT_HIT_RADIUS * ENDPOINT_HIT_RADIUS;
-                let start_distance = start.distance_squared(point);
-                let end_distance = end.distance_squared(point);
-                let (handle, distance) = if start_distance < end_distance {
-                    (Handle::Start, start_distance)
-                } else {
-                    (Handle::End, end_distance)
-                };
-                (distance <= radius_squared).then_some(handle)
-            })
-        })
-        .or_else(|| outline_handle(kind, bounds, point))
-}
-
-fn triangle_vertex_handle(kind: &ElementKind, style: Style, point: Point) -> Option<Handle> {
-    let ElementKind::Triangle { vertices } = kind else {
-        return None;
+/// Draggable points at their rendered positions in drawing order.
+fn point_handles(kind: &ElementKind, style: Style) -> impl Iterator<Item = (Handle, Point)> {
+    let vertices = match kind {
+        ElementKind::Triangle { vertices } => Some(super::triangle::rendered_vertices(
+            vertices,
+            style.roundness,
+        )),
+        _ => None,
     };
-    let radius_squared = ENDPOINT_HIT_RADIUS * ENDPOINT_HIT_RADIUS;
-    super::triangle::rendered_vertices(vertices, style.roundness)
-        .iter()
-        .enumerate()
-        .map(|(index, vertex)| (index, vertex.distance_squared(point)))
-        .filter(|(_, distance)| *distance <= radius_squared)
-        .min_by(|(_, first), (_, second)| first.total_cmp(second))
-        .map(|(index, _)| Handle::Vertex(index))
+    let vertices = vertices.into_iter().flatten().enumerate();
+    let endpoints = rendered_segment_endpoints(kind, style)
+        .into_iter()
+        .flat_map(|[start, end]| [(Handle::Start, start), (Handle::End, end)]);
+    vertices
+        .map(|(index, vertex)| (Handle::Vertex(index), vertex))
+        .chain(endpoints)
 }
 
-pub(super) fn outline(min: Point, max: Point) -> Geometry {
-    geometry(
-        &ElementKind::Rectangle {
-            min: Point::new(min.x - GAP, min.y - GAP),
-            max: Point::new(max.x + GAP, max.y + GAP),
-        },
-        STYLE,
-    )
+pub(super) fn hit_handle(element: &Element, point: Point) -> Option<Handle> {
+    point_handles(&element.kind, element.style)
+        .map(|(handle, center)| (handle, center.distance_squared(point)))
+        .filter(|(_, distance)| *distance <= ENDPOINT_HIT_RADIUS * ENDPOINT_HIT_RADIUS)
+        // Handles drawn later sit on top, so they win ties.
+        .reduce(|best, next| if next.1 <= best.1 { next } else { best })
+        .map(|(handle, _)| handle)
+        .or_else(|| outline_handle(element, point))
 }
 
-pub(super) fn append_handles(kind: &ElementKind, style: Style, output: &mut Vec<Geometry>) {
-    if let ElementKind::Triangle { vertices } = kind {
-        output.extend(
-            super::triangle::rendered_vertices(vertices, style.roundness)
-                .into_iter()
-                .map(endpoint_geometry),
-        );
-        return;
-    }
-    if let Some([start, end]) = rendered_segment_endpoints(kind, style) {
-        output.extend([endpoint_geometry(start), endpoint_geometry(end)]);
-    }
-}
-
-fn outline_handle(kind: &ElementKind, bounds: Bounds, point: Point) -> Option<Handle> {
+fn outline_handle(element: &Element, point: Point) -> Option<Handle> {
     if !matches!(
-        kind,
+        element.kind,
         ElementKind::Rectangle { .. } | ElementKind::Ellipse { .. } | ElementKind::Text { .. }
     ) {
         return None;
     }
-    let min = Point::new(bounds.min.x - GAP, bounds.min.y - GAP);
-    let max = Point::new(bounds.max.x + GAP, bounds.max.y + GAP);
-    if point.x < min.x - OUTLINE_HIT_RADIUS
-        || point.x > max.x + OUTLINE_HIT_RADIUS
-        || point.y < min.y - OUTLINE_HIT_RADIUS
-        || point.y > max.y + OUTLINE_HIT_RADIUS
-    {
+    let outline = element.bounds.expanded(GAP);
+    if !outline.expanded(OUTLINE_HIT_RADIUS).contains(point) {
         return None;
     }
+    let axis = |value: f32, min: f32, max: f32| {
+        let (low, high) = ((value - min).abs(), (value - max).abs());
+        if low.min(high) > OUTLINE_HIT_RADIUS {
+            0
+        } else if low < high {
+            -1
+        } else {
+            1
+        }
+    };
+    let x = axis(point.x, outline.min.x, outline.max.x);
+    let y = axis(point.y, outline.min.y, outline.max.y);
+    (x != 0 || y != 0).then_some(Handle::Outline(x, y))
+}
 
-    let left = (point.x - min.x).abs();
-    let right = (point.x - max.x).abs();
-    let x_edge = (left.min(right) <= OUTLINE_HIT_RADIUS).then_some(if left < right {
-        Edge::Left
-    } else {
-        Edge::Right
-    });
-    let top = (point.y - min.y).abs();
-    let bottom = (point.y - max.y).abs();
-    let y_edge = (top.min(bottom) <= OUTLINE_HIT_RADIUS).then_some(if top < bottom {
-        Edge::Top
-    } else {
-        Edge::Bottom
-    });
+pub(super) fn outline(bounds: Bounds) -> Geometry {
+    let Bounds { min, max } = bounds.expanded(GAP);
+    geometry(&ElementKind::Rectangle { min, max }, STYLE)
+}
 
-    match (x_edge, y_edge) {
-        (Some(Edge::Left), Some(Edge::Top)) => Some(Handle::Corner(Corner::TopLeft)),
-        (Some(Edge::Right), Some(Edge::Top)) => Some(Handle::Corner(Corner::TopRight)),
-        (Some(Edge::Right), Some(Edge::Bottom)) => Some(Handle::Corner(Corner::BottomRight)),
-        (Some(Edge::Left), Some(Edge::Bottom)) => Some(Handle::Corner(Corner::BottomLeft)),
-        (Some(edge), None) | (None, Some(edge)) => Some(Handle::Edge(edge)),
-        _ => None,
-    }
+pub(super) fn append_handles(kind: &ElementKind, style: Style, output: &mut Vec<Geometry>) {
+    output.extend(point_handles(kind, style).map(|(_, center)| endpoint_geometry(center)));
 }
 
 fn endpoint_geometry(center: Point) -> Geometry {

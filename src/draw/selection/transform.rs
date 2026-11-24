@@ -1,4 +1,4 @@
-use super::{Corner, Edge, Handle};
+use super::Handle;
 use crate::draw::Modifiers;
 use crate::draw::scene::{Bounds, ElementKind, Point, Style};
 
@@ -12,6 +12,10 @@ pub(in crate::draw) fn resize(
     modifiers: Modifiers,
     equal_side_anchor: &mut Option<usize>,
 ) -> ElementKind {
+    if let (Some((min, max)), Some(direction)) = (original.corners(), resize_direction(handle)) {
+        let (min, max) = resized_box(min, max, direction, delta, modifiers);
+        return ElementKind::boxed(matches!(original, ElementKind::Ellipse { .. }), min, max);
+    }
     match (original, handle) {
         (ElementKind::Triangle { vertices }, Handle::Vertex(index)) => {
             let mut vertices = *vertices;
@@ -29,19 +33,6 @@ pub(in crate::draw) fn resize(
                 points,
                 arrow: *arrow,
             }
-        }
-        (ElementKind::Rectangle { min, max }, handle @ (Handle::Corner(_) | Handle::Edge(_))) => {
-            let (min, max) = resized_box(*min, *max, handle, delta, modifiers);
-            ElementKind::Rectangle { min, max }
-        }
-        (
-            ElementKind::Ellipse { center, radii },
-            handle @ (Handle::Corner(_) | Handle::Edge(_)),
-        ) => {
-            let min = Point::new(center.x - radii.x, center.y - radii.y);
-            let max = Point::new(center.x + radii.x, center.y + radii.y);
-            let (min, max) = resized_box(min, max, handle, delta, modifiers);
-            ElementKind::ellipse(min, max)
         }
         _ => original.clone(),
     }
@@ -146,17 +137,10 @@ pub(in crate::draw) fn resize_text(
 }
 
 fn resize_direction(handle: Handle) -> Option<Point> {
-    Some(match handle {
-        Handle::Corner(Corner::TopLeft) => Point::new(-1.0, -1.0),
-        Handle::Corner(Corner::TopRight) => Point::new(1.0, -1.0),
-        Handle::Corner(Corner::BottomRight) => Point::new(1.0, 1.0),
-        Handle::Corner(Corner::BottomLeft) => Point::new(-1.0, 1.0),
-        Handle::Edge(Edge::Top) => Point::new(0.0, -1.0),
-        Handle::Edge(Edge::Right) => Point::new(1.0, 0.0),
-        Handle::Edge(Edge::Bottom) => Point::new(0.0, 1.0),
-        Handle::Edge(Edge::Left) => Point::new(-1.0, 0.0),
-        Handle::Start | Handle::End | Handle::Vertex(_) => return None,
-    })
+    let Handle::Outline(x, y) = handle else {
+        return None;
+    };
+    Some(Point::new(f32::from(x), f32::from(y)))
 }
 
 fn bake_vertical_scale(
@@ -239,74 +223,56 @@ fn proportional_text_bounds(
 }
 
 fn resized_box(
-    original_min: Point,
-    original_max: Point,
-    handle: Handle,
+    min: Point,
+    max: Point,
+    direction: Point,
     delta: Point,
     modifiers: Modifiers,
 ) -> (Point, Point) {
-    let center = original_min.midpoint(original_max);
-    let direction = resize_direction(handle).expect("box resize handle");
-    let coordinate = |min, middle, max, direction: f32| {
+    let center = min.midpoint(max);
+    // Returns the dragged side and the side opposite to it.
+    let sides = |direction: f32, min, max| {
         if direction < 0.0 {
-            min
-        } else if direction > 0.0 {
-            max
+            (min, max)
         } else {
-            middle
+            (max, min)
         }
     };
-    let position = |direction: Point| {
-        Point::new(
-            coordinate(original_min.x, center.x, original_max.x, direction.x),
-            coordinate(original_min.y, center.y, original_max.y, direction.y),
-        )
-    };
-    let point = position(direction) + delta;
-    if let Handle::Corner(_) = handle {
+    if direction.x != 0.0 && direction.y != 0.0 {
+        let (x, opposite_x) = sides(direction.x, min.x, max.x);
+        let (y, opposite_y) = sides(direction.y, min.y, max.y);
         let anchor = if modifiers.alt {
             center
         } else {
-            position(direction * -1.0)
+            Point::new(opposite_x, opposite_y)
         };
+        let point = Point::new(x, y) + delta;
         return constrained_box(anchor, point, modifiers.shift, modifiers.alt);
     }
-
-    let Handle::Edge(edge) = handle else {
-        return (original_min, original_max);
+    let span = |direction: f32, min: f32, max: f32, center: f32, delta: f32| {
+        if direction == 0.0 {
+            return (min, max);
+        }
+        let (side, opposite) = sides(direction, min, max);
+        let side = side + delta;
+        if modifiers.alt {
+            let radius = (side - center).abs();
+            (center - radius, center + radius)
+        } else {
+            ordered(side, opposite)
+        }
     };
-    let (mut min, mut max) = (original_min, original_max);
-    match (edge, modifiers.alt) {
-        (Edge::Top | Edge::Bottom, true) => {
-            let radius = (point.y - center.y).abs();
-            min.y = center.y - radius;
-            max.y = center.y + radius;
-        }
-        (Edge::Left | Edge::Right, true) => {
-            let radius = (point.x - center.x).abs();
-            min.x = center.x - radius;
-            max.x = center.x + radius;
-        }
-        (Edge::Top, false) => (min.y, max.y) = ordered(point.y, original_max.y),
-        (Edge::Right, false) => (min.x, max.x) = ordered(point.x, original_min.x),
-        (Edge::Bottom, false) => (min.y, max.y) = ordered(point.y, original_min.y),
-        (Edge::Left, false) => (min.x, max.x) = ordered(point.x, original_max.x),
+    let (mut min_x, mut max_x) = span(direction.x, min.x, max.x, center.x, delta.x);
+    let (mut min_y, mut max_y) = span(direction.y, min.y, max.y, center.y, delta.y);
+    // Shift makes the unchanged axis match the resized one around its center.
+    if modifiers.shift && direction.x == 0.0 {
+        let half = (max_y - min_y) * 0.5;
+        (min_x, max_x) = (center.x - half, center.x + half);
+    } else if modifiers.shift {
+        let half = (max_x - min_x) * 0.5;
+        (min_y, max_y) = (center.y - half, center.y + half);
     }
-    if modifiers.shift {
-        match edge {
-            Edge::Top | Edge::Bottom => {
-                let half = (max.y - min.y) * 0.5;
-                min.x = center.x - half;
-                max.x = center.x + half;
-            }
-            Edge::Left | Edge::Right => {
-                let half = (max.x - min.x) * 0.5;
-                min.y = center.y - half;
-                max.y = center.y + half;
-            }
-        }
-    }
-    (min, max)
+    (Point::new(min_x, min_y), Point::new(max_x, max_y))
 }
 
 fn ordered(first: f32, second: f32) -> (f32, f32) {

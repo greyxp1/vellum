@@ -42,14 +42,9 @@ impl History {
         self.merging = false;
     }
 
-    pub(super) fn record(&mut self, entry: Entry) {
-        self.merging = false;
-        self.push(entry);
-    }
-
-    /// Folds consecutive merged entries of the same change into one undo step.
-    pub(super) fn merge(&mut self, entry: Entry) {
-        let merging = std::mem::replace(&mut self.merging, true);
+    /// Records a change, folding consecutive merged entries of the same change into one undo step.
+    pub(super) fn record(&mut self, entry: Entry, merge: bool) {
+        let merging = std::mem::replace(&mut self.merging, merge) && merge;
         match (self.undo.last_mut(), entry) {
             (Some(Entry::Remove(previous)), Entry::Remove(mut removed)) if merging => {
                 previous.append(&mut removed);
@@ -60,7 +55,13 @@ impl History {
                 previous.sort_by_key(|(id, ..)| *id);
                 previous.dedup_by_key(|(id, ..)| *id);
             }
-            (_, entry) => self.push(entry),
+            (_, entry) => {
+                if self.undo.len() == LIMIT {
+                    self.undo.remove(0);
+                }
+                self.undo.push(entry);
+                self.redo.clear();
+            }
         }
     }
 
@@ -69,29 +70,18 @@ impl History {
         self.merging = false;
     }
 
-    fn push(&mut self, entry: Entry) {
-        if self.undo.len() == LIMIT {
-            self.undo.remove(0);
-        }
-        self.undo.push(entry);
-        self.redo.clear();
-    }
-
-    pub(super) fn undo(&mut self, elements: &mut Vec<Element>) -> bool {
+    /// Applies the newest undo or redo entry and stores its inverse on the other stack.
+    pub(super) fn step(&mut self, redo: bool, elements: &mut Vec<Element>) -> bool {
         self.merging = false;
-        let Some(entry) = self.undo.pop() else {
+        let (from, to) = if redo {
+            (&mut self.redo, &mut self.undo)
+        } else {
+            (&mut self.undo, &mut self.redo)
+        };
+        let Some(entry) = from.pop() else {
             return false;
         };
-        self.redo.push(apply(entry, elements));
-        true
-    }
-
-    pub(super) fn redo(&mut self, elements: &mut Vec<Element>) -> bool {
-        self.merging = false;
-        let Some(entry) = self.redo.pop() else {
-            return false;
-        };
-        self.undo.push(apply(entry, elements));
+        to.push(apply(entry, elements));
         true
     }
 }

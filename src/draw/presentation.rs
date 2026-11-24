@@ -1,6 +1,7 @@
 //! Assembles visible annotations and transient decorations for an output.
 
 use super::decorations::{text_cursor_rectangle, text_preedit_span, tool_cursor_geometry};
+use super::editor::LiveElement;
 use super::scene::{self, ElementKind};
 use super::{DrawState, Feedback, Point, TextInputSnapshot};
 use crate::OutputId;
@@ -56,31 +57,15 @@ impl DrawState {
                     items.push(SceneItem::Text(edit.spec(), 1.0));
                     continue;
                 }
-                let preview = active_canvas
-                    .then(|| self.editor.resize_preview(element.id))
-                    .flatten();
-                let moving = active_canvas
-                    .then(|| self.editor.moving_offset(element.id))
-                    .flatten();
-                let offset = moving.unwrap_or_default();
-                let bounds = preview.map_or(element.bounds, |current| current.bounds);
-                let (kind, style) = preview.map_or((&element.kind, element.style), |current| {
-                    (&current.kind, current.style)
-                });
-                // Layout bounds exclude glyph ink overhangs; allow one em around text.
-                let overhang = match kind {
-                    ElementKind::Text { scale, .. } => {
-                        style.size * scale[0].abs().max(scale[1].abs())
-                    }
-                    _ => 0.0,
-                };
-                let bounds = scene::Bounds {
-                    min: bounds.min + offset,
-                    max: bounds.max + offset,
+                let live = if active_canvas {
+                    self.editor.live_element(element)
+                } else {
+                    LiveElement::from(element)
                 };
                 // Moving or resizing an element off-screen still invalidates its cached position.
-                cacheable &= preview.is_none() && moving.is_none();
-                if !bounds.expanded(overhang).intersects(visible) {
+                cacheable &= !live.resized && !live.moved;
+                let overhang = live.kind.ink_overhang(live.style);
+                if !live.bounds.expanded(overhang).intersects(visible) {
                     continue;
                 }
                 cacheable &= remaining >= 1.0;
@@ -88,31 +73,21 @@ impl DrawState {
                     origin,
                     text,
                     scale,
-                } = kind
+                } = live.kind
                 else {
-                    let (geometry, opacity) = if let Some(preview) = preview {
-                        (
-                            std::borrow::Cow::Owned(scene::geometry(&preview.kind, preview.style)),
-                            remaining,
-                        )
+                    let (geometry, opacity) = if live.resized {
+                        let geometry = scene::geometry(live.kind, live.style);
+                        (std::borrow::Cow::Owned(geometry), remaining)
                     } else {
                         element.presentation_geometry(remaining, self.editor.presentation_settings)
                     };
-                    items.push(SceneItem::Geometry(geometry, [offset.x, offset.y], opacity));
+                    let offset = [live.offset.x, live.offset.y];
+                    items.push(SceneItem::Geometry(geometry, offset, opacity));
                     continue;
                 };
-                items.push(SceneItem::Text(
-                    TextSpec {
-                        layout: text.layout(),
-                        left: origin.x + offset.x,
-                        top: origin.y + offset.y,
-                        font_size: style.size,
-                        color: style.color,
-                        background_roundness: style.filled.then_some(style.roundness),
-                        scale: *scale,
-                    },
-                    remaining,
-                ));
+                let origin = *origin + live.offset;
+                let spec = scene::text_spec(text.layout(), origin, live.style, *scale);
+                items.push(SceneItem::Text(spec, remaining));
             }
             if let Some(edit) = active_text.filter(|edit| edit.id.is_none()) {
                 items.push(SceneItem::Text(edit.spec(), 1.0));

@@ -1,10 +1,26 @@
-use super::interaction::ResizeSnapshot;
 use super::{Editor, Interaction, drawing_kind};
 use crate::draw::picker::{picker_bounds, picker_geometry};
-use crate::draw::scene::{Bounds, ElementId, ElementKind, Point, Style, bounds_for, geometry};
-use crate::draw::selection;
+use crate::draw::scene::{
+    Bounds, Element, ElementKind, Point, Style, bounds_for, geometry, text_overhang,
+};
+use crate::draw::selection::{self, OUTLINE_EXTENT};
 use crate::render::Geometry;
 use crate::tool::Primitive;
+
+/// An element as it currently appears while a gesture moves or resizes it.
+pub(in crate::draw) struct LiveElement<'a> {
+    pub(in crate::draw) kind: &'a ElementKind,
+    pub(in crate::draw) style: Style,
+    pub(in crate::draw) bounds: Bounds,
+    pub(in crate::draw) offset: Point,
+    /// Resized elements need fresh geometry instead of their cached one.
+    pub(in crate::draw) resized: bool,
+    pub(in crate::draw) moved: bool,
+}
+
+fn outline_bounds(bounds: Bounds, kind: &ElementKind, style: Style) -> Bounds {
+    bounds.expanded(kind.ink_overhang(style).max(OUTLINE_EXTENT))
+}
 
 impl Editor {
     pub(in crate::draw) fn has_preview(&self) -> bool {
@@ -33,13 +49,6 @@ impl Editor {
     }
 
     pub(in crate::draw) fn interaction_bounds(&self) -> Option<kurbo::Rect> {
-        let outline = |bounds: Bounds, style: Style, kind: &ElementKind| {
-            let overhang = match kind {
-                ElementKind::Text { scale, .. } => style.size * scale[0].abs().max(scale[1].abs()),
-                _ => 0.0,
-            };
-            bounds.expanded(overhang.max(selection::OUTLINE_EXTENT))
-        };
         let interaction = match &self.interaction {
             Some(Interaction::Freehand(_, stroke)) => Some(stroke.bounds()),
             Some(Interaction::Drawing {
@@ -57,39 +66,22 @@ impl Editor {
                 ids,
                 start,
                 current,
-            }) => {
-                let offset = *current - *start;
-                ids.iter()
-                    .filter_map(|&id| self.element(id))
-                    .map(|e| {
-                        let b = outline(e.bounds, e.style, &e.kind);
-                        Bounds {
-                            min: b.min + offset,
-                            max: b.max + offset,
-                        }
-                    })
-                    .reduce(|a, b| Bounds::from_points([a.min, a.max, b.min, b.max]))
+            }) => ids
+                .iter()
+                .filter_map(|&id| self.element(id))
+                .map(|e| outline_bounds(e.bounds.translated(*current - *start), &e.kind, e.style))
+                .reduce(Bounds::union),
+            Some(Interaction::Resizing(resize)) => {
+                let current = &resize.current;
+                Some(outline_bounds(current.bounds, &current.kind, current.style))
             }
-            Some(Interaction::Resizing { current, .. }) => {
-                Some(outline(current.bounds, current.style, &current.kind))
-            }
-            Some(Interaction::EditingText(_, edit)) => {
-                let overhang = edit.style.size * edit.scale[0].abs().max(edit.scale[1].abs());
-                Some(
-                    edit.bounds()
-                        .expanded(overhang.max(selection::OUTLINE_EXTENT)),
-                )
-            }
+            Some(Interaction::EditingText(_, edit)) => Some(
+                edit.bounds()
+                    .expanded(text_overhang(edit.style, edit.scale).max(OUTLINE_EXTENT)),
+            ),
             Some(Interaction::Erasing { .. }) | None => None,
         }
-        .map(|b| {
-            kurbo::Rect::new(
-                f64::from(b.min.x),
-                f64::from(b.min.y),
-                f64::from(b.max.x),
-                f64::from(b.max.y),
-            )
-        });
+        .map(kurbo::Rect::from);
         let picker = self.picker.map(|p| picker_bounds(p.center));
         match (interaction, picker) {
             (Some(a), Some(b)) => Some(a.union(b)),
@@ -105,45 +97,34 @@ impl Editor {
         if self.primitive() != Primitive::Select {
             return;
         }
+        let mut selected = self
+            .selected
+            .iter()
+            .filter_map(|&id| Some(self.live_element(self.element(id)?)));
         if self.selected.len() > 1 {
-            let bounds = Bounds::from_points(
-                self.selected
-                    .iter()
-                    .filter_map(|&id| {
-                        let offset = self.moving_offset(id).unwrap_or_default();
-                        Some((self.element(id)?.bounds, offset))
-                    })
-                    .flat_map(|(bounds, offset)| [bounds.min + offset, bounds.max + offset]),
-            );
-            output.push(selection::outline(bounds.min, bounds.max));
+            let bounds = selected.map(|live| live.bounds).reduce(Bounds::union);
+            output.push(selection::outline(bounds.unwrap_or_default()));
             return;
         }
-        let Some(&id) = self.selected.first() else {
+        let Some(live) = selected.next() else {
             return;
         };
-        let Some(element) = self.element(id) else {
-            return;
-        };
-        if let Some(edit) = self.text_edit().filter(|edit| edit.id == Some(id)) {
-            let bounds = edit.bounds();
-            output.push(selection::outline(bounds.min, bounds.max));
+        if let Some(edit) = self
+            .text_edit()
+            .filter(|edit| edit.id == self.selected.first().copied())
+        {
+            output.push(selection::outline(edit.bounds()));
             return;
         }
-        let preview = self.resize_preview(id);
-        let (kind, bounds) = preview.map_or((&element.kind, element.bounds), |current| {
-            (&current.kind, current.bounds)
-        });
-        let offset = self.moving_offset(id).unwrap_or_default();
         if !matches!(
-            kind,
+            live.kind,
             ElementKind::Segment { .. } | ElementKind::Triangle { .. }
         ) {
-            output.push(selection::outline(bounds.min + offset, bounds.max + offset));
+            output.push(selection::outline(live.bounds));
         }
-        if !show_handles || self.interaction.is_some() {
-            return;
+        if show_handles && self.interaction.is_none() {
+            selection::append_handles(live.kind, live.style, output);
         }
-        selection::append_handles(kind, element.style, output);
     }
 
     pub(in crate::draw) fn picker_geometry(
@@ -182,26 +163,39 @@ impl Editor {
         )
     }
 
-    pub(in crate::draw) fn resize_preview(&self, id: ElementId) -> Option<&ResizeSnapshot> {
+    pub(in crate::draw) fn live_element<'a>(&'a self, element: &'a Element) -> LiveElement<'a> {
         match &self.interaction {
-            Some(Interaction::Resizing {
-                id: resized,
+            Some(Interaction::Resizing(resize)) if resize.id == element.id => LiveElement {
+                kind: &resize.current.kind,
+                style: resize.current.style,
+                bounds: resize.current.bounds,
+                resized: true,
+                ..element.into()
+            },
+            Some(Interaction::Moving {
+                ids,
+                start,
                 current,
-                ..
-            }) if *resized == id => Some(current),
-            _ => None,
+            }) if ids.binary_search(&element.id).is_ok() => LiveElement {
+                bounds: element.bounds.translated(*current - *start),
+                offset: *current - *start,
+                moved: true,
+                ..element.into()
+            },
+            _ => element.into(),
         }
     }
+}
 
-    pub(in crate::draw) fn moving_offset(&self, id: ElementId) -> Option<Point> {
-        let Some(Interaction::Moving {
-            ids,
-            start,
-            current,
-        }) = &self.interaction
-        else {
-            return None;
-        };
-        ids.binary_search(&id).is_ok().then_some(*current - *start)
+impl<'a> From<&'a Element> for LiveElement<'a> {
+    fn from(element: &'a Element) -> Self {
+        Self {
+            kind: &element.kind,
+            style: element.style,
+            bounds: element.bounds,
+            offset: Point::default(),
+            resized: false,
+            moved: false,
+        }
     }
 }

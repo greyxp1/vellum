@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 use super::{Editor, HistoryEntry, Interaction};
 use crate::draw::scene::{Element, ElementId, ElementKind, Point, Style};
 use crate::draw::text_edit::TextEdit;
+use crate::render::Geometry;
 
 impl Editor {
     fn protected_from_fading(&self, id: ElementId) -> bool {
@@ -103,18 +104,13 @@ impl Editor {
             .map(|element| element.id)
     }
 
-    pub(in crate::draw) fn undo(&mut self) -> bool {
+    pub(super) fn step_history(&mut self, redo: bool) -> bool {
         let cancelled = self.cancel_interaction();
-        if !self.document.history.undo(&mut self.document.elements) {
-            return cancelled;
-        }
-        self.selected.clear();
-        true
-    }
-
-    pub(in crate::draw) fn redo(&mut self) -> bool {
-        let cancelled = self.cancel_interaction();
-        if !self.document.history.redo(&mut self.document.elements) {
+        if !self
+            .document
+            .history
+            .step(redo, &mut self.document.elements)
+        {
             return cancelled;
         }
         self.selected.clear();
@@ -154,9 +150,7 @@ impl Editor {
         }
         let cancelled = self.cancel_interaction();
         if selected.len() == self.document.elements.len() {
-            let elements = std::mem::take(&mut self.document.elements);
-            self.document.history.record(HistoryEntry::Clear(elements));
-            return true;
+            return self.document.clear();
         }
         selected.sort_unstable();
         let start = self.document.element_index(selected[0]).unwrap();
@@ -186,32 +180,29 @@ impl Editor {
         if removed.is_empty() {
             return false;
         }
-        let entry = HistoryEntry::Remove(removed);
-        if merge {
-            self.document.history.merge(entry);
-        } else {
-            self.document.history.record(entry);
-        }
+        self.document
+            .history
+            .record(HistoryEntry::Remove(removed), merge);
         self.selected
             .retain(|&id| self.document.element_index(id).is_some());
         true
     }
 
-    pub(super) fn insert_kind(
+    pub(super) fn insert(
         &mut self,
         preset: std::sync::Arc<str>,
         kind: ElementKind,
         style: Style,
+        geometry: Option<Geometry>,
     ) {
-        self.insert_element(Element::new(self.next_id, preset, kind, style));
-    }
-
-    pub(super) fn insert_element(&mut self, mut element: Element) {
+        let mut element = Element::new(self.next_id, preset, kind, style, geometry);
         element.fade_started_at = self.presentation.then(Instant::now);
         self.next_id += 1;
         let id = element.id;
         self.document.elements.push(element);
-        self.document.history.record(HistoryEntry::Insert(vec![id]));
+        self.document
+            .history
+            .record(HistoryEntry::Insert(vec![id]), false);
     }
 
     pub(super) fn erase_between(&mut self, start: Point, end: Point, size: f32) -> bool {
@@ -244,36 +235,30 @@ impl Editor {
                     .is_some_and(|index| self.remove_elements(index..=index, |_| true, false))
             });
         }
-        let text = crate::text::Text::from_layout(
-            content,
-            edit.font.clone(),
-            edit.style.size,
-            edit.layout().clone(),
-        );
+        let layout = edit.layout().clone();
         let TextEdit {
             id,
             origin,
             style,
             scale,
+            font,
             ..
         } = edit;
+        let text = crate::text::Text::from_layout(content, font, style.size, layout);
         let kind = ElementKind::Text {
             origin,
             text,
             scale,
         };
-        if let Some(id) = id {
-            let element = self.element_mut(id).expect("editing text exists");
-            if element.kind == kind && element.style == style {
-                return true;
-            }
-            let (kind, style) = element.replace(kind, style);
-            self.document
-                .history
-                .record(HistoryEntry::Update(vec![(id, kind, style)]));
-        } else {
-            self.insert_kind(preset, kind, style);
-        }
+        let Some(id) = id else {
+            self.insert(preset, kind, style, None);
+            return true;
+        };
+        let mut next = Some((kind, style));
+        self.document.update(false, [id], |element| {
+            next.take()
+                .filter(|(kind, style)| element.kind != *kind || element.style != *style)
+        });
         true
     }
 
@@ -307,10 +292,5 @@ impl Editor {
     pub(super) fn element(&self, id: ElementId) -> Option<&Element> {
         let index = self.document.element_index(id)?;
         Some(&self.document.elements[index])
-    }
-
-    pub(super) fn element_mut(&mut self, id: ElementId) -> Option<&mut Element> {
-        let index = self.document.element_index(id)?;
-        Some(&mut self.document.elements[index])
     }
 }

@@ -1,4 +1,4 @@
-use super::{Editor, HistoryEntry, Interaction};
+use super::{Editor, Interaction};
 use crate::Rgba;
 use crate::cli::ToolSetting;
 use crate::config::{Property, ToolDefinition, ToolProperties};
@@ -12,22 +12,14 @@ pub(in crate::draw) struct Adjustment {
     pub(in crate::draw) hit_stop: bool,
 }
 
-fn size_label(value: f32, default: f32) -> String {
-    let suffix = if value == default { " (default)" } else { "" };
-    format!("{value} px{suffix}")
-}
-
-fn percent_label(value: f32, default: f32) -> String {
-    let suffix = if value == default { " (default)" } else { "" };
-    format!("{:.0}%{suffix}", value * 100.0)
-}
-
-fn fill_label(filled: bool) -> String {
-    format!("Fill {}", if filled { "solid" } else { "outline" })
-}
-
-fn background_label(background: bool) -> String {
-    format!("Background {}", if background { "on" } else { "off" })
+fn fill_label(filled: bool, text: bool) -> String {
+    match (text, filled) {
+        (false, true) => "Fill solid",
+        (false, false) => "Fill outline",
+        (true, true) => "Background on",
+        (true, false) => "Background off",
+    }
+    .into()
 }
 
 fn stepped_value(value: f32, default: f32, steps: f32, increment: f32, min: f32, max: f32) -> f32 {
@@ -102,9 +94,14 @@ impl Property {
         let (min, max) = self.bounds(tool.size_range);
         let (increment, stops) = (*tool.steps.get(self), tool.stops.get(self));
         let adjustment = stepped_with_stops(value, default, steps, increment, min, max, stops);
+        let suffix = if adjustment.value == default {
+            " (default)"
+        } else {
+            ""
+        };
         let label = match self {
-            Self::Size => size_label(adjustment.value, default),
-            Self::Opacity | Self::Roundness => percent_label(adjustment.value, default),
+            Self::Size => format!("{} px{suffix}", adjustment.value),
+            Self::Opacity | Self::Roundness => format!("{:.0}%{suffix}", adjustment.value * 100.0),
         };
         (adjustment, label)
     }
@@ -177,13 +174,13 @@ impl Editor {
             edit.style.filled = !edit.style.filled;
             return Adjustment {
                 changed: true,
-                feedback: Some(background_label(edit.style.filled)),
+                feedback: Some(fill_label(edit.style.filled, true)),
                 ..Default::default()
             };
         }
         if !self.selected.is_empty() {
-            let enable = if let Some(Interaction::Resizing { current, .. }) = &self.interaction {
-                !current.style.filled
+            let enable = if let Some(Interaction::Resizing(resize)) = &self.interaction {
+                !resize.current.style.filled
             } else {
                 self.selected
                     .iter()
@@ -194,11 +191,7 @@ impl Editor {
             return self.adjust_selected(false, |kind, _, style| {
                 supports_fill(kind).then(|| {
                     style.filled = enable;
-                    if matches!(kind, ElementKind::Text { .. }) {
-                        background_label(enable)
-                    } else {
-                        fill_label(enable)
-                    }
+                    fill_label(enable, matches!(kind, ElementKind::Text { .. }))
                 })
             });
         }
@@ -211,11 +204,7 @@ impl Editor {
         self.update_live_style(self.tool, |style| style.filled = filled);
         Adjustment {
             changed: true,
-            feedback: Some(if self.primitive() == Primitive::Text {
-                background_label(filled)
-            } else {
-                fill_label(filled)
-            }),
+            feedback: Some(fill_label(filled, self.primitive() == Primitive::Text)),
             ..Default::default()
         }
     }
@@ -287,55 +276,21 @@ impl Editor {
         merge: bool,
         mut adjust: impl FnMut(&ElementKind, &str, &mut Style) -> Option<String>,
     ) -> Adjustment {
-        if let Some(Interaction::Resizing {
-            preset,
-            properties,
-            current,
-            ..
-        }) = &mut self.interaction
-        {
-            let mut style = current.style;
-            let feedback = adjust(&current.kind, preset, &mut style);
-            let changed = style != current.style;
-            if changed {
-                // Text resizing also changes font size; retain only the user's adjustment.
-                *properties = Style {
-                    size: properties.size + (style.size - current.style.size),
-                    ..style
-                };
-                current.set_style(style);
-            }
-            return Adjustment {
-                changed,
-                feedback,
-                ..Default::default()
-            };
-        }
-        let ids = self.selected.clone();
-        let mut updates = Vec::with_capacity(ids.len());
         let mut feedback = None;
-        for id in ids {
-            let Some(element) = self.element_mut(id) else {
-                continue;
-            };
-            let mut style = element.style;
-            if let Some(label) = adjust(&element.kind, &element.preset, &mut style) {
-                feedback = Some(label);
-            }
-            if style != element.style {
-                let (kind, style) = element.replace(element.kind.clone(), style);
-                updates.push((id, kind, style));
-            }
-        }
-        let changed = !updates.is_empty();
-        if changed {
-            let entry = HistoryEntry::Update(updates);
-            if merge {
-                self.document.history.merge(entry);
-            } else {
-                self.document.history.record(entry);
-            }
-        }
+        let changed = if let Some(Interaction::Resizing(resize)) = &mut self.interaction {
+            let mut style = resize.current.style;
+            feedback = adjust(&resize.current.kind, &resize.preset, &mut style);
+            resize.set_style(style)
+        } else {
+            self.document
+                .update(merge, self.selected.iter().copied(), |element| {
+                    let mut style = element.style;
+                    if let Some(label) = adjust(&element.kind, &element.preset, &mut style) {
+                        feedback = Some(label);
+                    }
+                    (style != element.style).then(|| (element.kind.clone(), style))
+                })
+        };
         Adjustment {
             changed,
             feedback,

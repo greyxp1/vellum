@@ -4,18 +4,16 @@ mod preview;
 mod properties;
 
 use self::interaction::Interaction;
+pub(super) use self::preview::LiveElement;
 use super::Modifiers;
 use super::history::{Entry as HistoryEntry, History};
 use super::picker::{Choice, Picker, choice};
-use super::scene::Element;
-use super::scene::{ElementId, ElementKind, Point, Style};
+use super::scene::{Element, ElementId, ElementKind, Point, Style};
 use super::selection;
-use super::text_edit::TextEdit;
-use super::text_edit::{CursorMove, TextInputBatch};
+use super::text_edit::{CursorMove, TextEdit, TextInputBatch};
 use crate::Rgba;
 use crate::config::{Property, ToolDefinition, ToolProperties};
-use crate::tool::Primitive;
-use crate::tool::ToolId;
+use crate::tool::{Primitive, ToolId};
 use std::sync::Arc;
 
 #[derive(Default)]
@@ -35,9 +33,36 @@ impl Document {
         if self.elements.is_empty() {
             return false;
         }
-        self.history
-            .record(HistoryEntry::Clear(std::mem::take(&mut self.elements)));
+        let elements = std::mem::take(&mut self.elements);
+        self.history.record(HistoryEntry::Clear(elements), false);
         true
+    }
+
+    /// Replaces the changed elements and records their previous states as one undo step.
+    fn update(
+        &mut self,
+        merge: bool,
+        ids: impl IntoIterator<Item = ElementId>,
+        mut change: impl FnMut(&Element) -> Option<(ElementKind, Style)>,
+    ) -> bool {
+        let mut updates = Vec::new();
+        for id in ids {
+            let Some(element) = self
+                .element_index(id)
+                .map(|index| &mut self.elements[index])
+            else {
+                continue;
+            };
+            if let Some((kind, style)) = change(element) {
+                let (kind, style) = element.replace(kind, style);
+                updates.push((id, kind, style));
+            }
+        }
+        let changed = !updates.is_empty();
+        if changed {
+            self.history.record(HistoryEntry::Update(updates), merge);
+        }
+        changed
     }
 }
 
@@ -302,82 +327,33 @@ impl Editor {
             effect.changed = true;
             return effect;
         }
-        match action {
-            Action::Undo => {
-                effect.changed = if let Some(edit) = self.text_edit_mut() {
-                    edit.undo()
-                } else {
-                    self.undo()
-                };
-            }
-            Action::Redo => {
-                effect.changed = if let Some(edit) = self.text_edit_mut() {
-                    edit.redo()
-                } else {
-                    self.redo()
-                };
-            }
-            Action::SelectAll => {
-                effect.changed = if let Some(edit) = self.text_edit_mut() {
-                    edit.select_all()
-                } else {
-                    self.select_all()
-                };
-            }
-            Action::ToggleEraser => effect.changed = self.toggle_eraser(),
-            Action::ToggleFill => {
-                let adjustment = self.toggle_fill();
-                effect.changed = adjustment.changed;
-                effect.feedback = adjustment.feedback;
-            }
-            Action::Delete => {
-                if let Some(edit) = self.text_edit_mut() {
-                    effect.changed = edit.delete();
-                } else {
-                    effect.changed = self.delete_selection();
+        if let Some(changed) = self.text_edit_mut().and_then(|edit| edit.apply(&action)) {
+            effect.changed = changed;
+        } else {
+            match action {
+                Action::Undo => effect.changed = self.step_history(false),
+                Action::Redo => effect.changed = self.step_history(true),
+                Action::SelectAll => effect.changed = self.select_all(),
+                Action::ToggleEraser => effect.changed = self.toggle_eraser(),
+                Action::ToggleFill => {
+                    let adjustment = self.toggle_fill();
+                    effect.changed = adjustment.changed;
+                    effect.feedback = adjustment.feedback;
                 }
-            }
-            Action::Clear => effect.changed = self.clear(),
-            Action::Cancel => {
-                let cancelled = self.cancel_interaction();
-                if cancelled || !std::mem::take(&mut self.selected).is_empty() {
-                    effect.changed = true;
-                } else {
-                    effect.deactivate = true;
+                Action::Delete => effect.changed = self.delete_selection(),
+                Action::Clear => effect.changed = self.clear(),
+                Action::Cancel => {
+                    let cancelled = self.cancel_interaction();
+                    if cancelled || !std::mem::take(&mut self.selected).is_empty() {
+                        effect.changed = true;
+                    } else {
+                        effect.deactivate = true;
+                    }
                 }
+                Action::CommitText => effect.changed = self.commit_text(),
+                // Text commands need an active edit, and the caller owns the clipboard.
+                _ => {}
             }
-            Action::CommitText => effect.changed = self.commit_text(),
-            Action::Backspace => {
-                if let Some(edit) = self.text_edit_mut() {
-                    effect.changed = edit.backspace();
-                }
-            }
-            Action::BackspaceWord => {
-                if let Some(edit) = self.text_edit_mut() {
-                    effect.changed = edit.backspace_word();
-                }
-            }
-            Action::MoveCursor(movement, extend) => {
-                if let Some(edit) = self.text_edit_mut() {
-                    effect.changed = edit.move_cursor(movement, extend);
-                }
-            }
-            Action::InsertText(text) => {
-                if let Some(edit) = self.text_edit_mut() {
-                    effect.changed = edit.insert(&text);
-                }
-            }
-            Action::Cut => {
-                if let Some(edit) = self.text_edit_mut() {
-                    effect.changed = edit.cut();
-                }
-            }
-            Action::PasteText(text) => {
-                if let Some(edit) = self.text_edit_mut() {
-                    effect.changed = edit.paste(&text);
-                }
-            }
-            Action::Copy | Action::Paste | Action::ApplyTextInput(_) => {}
         }
         effect.changed |= closed_picker;
         effect
@@ -554,15 +530,10 @@ fn drawing_kind(
         Primitive::Triangle => ElementKind::Triangle {
             vertices: selection::triangle_from_drag(start, current, modifiers),
         },
-        Primitive::Rectangle => {
+        Primitive::Rectangle | Primitive::Ellipse => {
             let (min, max) =
                 selection::constrained_box(start, current, modifiers.shift, modifiers.alt);
-            ElementKind::Rectangle { min, max }
-        }
-        Primitive::Ellipse => {
-            let (min, max) =
-                selection::constrained_box(start, current, modifiers.shift, modifiers.alt);
-            ElementKind::ellipse(min, max)
+            ElementKind::boxed(tool == Primitive::Ellipse, min, max)
         }
         Primitive::Pen | Primitive::Text | Primitive::Eraser | Primitive::Select => unreachable!(),
     }

@@ -20,6 +20,31 @@ pub(crate) struct TextSpec<'a> {
 }
 
 impl TextSpec<'_> {
+    /// Layout bounds, padded and widened for any background.
+    pub(crate) fn bounds(&self) -> kurbo::Rect {
+        let [padding_x, padding_y] = if self.background_roundness.is_some() {
+            text_padding(self.font_size)
+        } else {
+            [0.0; 2]
+        };
+        let (width, height) = (self.layout.full_width(), self.layout.height());
+        // Expand in text space so the background and its editing bounds stretch together.
+        let width = self.background_roundness.map_or(width, |roundness| {
+            width.max((height + 2.0 * padding_y) * roundness - 2.0 * padding_x)
+        });
+        let [scale_x, scale_y] = self.scale;
+        kurbo::Rect::from_points(
+            (
+                f64::from(self.left - padding_x * scale_x),
+                f64::from(self.top - padding_y * scale_y),
+            ),
+            (
+                f64::from(self.left + (width + padding_x) * scale_x),
+                f64::from(self.top + (height + padding_y) * scale_y),
+            ),
+        )
+    }
+
     pub(crate) fn glyph_transform(&self, run: &parley::Run<'_, ()>) -> kurbo::Affine {
         let skew = f64::from(run.synthesis().skew().unwrap_or(0.0))
             .to_radians()
@@ -148,33 +173,6 @@ pub(crate) fn text_line_height(font_size: f32) -> f32 {
 
 pub(crate) fn text_padding(font_size: f32) -> [f32; 2] {
     [font_size * 0.25, font_size * 0.125]
-}
-
-pub(crate) fn text_bounds(
-    [left, top]: [f32; 2],
-    [width, height]: [f32; 2],
-    font_size: f32,
-    background_roundness: Option<f32>,
-    [scale_x, scale_y]: [f32; 2],
-) -> [[f32; 2]; 2] {
-    let [padding_x, padding_y] = if background_roundness.is_some() {
-        text_padding(font_size)
-    } else {
-        [0.0; 2]
-    };
-    // Expand in text space so the background and its editing bounds stretch together.
-    let width = background_roundness.map_or(width, |roundness| {
-        width.max((height + 2.0 * padding_y) * roundness - 2.0 * padding_x)
-    });
-    let end_x = left + (width + padding_x) * scale_x;
-    let end_y = top + (height + padding_y) * scale_y;
-    let start_x = left - padding_x * scale_x;
-    let start_y = top - padding_y * scale_y;
-    let min_x = start_x.min(end_x);
-    let min_y = start_y.min(end_y);
-    let max_x = start_x.max(end_x);
-    let max_y = start_y.max(end_y);
-    [[min_x, min_y], [max_x, max_y]]
 }
 
 fn layout_text(content: &str, font_size: f32, font: &TextFont) -> Layout<()> {

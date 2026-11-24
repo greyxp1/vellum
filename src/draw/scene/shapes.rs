@@ -4,8 +4,11 @@ use peniko::Fill;
 use std::borrow::Cow;
 
 use super::{Bounds, ElementKind, Point, Style, kurbo_point};
-use crate::draw::{CIRCLE_KAPPA, freehand};
+use crate::draw::{CIRCLE_KAPPA, freehand, triangle};
 use crate::render::Geometry;
+use crate::text::TextSpec;
+use kurbo::Shape;
+use parley::Layout;
 
 fn pixel_aligned_coordinate(value: f32, width: f32) -> f32 {
     if !value.is_finite() || !width.is_finite() || width <= 0.0 {
@@ -58,13 +61,6 @@ pub(super) fn pixel_aligned_segment(
     (start, end)
 }
 
-fn pixel_aligned_rectangle(min: Point, max: Point, width: f32) -> (Point, Point) {
-    (
-        pixel_aligned_point(min, width),
-        pixel_aligned_point(max, width),
-    )
-}
-
 pub(in crate::draw) fn bounds_for(kind: &ElementKind, style: Style) -> Bounds {
     let width = style.size;
     let bounds = match kind {
@@ -73,78 +69,73 @@ pub(in crate::draw) fn bounds_for(kind: &ElementKind, style: Style) -> Bounds {
             arrow,
         } => {
             let (start, end) = pixel_aligned_segment(*start, *end, width);
-            if *arrow {
-                Bounds::from_points(
-                    [start, end]
-                        .into_iter()
-                        .chain(arrow_head(start, end, width).vertices),
-                )
-            } else {
-                Bounds::from_points([start, end])
-            }
+            let head = arrow.then(|| arrow_head(start, end, width).vertices);
+            Bounds::from_points([start, end].into_iter().chain(head.into_iter().flatten()))
         }
         ElementKind::Freehand { points, .. } => {
             Bounds::from_points(pixel_aligned_points(points, width).iter().copied())
         }
         ElementKind::Triangle { vertices } => {
-            return crate::draw::triangle::bounds(vertices, style);
+            return triangle::outline(vertices, style).bounding_box().into();
         }
-        ElementKind::Rectangle { min, max } => {
-            let (min, max) = pixel_aligned_rectangle(*min, *max, width);
-            Bounds { min, max }
-        }
+        ElementKind::Rectangle { min, max } => Bounds {
+            min: pixel_aligned_point(*min, width),
+            max: pixel_aligned_point(*max, width),
+        },
         ElementKind::Ellipse { center, radii } => Bounds {
-            min: Point::new(center.x - radii.x, center.y - radii.y),
-            max: Point::new(center.x + radii.x, center.y + radii.y),
+            min: *center - *radii,
+            max: *center + *radii,
         },
         ElementKind::Text {
             origin,
             text,
             scale,
         } => {
-            let layout = text.layout();
-            text_bounds(
-                *origin,
-                [layout.full_width(), layout.height()],
-                style,
-                *scale,
-            )
+            return text_spec(text.layout(), *origin, style, *scale)
+                .bounds()
+                .into();
         }
     };
     let radius = width * 0.5;
-    let expansion = match kind {
-        ElementKind::Text { .. } => 0.0,
-        ElementKind::Freehand { .. } => {
-            let roundness = style.roundness.clamp(0.0, 1.0);
-            radius * (std::f32::consts::SQRT_2 - (std::f32::consts::SQRT_2 - 1.0) * roundness)
-        }
-        _ => radius,
+    let expansion = if let ElementKind::Freehand { .. } = kind {
+        let roundness = style.roundness.clamp(0.0, 1.0);
+        radius * (std::f32::consts::SQRT_2 - (std::f32::consts::SQRT_2 - 1.0) * roundness)
+    } else {
+        radius
     };
     bounds.expanded(expansion)
 }
 
-pub(in crate::draw) fn text_bounds(
+pub(in crate::draw) fn text_spec(
+    layout: &Layout<()>,
     origin: Point,
-    [width, height]: [f32; 2],
     style: Style,
     scale: [f32; 2],
-) -> Bounds {
-    let [[min_x, min_y], [max_x, max_y]] = crate::text::text_bounds(
-        [origin.x, origin.y],
-        [width, height],
-        style.size,
-        style.filled.then_some(style.roundness),
+) -> TextSpec<'_> {
+    TextSpec {
+        layout,
+        left: origin.x,
+        top: origin.y,
+        font_size: style.size,
+        color: style.color,
+        background_roundness: style.filled.then_some(style.roundness),
         scale,
-    );
-    Bounds {
-        min: Point::new(min_x, min_y),
-        max: Point::new(max_x, max_y),
     }
 }
 
-pub(in crate::draw) fn geometry(kind: &ElementKind, style: Style) -> Geometry {
-    use kurbo::Shape;
+/// Builds bounds and geometry together, reusing a triangle's outline for both.
+pub(super) fn shape(kind: &ElementKind, style: Style) -> (Bounds, Geometry) {
+    let ElementKind::Triangle { vertices } = kind else {
+        return (bounds_for(kind, style), geometry(kind, style));
+    };
+    let outline = triangle::outline(vertices, style);
+    (
+        outline.bounding_box().into(),
+        triangle::geometry(outline, style),
+    )
+}
 
+pub(in crate::draw) fn geometry(kind: &ElementKind, style: Style) -> Geometry {
     match kind {
         ElementKind::Segment {
             points: [start, end],
@@ -166,31 +157,23 @@ pub(in crate::draw) fn geometry(kind: &ElementKind, style: Style) -> Geometry {
             Fill::NonZero,
             style.color,
         ),
-        ElementKind::Triangle { vertices } => crate::draw::triangle::geometry(vertices, style),
-        ElementKind::Rectangle { min, max } => {
-            let (min, max) = pixel_aligned_rectangle(*min, *max, style.size);
-            rectangle_geometry(min, max, style)
+        ElementKind::Triangle { vertices } => {
+            triangle::geometry(triangle::outline(vertices, style), style)
         }
-        ElementKind::Ellipse { center, radii } if style.filled => {
-            let half = style.size * 0.5;
-            let path = kurbo::Ellipse::new(
-                (f64::from(center.x), f64::from(center.y)),
-                (
-                    f64::from((radii.x + half).max(0.0)),
-                    f64::from((radii.y + half).max(0.0)),
-                ),
-                0.0,
-            )
-            .to_path(0.1);
-            Geometry::fill(path, Fill::NonZero, style.color)
-        }
+        ElementKind::Rectangle { min, max } => rectangle_geometry(
+            pixel_aligned_point(*min, style.size),
+            pixel_aligned_point(*max, style.size),
+            style,
+        ),
         ElementKind::Ellipse { center, radii } => {
-            let path = kurbo::Ellipse::new(
-                (f64::from(center.x), f64::from(center.y)),
-                (f64::from(radii.x), f64::from(radii.y)),
-                0.0,
-            )
-            .to_path(0.1);
+            // Filled ellipses cover the outline that strokes would draw around their radii.
+            let half = if style.filled { style.size * 0.5 } else { 0.0 };
+            let radii = (radii.x + half, radii.y + half);
+            let radii = (f64::from(radii.0.max(0.0)), f64::from(radii.1.max(0.0)));
+            let path = kurbo::Ellipse::new(kurbo_point(*center), radii, 0.0).to_path(0.1);
+            if style.filled {
+                return Geometry::fill(path, Fill::NonZero, style.color);
+            }
             Geometry::stroke(
                 path,
                 kurbo::Stroke::new(f64::from(style.size))
@@ -229,51 +212,26 @@ pub(in crate::draw) fn rendered_segment_endpoints(
 }
 
 fn rectangle_geometry(min: Point, max: Point, style: Style) -> Geometry {
-    use kurbo::Shape;
-
     let half = style.size * 0.5;
     let maximum = (max.x - min.x).abs().min((max.y - min.y).abs()) * 0.5 + half;
     let outer_radius = (100.0 * style.roundness.clamp(0.0, 1.0)).min(maximum);
     let inner_radius = (outer_radius - style.size).max(0.0);
+    let bounds = Bounds { min, max };
     let contours = [
-        (
-            Point::new(min.x - half, min.y - half),
-            Point::new(max.x + half, max.y + half),
-            outer_radius,
-        ),
-        (
-            Point::new(min.x + half, min.y + half),
-            Point::new(max.x - half, max.y - half),
-            inner_radius,
-        ),
+        (bounds.expanded(half), outer_radius),
+        (bounds.expanded(-half), inner_radius),
     ];
     let mut path = kurbo::BezPath::new();
     let contour_count = if style.filled { 1 } else { contours.len() };
-    for (min, max, radius) in contours.into_iter().take(contour_count) {
-        if min.x >= max.x || min.y >= max.y {
+    for (bounds, radius) in contours.into_iter().take(contour_count) {
+        if bounds.min.x >= bounds.max.x || bounds.min.y >= bounds.max.y {
             continue;
         }
+        let rect = kurbo::Rect::from(bounds);
         if radius <= f32::EPSILON {
-            path.extend(
-                kurbo::Rect::new(
-                    f64::from(min.x),
-                    f64::from(min.y),
-                    f64::from(max.x),
-                    f64::from(max.y),
-                )
-                .path_elements(0.1),
-            );
+            path.extend(rect.path_elements(0.1));
         } else {
-            path.extend(
-                kurbo::RoundedRect::new(
-                    f64::from(min.x),
-                    f64::from(min.y),
-                    f64::from(max.x),
-                    f64::from(max.y),
-                    f64::from(radius),
-                )
-                .path_elements(0.1),
-            );
+            path.extend(rect.to_rounded_rect(f64::from(radius)).path_elements(0.1));
         }
     }
     Geometry::fill(path, Fill::EvenOdd, style.color)
@@ -323,22 +281,24 @@ fn arrow_head(start: Point, end: Point, width: f32) -> ArrowHead {
 }
 
 fn arrow_path(head: ArrowHead, roundness: f32) -> kurbo::BezPath {
+    let mut path = kurbo::BezPath::new();
+    let roundness = f64::from(roundness);
     if head.shaft_length <= f32::EPSILON {
-        return rounded_polygon_path(&head.vertices, roundness);
+        append_rounded_polygon(&mut path, &head.vertices.map(kurbo_point), roundness);
+        return path;
     }
     let shaft_offset = head.normal * head.radius;
-    rounded_polygon_path(
-        &[
-            head.tail + shaft_offset,
-            head.base + shaft_offset,
-            head.vertices[1],
-            head.vertices[0],
-            head.vertices[2],
-            head.base - shaft_offset,
-            head.tail - shaft_offset,
-        ],
-        roundness,
-    )
+    let outline = [
+        head.tail + shaft_offset,
+        head.base + shaft_offset,
+        head.vertices[1],
+        head.vertices[0],
+        head.vertices[2],
+        head.base - shaft_offset,
+        head.tail - shaft_offset,
+    ];
+    append_rounded_polygon(&mut path, &outline.map(kurbo_point), roundness);
+    path
 }
 
 fn line_path(start: Point, end: Point, width: f32, roundness: f32) -> kurbo::BezPath {
@@ -406,21 +366,20 @@ fn line_path(start: Point, end: Point, width: f32, roundness: f32) -> kurbo::Bez
     path
 }
 
-fn rounded_polygon_path(vertices: &[Point], roundness: f32) -> kurbo::BezPath {
-    let mut path = kurbo::BezPath::new();
-    let corners = vertices.iter().enumerate().map(|(index, vertex)| {
-        let (before, after) = rounded_polygon_corner(vertices, index, roundness);
-        [before, *vertex, after].map(kurbo_point)
-    });
-    append_rounded_contour(&mut path, corners);
-    path
-}
-
-pub(in crate::draw) fn append_rounded_contour(
+/// Appends a closed polygon whose corners are cut and joined by quadratic curves.
+pub(in crate::draw) fn append_rounded_polygon(
     path: &mut kurbo::BezPath,
-    corners: impl Iterator<Item = [kurbo::Point; 3]>,
+    vertices: &[kurbo::Point],
+    roundness: f64,
 ) {
-    for (index, [before, vertex, after]) in corners.enumerate() {
+    let count = vertices.len();
+    for (index, &vertex) in vertices.iter().enumerate() {
+        let (before, after) = rounded_corner(
+            vertices[(index + count - 1) % count],
+            vertex,
+            vertices[(index + 1) % count],
+            roundness,
+        );
         if index == 0 {
             path.move_to(before);
         } else {
@@ -433,26 +392,20 @@ pub(in crate::draw) fn append_rounded_contour(
     path.close_path();
 }
 
-fn rounded_polygon_corner(vertices: &[Point], index: usize, roundness: f32) -> (Point, Point) {
-    let (before, after) = rounded_corner(
-        kurbo_point(vertices[(index + vertices.len() - 1) % vertices.len()]),
-        kurbo_point(vertices[index]),
-        kurbo_point(vertices[(index + 1) % vertices.len()]),
-        f64::from(roundness),
-    );
-    (
-        Point::new(before.x as f32, before.y as f32),
-        Point::new(after.x as f32, after.y as f32),
-    )
-}
-
 /// Midpoint of a rounded corner's curve, where it passes closest to the vertex.
 pub(in crate::draw) fn rounded_tip(vertices: &[Point], index: usize, roundness: f32) -> Point {
-    let (before, after) = rounded_polygon_corner(vertices, index, roundness);
+    let count = vertices.len();
+    let (before, after) = rounded_corner(
+        kurbo_point(vertices[(index + count - 1) % count]),
+        kurbo_point(vertices[index]),
+        kurbo_point(vertices[(index + 1) % count]),
+        f64::from(roundness),
+    );
+    let [before, after] = [before, after].map(|point| Point::new(point.x as f32, point.y as f32));
     (before + vertices[index] * 2.0 + after) * 0.25
 }
 
-pub(in crate::draw) fn rounded_corner(
+fn rounded_corner(
     previous: kurbo::Point,
     vertex: kurbo::Point,
     next: kurbo::Point,

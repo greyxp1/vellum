@@ -2,11 +2,11 @@
 
 mod shapes;
 
-use shapes::pixel_aligned_segment;
 pub(super) use shapes::{
-    append_rounded_contour, bounds_for, geometry, pixel_aligned_point, pixel_aligned_points,
-    rendered_segment_endpoints, rounded_corner, rounded_tip, text_bounds,
+    append_rounded_polygon, bounds_for, geometry, pixel_aligned_point, pixel_aligned_points,
+    rendered_segment_endpoints, rounded_tip, text_spec,
 };
+use shapes::{pixel_aligned_segment, shape};
 
 use crate::render::Geometry;
 use peniko::Fill;
@@ -111,6 +111,17 @@ impl Bounds {
         }
     }
 
+    pub(super) fn translated(self, offset: Point) -> Self {
+        Self {
+            min: self.min + offset,
+            max: self.max + offset,
+        }
+    }
+
+    pub(super) fn union(self, other: Self) -> Self {
+        Self::from_points([self.min, self.max, other.min, other.max])
+    }
+
     pub fn contains(self, point: Point) -> bool {
         point.x >= self.min.x
             && point.x <= self.max.x
@@ -123,6 +134,21 @@ impl Bounds {
             && self.max.x >= other.min.x
             && self.min.y <= other.max.y
             && self.max.y >= other.min.y
+    }
+}
+
+impl From<Bounds> for kurbo::Rect {
+    fn from(bounds: Bounds) -> Self {
+        Self::from_points(kurbo_point(bounds.min), kurbo_point(bounds.max))
+    }
+}
+
+impl From<kurbo::Rect> for Bounds {
+    fn from(rect: kurbo::Rect) -> Self {
+        Self {
+            min: Point::new(rect.x0 as f32, rect.y0 as f32),
+            max: Point::new(rect.x1 as f32, rect.y1 as f32),
+        }
     }
 }
 
@@ -168,34 +194,59 @@ impl ElementKind {
             text.set_size(style.size);
         }
     }
-    pub(in crate::draw) fn ellipse(min: Point, max: Point) -> Self {
-        Self::Ellipse {
-            center: min.midpoint(max),
-            radii: (max - min) * 0.5,
+
+    /// Builds a rectangle or the ellipse inscribed in it.
+    pub(in crate::draw) fn boxed(ellipse: bool, min: Point, max: Point) -> Self {
+        if ellipse {
+            Self::Ellipse {
+                center: min.midpoint(max),
+                radii: (max - min) * 0.5,
+            }
+        } else {
+            Self::Rectangle { min, max }
+        }
+    }
+
+    /// Returns the box of a rectangle or ellipse.
+    pub(in crate::draw) fn corners(&self) -> Option<(Point, Point)> {
+        match *self {
+            Self::Rectangle { min, max } => Some((min, max)),
+            Self::Ellipse { center, radii } => Some((center - radii, center + radii)),
+            _ => None,
+        }
+    }
+
+    /// Layout bounds exclude glyph ink overhangs, so text allows one em around them.
+    pub(in crate::draw) fn ink_overhang(&self, style: Style) -> f32 {
+        match self {
+            Self::Text { scale, .. } => text_overhang(style, *scale),
+            _ => 0.0,
         }
     }
 
     pub(super) fn translated(&self, delta: Point) -> Self {
         let mut translated = self.clone();
-        match &mut translated {
-            Self::Freehand { points, .. } => {
-                points.iter_mut().for_each(|point| *point = *point + delta);
-            }
-            Self::Segment { points, .. } => {
-                points.iter_mut().for_each(|point| *point = *point + delta);
-            }
-            Self::Triangle { vertices } => vertices
-                .iter_mut()
-                .for_each(|point| *point = *point + delta),
+        let points: &mut [Point] = match &mut translated {
+            Self::Freehand { points, .. } => points,
+            Self::Segment { points, .. } => points,
+            Self::Triangle { vertices } => vertices,
             Self::Rectangle { min, max } => {
                 *min = *min + delta;
                 *max = *max + delta;
+                return translated;
             }
-            Self::Ellipse { center, .. } => *center = *center + delta,
-            Self::Text { origin, .. } => *origin = *origin + delta,
+            Self::Ellipse { center, .. } => std::slice::from_mut(center),
+            Self::Text { origin, .. } => std::slice::from_mut(origin),
+        };
+        for point in points {
+            *point = *point + delta;
         }
         translated
     }
+}
+
+pub(in crate::draw) fn text_overhang(style: Style, [x, y]: [f32; 2]) -> f32 {
+    style.size * x.abs().max(y.abs())
 }
 
 #[derive(Debug)]
@@ -260,20 +311,18 @@ impl Element {
         (Cow::Borrowed(&self.geometry), remaining)
     }
 
-    pub(super) fn new(id: ElementId, preset: Arc<str>, kind: ElementKind, style: Style) -> Self {
-        let geometry = geometry(&kind, style);
-        Self::with_geometry(id, preset, kind, style, geometry)
-    }
-
-    pub(super) fn with_geometry(
+    pub(super) fn new(
         id: ElementId,
         preset: Arc<str>,
         mut kind: ElementKind,
         style: Style,
-        geometry: Geometry,
+        geometry: Option<Geometry>,
     ) -> Self {
         kind.prepare(style);
-        let bounds = bounds_for(&kind, style);
+        let (bounds, geometry) = match geometry {
+            Some(geometry) => (bounds_for(&kind, style), geometry),
+            None => shape(&kind, style),
+        };
         Self {
             id,
             preset,
@@ -297,8 +346,7 @@ impl Element {
         if same_shape {
             self.geometry.set_color(self.style.color);
         } else {
-            self.bounds = bounds_for(&self.kind, self.style);
-            self.geometry = geometry(&self.kind, self.style);
+            (self.bounds, self.geometry) = shape(&self.kind, self.style);
         }
         (kind, style)
     }
@@ -322,13 +370,7 @@ impl Element {
         }
         let line = kurbo::Line::new(kurbo_point(start), kurbo_point(end));
         if matches!(self.kind, ElementKind::Text { .. }) {
-            let path = kurbo::Rect::new(
-                f64::from(self.bounds.min.x),
-                f64::from(self.bounds.min.y),
-                f64::from(self.bounds.max.x),
-                f64::from(self.bounds.max.y),
-            )
-            .to_path(0.1);
+            let path = kurbo::Rect::from(self.bounds).to_path(0.1);
             return Geometry::fill(path, Fill::NonZero, self.style.color)
                 .swept_hit_test(line, f64::from(radius));
         }

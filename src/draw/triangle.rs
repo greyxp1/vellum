@@ -1,28 +1,16 @@
-use super::scene::{Bounds, Point, Style};
+use super::scene::{Point, Style, append_rounded_polygon, rounded_tip};
 use crate::render::Geometry;
-use kurbo::{BezPath, Shape};
+use kurbo::BezPath;
 use peniko::Fill;
 
-pub(super) fn geometry(vertices: &[Point; 3], style: Style) -> Geometry {
+pub(super) fn geometry(outline: BezPath, style: Style) -> Geometry {
     if style.size <= f32::EPSILON {
         return Geometry::default();
     }
-    Geometry::fill(
-        outline(vertices, style.size, style.roundness, style.filled),
-        Fill::EvenOdd,
-        style.color,
-    )
+    Geometry::fill(outline, Fill::EvenOdd, style.color)
 }
 
-pub(super) fn bounds(vertices: &[Point; 3], style: Style) -> Bounds {
-    let bounds = outline(vertices, style.size, style.roundness, style.filled).bounding_box();
-    Bounds {
-        min: Point::new(bounds.x0 as f32, bounds.y0 as f32),
-        max: Point::new(bounds.x1 as f32, bounds.y1 as f32),
-    }
-}
-
-fn outline(vertices: &[Point; 3], width: f32, roundness: f32, filled: bool) -> BezPath {
+pub(super) fn outline(vertices: &[Point; 3], style: Style) -> BezPath {
     let outer = vertices.map(|point| kurbo::Point::new(point.x as f64, point.y as f64));
     let area = (outer[1] - outer[0]).cross(outer[2] - outer[0]);
     let scale = outer
@@ -34,32 +22,20 @@ fn outline(vertices: &[Point; 3], width: f32, roundness: f32, filled: bool) -> B
     } else {
         outer
     };
+    let roundness = f64::from(style.roundness);
     let mut path = BezPath::new();
-    add_contour(&mut path, &normalized, roundness as f64);
-    if !filled
+    append_rounded_polygon(&mut path, &normalized, roundness);
+    if !style.filled
         && area.abs() > f64::EPSILON * scale * scale * 16.0
-        && let Some(inner) = inset_triangle(&normalized, width as f64)
+        && let Some(inner) = inset_triangle(&normalized, f64::from(style.size))
     {
-        add_contour(&mut path, &inner, roundness as f64);
+        append_rounded_polygon(&mut path, &inner, roundness);
     }
     path
 }
 
-fn add_contour(path: &mut BezPath, vertices: &[kurbo::Point; 3], roundness: f64) {
-    let corners = vertices.iter().enumerate().map(|(index, &vertex)| {
-        let (before, after) = super::scene::rounded_corner(
-            vertices[(index + 2) % 3],
-            vertex,
-            vertices[(index + 1) % 3],
-            roundness,
-        );
-        [before, vertex, after]
-    });
-    super::scene::append_rounded_contour(path, corners);
-}
-
 pub(super) fn rendered_vertices(vertices: &[Point; 3], roundness: f32) -> [Point; 3] {
-    std::array::from_fn(|index| super::scene::rounded_tip(vertices, index, roundness))
+    std::array::from_fn(|index| rounded_tip(vertices, index, roundness))
 }
 
 pub(super) fn dragged_vertex(
