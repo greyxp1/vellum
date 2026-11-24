@@ -1,7 +1,7 @@
 mod buffer;
 
 use std::collections::BTreeMap;
-use std::os::fd::AsFd;
+use std::os::fd::{AsFd, OwnedFd};
 use std::time::{Duration, Instant};
 
 use wayland_client::protocol::wl_callback::WlCallback;
@@ -21,8 +21,9 @@ use wayland_protocols::wp::linux_dmabuf::zv1::client::zwp_linux_buffer_params_v1
 };
 use wayland_protocols::wp::viewporter::client::wp_viewport::WpViewport;
 
+use super::wayland::WaylandState;
 use super::{DrawOn, OutputId, State};
-use buffer::{DmabufBuffer, ShmBuffer, allocate_dmabuf};
+use buffer::{DmabufBuffer, allocate_dmabuf, create_shm_buffer};
 
 const CAPTURE_TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -43,9 +44,11 @@ enum Phase {
     Frozen,
 }
 
+// A batch is validated on its done event, so stored constraints always have
+// usable dimensions and at least one buffer type.
 #[derive(Default)]
 struct Constraints {
-    size: Option<(u32, u32)>,
+    size: [u32; 2],
     format: Option<wl_shm::Format>,
     device: Option<u64>,
     dmabuf_formats: Vec<(u32, Vec<u64>)>,
@@ -58,13 +61,15 @@ struct OutputCapture {
     constraints: Option<Constraints>,
     revision: u64,
     failed_revision: u64,
-    hidden: bool,
-    presented: bool,
     use_dmabuf: bool,
-    state: OutputState,
+    step: Step,
 }
 
-enum OutputState {
+enum Step {
+    // Annotations are visible until the first constraints arrive.
+    Live,
+    // Annotations are hidden, waiting for the blank frame to be presented.
+    Blanking,
     Idle,
     Allocating(PendingDmabuf),
     Capturing(CaptureFrame),
@@ -92,14 +97,15 @@ impl Drop for CaptureFrame {
     }
 }
 
-enum Storage {
-    Shm(ShmBuffer),
-    Dmabuf(DmabufBuffer),
+// Retains the memory behind a buffer for as long as the compositor may use it.
+enum Backing {
+    Shm { _fd: OwnedFd },
+    Dmabuf { _buffer: DmabufBuffer },
 }
 
 struct CaptureBuffer {
     proxy: WlBuffer,
-    storage: Storage,
+    _backing: Backing,
 }
 
 impl Drop for CaptureBuffer {
@@ -111,7 +117,7 @@ impl Drop for CaptureBuffer {
 impl Drop for OutputCapture {
     fn drop(&mut self) {
         // Cancel pending frames before closing their capture session.
-        self.state = OutputState::Idle;
+        self.step = Step::Live;
         self.session.destroy();
         self.source.destroy();
     }
@@ -132,7 +138,7 @@ impl Freeze {
     }
 
     pub fn hides(&self, output: OutputId) -> bool {
-        matches!(&self.phase, Phase::Capturing { frames, .. } if frames.get(&output).is_some_and(|f| f.hidden && !matches!(f.state, OutputState::Ready)))
+        matches!(&self.phase, Phase::Capturing { frames, .. } if frames.get(&output).is_some_and(|f| !matches!(f.step, Step::Live | Step::Ready)))
     }
 
     pub fn next_wakeup(&self) -> Option<Instant> {
@@ -181,71 +187,54 @@ impl State {
             self.freeze.phase = Phase::WaitingOutput;
             return;
         }
-        let (Some(image_copy), Some(image_source)) = (
-            &self.wayland.image_copy_manager,
-            &self.wayland.image_capture_source_manager,
+        let wayland = &self.wayland;
+        let (Some(image_copy), Some(image_source), Some(_), Some(_)) = (
+            &wayland.image_copy_manager,
+            &wayland.image_capture_source_manager,
+            &wayland.subcompositor,
+            &wayland.viewporter,
         ) else {
-            self.fail_freeze(
-                "Screen freeze unavailable: compositor does not support ext-image-copy-capture",
+            return self.fail_freeze(
+                "Screen freeze unavailable: compositor does not support ext-image-copy-capture, wl_subcompositor or wp_viewporter",
             );
-            return;
         };
-        if self.wayland.subcompositor.is_none() || self.wayland.viewporter.is_none() {
-            self.fail_freeze(
-                "Screen freeze unavailable: compositor does not support wl_subcompositor and wp_viewporter",
-            );
-            return;
-        }
-        let mut outputs = Vec::new();
-        for (&id, output) in &self.wayland.outputs {
-            // Capture before taking focus, then retain the output selected on entry.
-            if self.draw_on == DrawOn::Current
-                && self.selected_output.is_some_and(|selected| selected != id)
-            {
-                continue;
-            }
-            if output.wgpu.is_none() {
-                self.fail_freeze("Screen freeze unavailable: output is not ready");
-                return;
-            }
-            outputs.push(id);
-        }
+        // Capture before taking focus, then retain the output selected on entry.
+        let outputs: Vec<_> = wayland
+            .outputs
+            .iter()
+            .filter(|&(&id, _)| {
+                self.draw_on != DrawOn::Current || self.selected_output.is_none_or(|s| s == id)
+            })
+            .collect();
         if outputs.is_empty() {
-            self.fail_freeze("Screen freeze unavailable: no output");
-            return;
+            return self.fail_freeze("Screen freeze unavailable: no output");
+        }
+        if outputs.iter().any(|(_, output)| output.wgpu.is_none()) {
+            return self.fail_freeze("Screen freeze unavailable: output is not ready");
         }
         self.freeze.generation = self.freeze.generation.wrapping_add(1);
         let generation = self.freeze.generation;
-        let use_dmabuf = self.wayland.dmabuf.is_some();
         let frames = outputs
             .into_iter()
-            .map(|id| {
-                let source = image_source.create_source(
-                    &self.wayland.outputs[&id].output,
-                    &self.qhandle,
-                    (),
-                );
+            .map(|(&id, output)| {
+                let source = image_source.create_source(&output.output, &self.qhandle, ());
                 let session = image_copy.create_session(
                     &source,
                     Options::empty(),
                     &self.qhandle,
                     (generation, id),
                 );
-                (
-                    id,
-                    OutputCapture {
-                        source,
-                        session,
-                        pending: Constraints::default(),
-                        constraints: None,
-                        revision: 0,
-                        failed_revision: 0,
-                        hidden: false,
-                        presented: false,
-                        use_dmabuf,
-                        state: OutputState::Idle,
-                    },
-                )
+                let capture = OutputCapture {
+                    source,
+                    session,
+                    pending: Constraints::default(),
+                    constraints: None,
+                    revision: 0,
+                    failed_revision: 0,
+                    use_dmabuf: wayland.dmabuf.is_some(),
+                    step: Step::Live,
+                };
+                (id, capture)
             })
             .collect();
         self.freeze.phase = Phase::Capturing {
@@ -259,12 +248,8 @@ impl State {
         if matches!(self.freeze.phase, Phase::WaitingOutput) && self.selected_output.is_some() {
             self.start_freeze();
         } else if matches!(self.freeze.phase, Phase::Frozen) && self.draw_on == DrawOn::Current {
-            for (&id, output) in &mut self.wayland.outputs {
-                if self.selected_output != Some(id) && output.is_frozen() {
-                    output.clear_frozen_background();
-                    self.draw.damage(id);
-                }
-            }
+            let selected = self.selected_output;
+            self.thaw_outputs(|id, frozen| frozen && selected != Some(id));
             self.request_render();
         }
     }
@@ -272,26 +257,44 @@ impl State {
     pub(super) fn stop_freeze(&mut self, deactivating: bool) {
         let deferred_input = std::mem::take(&mut self.freeze.defer_input);
         let old_phase = std::mem::replace(&mut self.freeze.phase, Phase::Live);
-        let mut damaged = Vec::new();
-        for (&id, output) in &mut self.wayland.outputs {
-            if output.is_frozen()
+        let thawed = self.thaw_outputs(|id, frozen| {
+            frozen
                 || matches!(&old_phase, Phase::Capturing { frames, .. } if frames.contains_key(&id))
-            {
-                output.clear_frozen_background();
-                self.draw.damage(id);
-                damaged.push(id);
-            }
-        }
+        });
         drop(old_phase);
         if !deactivating {
             if deferred_input {
                 self.update_output_input();
             }
-            for id in damaged {
+            for id in thawed {
                 self.render(id);
             }
             self.request_render();
         }
+    }
+
+    /// Detaches the frozen background of each matching output and damages it.
+    fn thaw_outputs(&mut self, thaw: impl Fn(OutputId, bool) -> bool) -> Vec<OutputId> {
+        let mut thawed = Vec::new();
+        for (&id, output) in &mut self.wayland.outputs {
+            let frozen = output
+                .frozen_surface
+                .as_mut()
+                .filter(|f| f.buffer.is_some());
+            if !thaw(id, frozen.is_some()) {
+                continue;
+            }
+            if let Some(frozen) = frozen {
+                // Apply removal with the replacement parent frame, including when its
+                // presentation is delayed. Reuse the empty subsurface on the next freeze.
+                frozen.surface.attach(None, 0, 0);
+                frozen.surface.commit();
+                frozen.buffer = None;
+            }
+            self.draw.damage(id);
+            thawed.push(id);
+        }
+        thawed
     }
 
     pub(super) fn invalidate_freeze(&mut self) {
@@ -305,118 +308,67 @@ impl State {
         log::warn!("{message}");
     }
 
-    fn blank_output(&mut self, id: OutputId) -> Result<(), String> {
-        let output = &self.wayland.outputs[&id];
-        let Some(blank) = output.wgpu.as_ref().unwrap().hide_annotations()? else {
-            // Leave an output that cannot present now live instead of failing the others.
-            log::warn!("output {id} left live: could not hide annotations for capture");
-            let Phase::Capturing { frames, .. } = &mut self.freeze.phase else {
-                unreachable!()
-            };
-            frames.remove(&id);
-            if frames.is_empty() {
-                return Err("could not hide annotations for capture".into());
-            }
-            self.handle_freeze(Instant::now());
-            return Ok(());
-        };
-        output
-            .surface
-            .frame(&self.qhandle, (self.freeze.generation, id));
-        blank.present();
-        self.freeze
-            .output_mut(self.freeze.generation, id)
-            .unwrap()
-            .hidden = true;
-        self.draw.damage(id);
-        Ok(())
-    }
-
-    fn capture_output(&mut self, generation: u64, id: OutputId) -> Result<(), String> {
+    /// Moves an output's capture to its next step once its prerequisites are met.
+    fn advance_capture(&mut self, generation: u64, id: OutputId) {
         let Some(capture) = self.freeze.output_mut(generation, id) else {
-            return Ok(());
+            return;
         };
-        if !capture.presented || !matches!(capture.state, OutputState::Idle) {
-            return Ok(());
-        }
-        let Some(constraints) = &capture.constraints else {
-            return Ok(());
-        };
-        let (width, height) = constraints.size.ok_or("capture size unavailable")?;
-        if capture.use_dmabuf
-            && let Some(data) = constraints.device.and_then(|device| {
-                allocate_dmabuf(device, width, height, &constraints.dmabuf_formats)
-            })
-        {
-            let params = self
-                .wayland
-                .dmabuf
-                .as_ref()
-                .unwrap()
-                .create_params(&self.qhandle, (generation, id));
-            for (index, plane) in data.planes.iter().enumerate() {
-                params.add(
-                    plane.fd.as_fd(),
-                    index as u32,
-                    plane.offset,
-                    plane.stride,
-                    (data.modifier >> 32) as u32,
-                    data.modifier as u32,
-                );
+        let result = match capture.step {
+            Step::Live => {
+                let output = &self.wayland.outputs[&id];
+                match output.wgpu.as_ref().unwrap().hide_annotations() {
+                    Ok(Some(blank)) => {
+                        output.surface.frame(&self.qhandle, (generation, id));
+                        blank.present();
+                        capture.step = Step::Blanking;
+                        self.draw.damage(id);
+                        Ok(())
+                    }
+                    Ok(None) => {
+                        // Leave an output that cannot present now live instead of failing the others.
+                        log::warn!("output {id} left live: could not hide annotations for capture");
+                        let Phase::Capturing { frames, .. } = &mut self.freeze.phase else {
+                            unreachable!()
+                        };
+                        frames.remove(&id);
+                        if frames.is_empty() {
+                            Err("could not hide annotations for capture".into())
+                        } else {
+                            self.handle_freeze(Instant::now());
+                            Ok(())
+                        }
+                    }
+                    Err(error) => Err(error),
+                }
             }
-            params.create(width as i32, height as i32, data.format, Flags::empty());
-            capture.state = OutputState::Allocating(PendingDmabuf {
-                params,
-                data,
-                revision: capture.revision,
-            });
-            return Ok(());
+            Step::Idle => capture.allocate(&self.wayland, &self.qhandle, (generation, id)),
+            _ => Ok(()),
+        };
+        if let Err(error) = result {
+            self.fail_freeze(&format!("Screen freeze failed: {error}"));
         }
-        let format = constraints
-            .format
-            .ok_or("no supported capture buffer format")?;
-        let shm = self.wayland.shm.as_ref().ok_or("wl_shm unavailable")?;
-        let data = ShmBuffer::new(width, height, format)?;
-        let proxy = data.create_buffer(shm, &self.qhandle);
-        capture.attach(
-            CaptureBuffer {
-                proxy,
-                storage: Storage::Shm(data),
-            },
-            &self.qhandle,
-            (generation, id),
-        );
-        Ok(())
     }
 
     fn finish_capture(&mut self, id: OutputId, buffer: CaptureBuffer, transform: Transform) {
-        let output = self.wayland.outputs.get_mut(&id).unwrap();
-        if output.frozen_surface.is_none() {
-            let surface = self.wayland.compositor.create_surface(&self.qhandle, id);
-            let subsurface = self.wayland.subcompositor.as_ref().unwrap().get_subsurface(
-                &surface,
-                &output.surface,
-                &self.qhandle,
-                (),
-            );
+        let (wayland, qh) = (&mut self.wayland, &self.qhandle);
+        let output = wayland.outputs.get_mut(&id).unwrap();
+        let frozen = output.frozen_surface.get_or_insert_with(|| {
+            let surface = wayland.compositor.create_surface(qh, id);
+            let subcompositor = wayland.subcompositor.as_ref().unwrap();
+            let subsurface = subcompositor.get_subsurface(&surface, &output.surface, qh, ());
             subsurface.place_below(&output.surface);
-            let viewport =
-                self.wayland
-                    .viewporter
-                    .as_ref()
-                    .unwrap()
-                    .get_viewport(&surface, &self.qhandle, ());
-            let empty = self.wayland.compositor.create_region(&self.qhandle, ());
+            let viewporter = wayland.viewporter.as_ref().unwrap();
+            let viewport = viewporter.get_viewport(&surface, qh, ());
+            let empty = wayland.compositor.create_region(qh, ());
             surface.set_input_region(Some(&empty));
             empty.destroy();
-            output.frozen_surface = Some(FrozenSurface {
+            FrozenSurface {
                 surface,
                 subsurface,
                 viewport,
                 buffer: None,
-            });
-        }
-        let frozen = output.frozen_surface.as_mut().unwrap();
+            }
+        });
         frozen
             .viewport
             .set_destination(output.logical_size[0] as i32, output.logical_size[1] as i32);
@@ -425,24 +377,6 @@ impl State {
         frozen.surface.damage(0, 0, i32::MAX, i32::MAX);
         // Present the frozen desktop together with its parent annotations.
         frozen.surface.commit();
-        match &buffer.storage {
-            Storage::Shm(data) => {
-                log::debug!(
-                    "frozen output {id}: shared memory {}x{}",
-                    data.width,
-                    data.height
-                );
-            }
-            Storage::Dmabuf(data) => {
-                log::debug!(
-                    "frozen output {id}: DMA-BUF {}x{}, {} planes, modifier {:#x}",
-                    data.width,
-                    data.height,
-                    data.planes.len(),
-                    data.modifier
-                );
-            }
-        }
         frozen.buffer = Some(buffer);
         self.draw.damage(id);
         self.render(id);
@@ -453,10 +387,7 @@ impl State {
         let Phase::Capturing { deadline, frames } = &self.freeze.phase else {
             return;
         };
-        if frames
-            .values()
-            .all(|f| matches!(f.state, OutputState::Ready))
-        {
+        if frames.values().all(|f| matches!(f.step, Step::Ready)) {
             log::debug!(
                 "screen frozen in {:?}",
                 now.duration_since(*deadline - CAPTURE_TIMEOUT)
@@ -476,18 +407,77 @@ impl State {
 }
 
 impl OutputCapture {
-    fn attach(&mut self, buffer: CaptureBuffer, qh: &QueueHandle<State>, data: (u64, OutputId)) {
-        let frame = self.session.create_frame(qh, data);
-        frame.attach_buffer(&buffer.proxy);
-        let (width, height) = match &buffer.storage {
-            Storage::Shm(data) => (data.width, data.height),
-            Storage::Dmabuf(data) => (data.width, data.height),
+    fn allocate(
+        &mut self,
+        wayland: &WaylandState,
+        qh: &QueueHandle<State>,
+        data: (u64, OutputId),
+    ) -> Result<(), String> {
+        let Some(constraints) = &self.constraints else {
+            return Ok(());
         };
+        let [width, height] = constraints.size;
+        if self.use_dmabuf
+            && let Some(buffer) = constraints.device.and_then(|device| {
+                allocate_dmabuf(device, width, height, &constraints.dmabuf_formats)
+            })
+        {
+            let params = wayland.dmabuf.as_ref().unwrap().create_params(qh, data);
+            for (index, plane) in buffer.planes.iter().enumerate() {
+                params.add(
+                    plane.fd.as_fd(),
+                    index as u32,
+                    plane.offset,
+                    plane.stride,
+                    (buffer.modifier >> 32) as u32,
+                    buffer.modifier as u32,
+                );
+            }
+            params.create(width as i32, height as i32, buffer.format, Flags::empty());
+            log::debug!(
+                "capturing output {}: DMA-BUF {width}x{height}, {} planes, modifier {:#x}",
+                data.1,
+                buffer.planes.len(),
+                buffer.modifier
+            );
+            self.step = Step::Allocating(PendingDmabuf {
+                params,
+                data: buffer,
+                revision: self.revision,
+            });
+            return Ok(());
+        }
+        let format = constraints
+            .format
+            .ok_or("no supported capture buffer format")?;
+        let shm = wayland.shm.as_ref().ok_or("wl_shm unavailable")?;
+        let (proxy, fd) = create_shm_buffer(shm, qh, width, height, format)?;
+        log::debug!(
+            "capturing output {}: shared memory {width}x{height}",
+            data.1
+        );
+        self.attach(proxy, Backing::Shm { _fd: fd }, qh, data);
+        Ok(())
+    }
+
+    fn attach(
+        &mut self,
+        proxy: WlBuffer,
+        backing: Backing,
+        qh: &QueueHandle<State>,
+        data: (u64, OutputId),
+    ) {
+        let [width, height] = self.constraints.as_ref().unwrap().size;
+        let frame = self.session.create_frame(qh, data);
+        frame.attach_buffer(&proxy);
         frame.damage_buffer(0, 0, width as i32, height as i32);
         frame.capture();
-        self.state = OutputState::Capturing(CaptureFrame {
+        self.step = Step::Capturing(CaptureFrame {
             proxy: frame,
-            buffer: Some(buffer),
+            buffer: Some(CaptureBuffer {
+                proxy,
+                _backing: backing,
+            }),
             transform: Transform::Normal,
         });
     }
@@ -514,69 +504,49 @@ impl Dispatch<ExtImageCopyCaptureSessionV1, (u64, OutputId)> for State {
         let Some(capture) = state.freeze.output_mut(generation, id) else {
             return;
         };
-        if matches!(capture.state, OutputState::Ready) {
+        if matches!(capture.step, Step::Ready) {
             return;
         }
         use ext_image_copy_capture_session_v1::Event;
-        let result = match event {
-            Event::BufferSize { width, height } => {
-                capture.pending.size = Some((width, height));
-                Ok(())
-            }
+        let pending = &mut capture.pending;
+        match event {
+            Event::BufferSize { width, height } => pending.size = [width, height],
             Event::ShmFormat {
                 format: WEnum::Value(format),
-            } => {
-                if format_score(format) > capture.pending.format.map_or(0, format_score) {
-                    capture.pending.format = Some(format);
-                }
-                Ok(())
+            } if format_score(format) > pending.format.map_or(0, format_score) => {
+                pending.format = Some(format);
             }
             Event::DmabufDevice { device } => {
-                capture.pending.device = device.as_slice().try_into().ok().map(u64::from_ne_bytes);
-                Ok(())
+                pending.device = device.as_slice().try_into().ok().map(u64::from_ne_bytes);
             }
             Event::DmabufFormat { format, modifiers } => {
-                if modifiers.len() % 8 == 0 {
-                    capture.pending.dmabuf_formats.push((
-                        format,
-                        modifiers
-                            .as_chunks::<8>()
-                            .0
-                            .iter()
-                            .copied()
-                            .map(u64::from_ne_bytes)
-                            .collect(),
-                    ));
+                if let (modifiers, []) = modifiers.as_chunks::<8>() {
+                    let modifiers = modifiers.iter().copied().map(u64::from_ne_bytes);
+                    pending.dmabuf_formats.push((format, modifiers.collect()));
                 }
-                Ok(())
             }
             Event::Done => {
-                let constraints = std::mem::take(&mut capture.pending);
-                if !constraints.size.is_some_and(|(w, h)| {
-                    w > 0 && h > 0 && i32::try_from(w).is_ok() && i32::try_from(h).is_ok()
-                }) {
-                    Err("invalid capture dimensions".into())
+                let constraints = std::mem::take(pending);
+                let [width, height] = constraints.size;
+                let error = if width == 0 || height == 0 || width.max(height) > i32::MAX as u32 {
+                    "invalid capture dimensions"
                 } else if constraints.format.is_none()
                     && !(capture.use_dmabuf
                         && constraints.device.is_some()
                         && !constraints.dmabuf_formats.is_empty())
                 {
-                    Err("no supported capture buffer format".into())
+                    "no supported capture buffer format"
                 } else {
                     capture.constraints = Some(constraints);
                     capture.revision += 1;
-                    if !capture.hidden {
-                        state.blank_output(id)
-                    } else {
-                        state.capture_output(generation, id)
-                    }
-                }
+                    return state.advance_capture(generation, id);
+                };
+                state.fail_freeze(&format!("Screen freeze failed: {error}"));
             }
-            Event::Stopped => Err("capture session stopped by compositor".into()),
-            _ => Ok(()),
-        };
-        if let Err(error) = result {
-            state.fail_freeze(&format!("Screen freeze failed: {error}"));
+            Event::Stopped => {
+                state.fail_freeze("Screen freeze failed: capture session stopped by compositor");
+            }
+            _ => {}
         }
     }
 }
@@ -590,12 +560,11 @@ impl Dispatch<WlCallback, (u64, OutputId)> for State {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        let Some(capture) = state.freeze.output_mut(generation, id) else {
-            return;
-        };
-        capture.presented = true;
-        if let Err(error) = state.capture_output(generation, id) {
-            state.fail_freeze(&format!("Screen freeze failed: {error}"));
+        if let Some(capture) = state.freeze.output_mut(generation, id)
+            && matches!(capture.step, Step::Blanking)
+        {
+            capture.step = Step::Idle;
+            state.advance_capture(generation, id);
         }
     }
 }
@@ -612,49 +581,40 @@ impl Dispatch<ExtImageCopyCaptureFrameV1, (u64, OutputId)> for State {
         let Some(capture) = state.freeze.output_mut(generation, id) else {
             return;
         };
-        let OutputState::Capturing(frame) = &mut capture.state else {
+        let Step::Capturing(frame) = &mut capture.step else {
             return;
         };
         if frame.proxy != *proxy {
             return;
         }
         use ext_image_copy_capture_frame_v1::Event;
-        let result = match event {
+        match event {
             Event::Transform {
                 transform: WEnum::Value(transform),
-            } => {
-                frame.transform = transform;
-                Ok(())
-            }
+            } => frame.transform = transform,
             Event::Ready => {
-                let transform = frame.transform;
-                let buffer = frame.buffer.take().unwrap();
-                capture.state = OutputState::Ready;
+                let (buffer, transform) = (frame.buffer.take().unwrap(), frame.transform);
+                capture.step = Step::Ready;
                 state.finish_capture(id, buffer, transform);
-                Ok(())
             }
             Event::Failed {
                 reason: WEnum::Value(FailureReason::BufferConstraints),
             } => {
-                capture.state = OutputState::Idle;
+                capture.step = Step::Idle;
                 if capture.failed_revision != capture.revision {
                     // Reallocate using the latest complete batch. A failed buffer
                     // does not require the compositor to send new constraints.
                     capture.failed_revision = capture.revision;
-                    state.capture_output(generation, id)
-                } else if std::mem::take(&mut capture.use_dmabuf) {
-                    // Fall back to shared memory after a repeated rejection.
-                    state.capture_output(generation, id)
-                } else {
-                    // Retry once the compositor sends new constraints.
-                    Ok(())
+                } else if !std::mem::take(&mut capture.use_dmabuf) {
+                    // Shared memory was rejected too, so wait for new constraints.
+                    return;
                 }
+                state.advance_capture(generation, id);
             }
-            Event::Failed { reason } => Err(format!("frame capture error ({reason:?})")),
-            _ => Ok(()),
-        };
-        if let Err(error) = result {
-            state.fail_freeze(&format!("Screen freeze failed: {error}"));
+            Event::Failed { reason } => state.fail_freeze(&format!(
+                "Screen freeze failed: frame capture error ({reason:?})"
+            )),
+            _ => {}
         }
     }
 }
@@ -668,41 +628,37 @@ impl Dispatch<ZwpLinuxBufferParamsV1, (u64, OutputId)> for State {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
+        use zwp_linux_buffer_params_v1::Event;
         proxy.destroy();
-        let current = state.freeze.output_mut(generation, id).is_some_and(|capture| matches!(&capture.state, OutputState::Allocating(pending) if pending.params == *proxy));
-        if !current {
-            if let zwp_linux_buffer_params_v1::Event::Created { buffer } = event {
+        let current = state.freeze.output_mut(generation, id).and_then(|capture| {
+            match std::mem::replace(&mut capture.step, Step::Idle) {
+                Step::Allocating(pending) if pending.params == *proxy => Some((pending, capture)),
+                step => {
+                    capture.step = step;
+                    None
+                }
+            }
+        });
+        let Some((PendingDmabuf { data, revision, .. }, capture)) = current else {
+            if let Event::Created { buffer } = event {
                 buffer.destroy();
             }
             return;
-        }
-        let capture = state.freeze.output_mut(generation, id).unwrap();
-        let OutputState::Allocating(PendingDmabuf { data, revision, .. }) =
-            std::mem::replace(&mut capture.state, OutputState::Idle)
-        else {
-            unreachable!()
         };
         match event {
-            zwp_linux_buffer_params_v1::Event::Created { buffer }
-                if revision == capture.revision =>
-            {
-                capture.attach(
-                    CaptureBuffer {
-                        proxy: buffer,
-                        storage: Storage::Dmabuf(data),
-                    },
+            Event::Created { buffer } if revision == capture.revision => {
+                return capture.attach(
+                    buffer,
+                    Backing::Dmabuf { _buffer: data },
                     &state.qhandle,
                     (generation, id),
                 );
-                return;
             }
-            zwp_linux_buffer_params_v1::Event::Created { buffer } => buffer.destroy(),
-            zwp_linux_buffer_params_v1::Event::Failed => capture.use_dmabuf = false,
+            Event::Created { buffer } => buffer.destroy(),
+            Event::Failed => capture.use_dmabuf = false,
             _ => {}
         }
-        if let Err(error) = state.capture_output(generation, id) {
-            state.fail_freeze(&format!("Screen freeze failed: {error}"));
-        }
+        state.advance_capture(generation, id);
     }
     wayland_client::event_created_child!(State, ZwpLinuxBufferParamsV1, [0 => (WlBuffer, ())]);
 }
@@ -714,20 +670,6 @@ pub(super) struct FrozenSurface {
     subsurface: WlSubsurface,
     viewport: WpViewport,
     buffer: Option<CaptureBuffer>,
-}
-
-impl FrozenSurface {
-    pub(super) fn is_frozen(&self) -> bool {
-        self.buffer.is_some()
-    }
-
-    pub(super) fn clear(&mut self) {
-        // Apply removal with the replacement parent frame, including when its
-        // presentation is delayed. Reuse the empty subsurface on the next freeze.
-        self.surface.attach(None, 0, 0);
-        self.surface.commit();
-        self.buffer = None;
-    }
 }
 
 impl Drop for FrozenSurface {

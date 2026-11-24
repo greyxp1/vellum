@@ -5,7 +5,9 @@ use wayland_client::protocol::wl_callback::WlCallback;
 use wayland_client::protocol::wl_output::WlOutput;
 use wayland_client::protocol::wl_surface::WlSurface;
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, delegate_noop};
-use wayland_protocols::wp::fractional_scale::v1::client::wp_fractional_scale_v1::WpFractionalScaleV1;
+use wayland_protocols::wp::fractional_scale::v1::client::wp_fractional_scale_v1::{
+    self, WpFractionalScaleV1,
+};
 use wayland_protocols::wp::viewporter::client::wp_viewport::WpViewport;
 use wayland_protocols::xdg::xdg_output::zv1::client::zxdg_output_v1::ZxdgOutputV1;
 use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::{
@@ -25,8 +27,8 @@ pub(super) struct Output {
     pub(super) logical_size: [u32; 2],
     pub(super) integer_scale: i32,
     pub(super) preferred_scale: Option<u32>,
-    pub(super) fractional_scale: Option<WpFractionalScaleV1>,
-    pub(super) viewport: Option<WpViewport>,
+    // Fractional scaling is only bound together with the viewporter.
+    pub(super) fractional_scale: Option<(WpFractionalScaleV1, WpViewport)>,
     pub(super) surface: WlSurface,
     pub(super) layer_surface: ZwlrLayerSurfaceV1,
     pub(super) frame_pending: bool,
@@ -39,18 +41,6 @@ pub(super) struct Output {
 }
 
 impl Output {
-    pub(super) fn is_frozen(&self) -> bool {
-        self.frozen_surface
-            .as_ref()
-            .is_some_and(super::freeze::FrozenSurface::is_frozen)
-    }
-
-    pub(super) fn clear_frozen_background(&mut self) {
-        if let Some(surface) = &mut self.frozen_surface {
-            surface.clear();
-        }
-    }
-
     fn buffer_size(&self) -> [u32; 2] {
         let scale = self
             .preferred_scale
@@ -70,7 +60,7 @@ impl Output {
     }
 
     fn configure_scale(&self) {
-        if let Some(viewport) = &self.viewport {
+        if let Some((_, viewport)) = &self.fractional_scale {
             self.surface.set_buffer_scale(1);
             viewport.set_destination(self.logical_size[0] as i32, self.logical_size[1] as i32);
         } else {
@@ -102,40 +92,30 @@ impl State {
             return;
         }
         self.invalidate_freeze();
-        let output =
-            self.wayland
-                .registry
-                .bind::<WlOutput, _, _>(id, version.min(4), &self.qhandle, id);
-        let xdg_output = self
-            .wayland
+        let (wayland, qh) = (&self.wayland, &self.qhandle);
+        let output: WlOutput = wayland.registry.bind(id, version.min(4), qh, id);
+        let xdg_output = wayland
             .xdg_output_manager
             .as_ref()
-            .map(|manager| manager.get_xdg_output(&output, &self.qhandle, id));
-        let surface = self.wayland.compositor.create_surface(&self.qhandle, id);
-        let fractional_scale = self
-            .wayland
-            .fractional_scale_manager
-            .as_ref()
-            .map(|manager| manager.get_fractional_scale(&surface, &self.qhandle, id));
-        let viewport = fractional_scale.as_ref().map(|_| {
-            self.wayland
-                .viewporter
-                .as_ref()
-                .unwrap()
-                .get_viewport(&surface, &self.qhandle, ())
+            .map(|manager| manager.get_xdg_output(&output, qh, id));
+        let surface = wayland.compositor.create_surface(qh, id);
+        let fractional_scale = wayland.fractional_scale_manager.as_ref().map(|manager| {
+            let viewporter = wayland.viewporter.as_ref().unwrap();
+            let viewport = viewporter.get_viewport(&surface, qh, ());
+            (manager.get_fractional_scale(&surface, qh, id), viewport)
         });
-        let layer_surface = self.wayland.layer_shell.get_layer_surface(
+        let layer_surface = wayland.layer_shell.get_layer_surface(
             &surface,
             Some(&output),
             Layer::Overlay,
             "vellum".into(),
-            &self.qhandle,
+            qh,
             id,
         );
         layer_surface.set_anchor(Anchor::all());
         layer_surface.set_keyboard_interactivity(KeyboardInteractivity::None);
         layer_surface.set_exclusive_zone(-1);
-        let empty_region = self.wayland.compositor.create_region(&self.qhandle, ());
+        let empty_region = wayland.compositor.create_region(qh, ());
         surface.set_input_region(Some(&empty_region));
         empty_region.destroy();
         surface.commit();
@@ -151,7 +131,6 @@ impl State {
                 integer_scale: 1,
                 preferred_scale: None,
                 fractional_scale,
-                viewport,
                 surface,
                 layer_surface,
                 frame_pending: false,
@@ -193,10 +172,8 @@ impl State {
         self.invalidate_freeze();
         output.frozen_surface.take();
         output.wgpu.take();
-        if let Some(scale) = output.fractional_scale {
+        if let Some((scale, viewport)) = output.fractional_scale {
             scale.destroy();
-        }
-        if let Some(viewport) = output.viewport {
             viewport.destroy();
         }
         if let Some(xdg_output) = output.xdg_output {
@@ -253,23 +230,23 @@ impl State {
         self.request_render();
     }
 
+    /// Applies a changed logical size or scale, then restarts any freeze at the new size.
     fn resize_output(&mut self, id: OutputId) {
-        let Some(output) = self.wayland.outputs.get_mut(&id) else {
-            return;
-        };
-        if output.logical_size.contains(&0) {
-            return;
-        }
-        output.configure_scale();
-        let [width, height] = output.buffer_size();
-        if let Some(wgpu) = &mut output.wgpu {
-            if let Err(error) = wgpu.resize(width, height) {
-                self.fatal_error = Some(error);
-                return;
+        if let Some(output) = self.wayland.outputs.get_mut(&id)
+            && !output.logical_size.contains(&0)
+        {
+            output.configure_scale();
+            let [width, height] = output.buffer_size();
+            if let Some(wgpu) = &mut output.wgpu {
+                if let Err(error) = wgpu.resize(width, height) {
+                    self.fatal_error = Some(error);
+                    return;
+                }
+                self.draw.damage(id);
+                self.request_render();
             }
-            self.draw.damage(id);
-            self.request_render();
         }
+        self.invalidate_freeze();
     }
 }
 
@@ -286,36 +263,29 @@ impl Dispatch<WlOutput, OutputId> for State {
         let Some(output_state) = state.wayland.outputs.get_mut(output) else {
             return;
         };
-        let changed = match event {
-            Event::Name { ref name } => {
-                output_state.name.clone_from(name);
-                false
-            }
-            Event::Geometry { transform, .. } => {
+        match event {
+            Event::Name { name } => output_state.name = name,
+            Event::Geometry {
+                x, y, transform, ..
+            } => {
                 let transform = u32::from(transform);
-                std::mem::replace(&mut output_state.transform, transform) != transform
+                let has_xdg_output = output_state.xdg_output.is_some();
+                if std::mem::replace(&mut output_state.transform, transform) != transform {
+                    state.invalidate_freeze();
+                }
+                if !has_xdg_output {
+                    state.set_output_origin(*output, Point::new(x as f32, y as f32));
+                }
             }
             // A preferred fractional scale overrides the integer scale.
-            Event::Scale { factor } => {
-                std::mem::replace(&mut output_state.integer_scale, factor.max(1)) != factor.max(1)
-                    && output_state.preferred_scale.is_none()
+            Event::Scale { factor }
+                if std::mem::replace(&mut output_state.integer_scale, factor.max(1))
+                    != factor.max(1)
+                    && output_state.preferred_scale.is_none() =>
+            {
+                state.resize_output(*output);
             }
-            _ => false,
-        };
-        if changed && matches!(event, Event::Scale { .. }) {
-            state.resize_output(*output);
-        }
-        if changed {
-            state.invalidate_freeze();
-        }
-        if let Event::Geometry { x, y, .. } = event
-            && state
-                .wayland
-                .outputs
-                .get(output)
-                .is_some_and(|output| output.xdg_output.is_none())
-        {
-            state.set_output_origin(*output, Point::new(x as f32, y as f32));
+            _ => {}
         }
     }
 }
@@ -324,17 +294,16 @@ impl Dispatch<WpFractionalScaleV1, OutputId> for State {
     fn event(
         state: &mut Self,
         _proxy: &WpFractionalScaleV1,
-        event: <WpFractionalScaleV1 as Proxy>::Event,
+        event: wp_fractional_scale_v1::Event,
         output: &OutputId,
         _conn: &Connection,
         _qhandle: &QueueHandle<Self>,
     ) {
-        if let wayland_protocols::wp::fractional_scale::v1::client::wp_fractional_scale_v1::Event::PreferredScale { scale } = event {
-            let Some(output_state) = state.wayland.outputs.get_mut(output) else { return; };
-            if output_state.preferred_scale.replace(scale.max(1)) != Some(scale.max(1)) {
-                state.resize_output(*output);
-                state.invalidate_freeze();
-            }
+        if let wp_fractional_scale_v1::Event::PreferredScale { scale } = event
+            && let Some(output_state) = state.wayland.outputs.get_mut(output)
+            && output_state.preferred_scale.replace(scale.max(1)) != Some(scale.max(1))
+        {
+            state.resize_output(*output);
         }
     }
 }
@@ -349,13 +318,16 @@ impl Dispatch<ZxdgOutputV1, OutputId> for State {
         _qhandle: &QueueHandle<Self>,
     ) {
         use wayland_protocols::xdg::xdg_output::zv1::client::zxdg_output_v1::Event;
-        if let Event::Name { ref name } = event
-            && let Some(output) = state.wayland.outputs.get_mut(output)
-        {
-            output.name.clone_from(name);
-        }
-        if let Event::LogicalPosition { x, y } = event {
-            state.set_output_origin(*output, Point::new(x as f32, y as f32));
+        match event {
+            Event::Name { name } => {
+                if let Some(output) = state.wayland.outputs.get_mut(output) {
+                    output.name = name;
+                }
+            }
+            Event::LogicalPosition { x, y } => {
+                state.set_output_origin(*output, Point::new(x as f32, y as f32));
+            }
+            _ => {}
         }
     }
 }
@@ -408,45 +380,39 @@ impl Dispatch<ZwlrLayerSurfaceV1, OutputId> for State {
                 let Some(output_state) = state.wayland.outputs.get_mut(output) else {
                     return;
                 };
-                let resized = output_state.logical_size != [width, height];
-                output_state.logical_size = [width, height];
+                let old_size = std::mem::replace(&mut output_state.logical_size, [width, height]);
                 if output_state.wgpu.is_some() {
                     // Input/focus changes can produce another configure with
                     // unchanged dimensions. Its acknowledgement needs no redraw.
-                    if resized {
-                        // Resize first so stopping a freeze renders at the new size.
+                    if old_size != [width, height] {
                         state.resize_output(*output);
-                        state.invalidate_freeze();
                     }
-                } else {
-                    output_state.configure_scale();
-                    let [width, height] = output_state.buffer_size();
-                    let can_shrink = output_state.viewport.is_some();
-                    let surface = output_state.surface.clone();
-                    let display = state.wayland.display.clone();
-                    let wgpu = if let Some(gpu) = &state.gpu {
-                        gpu.create_surface(&display, &surface).and_then(|surface| {
-                            WgpuState::new(gpu, surface, width, height, can_shrink)
-                        })
-                    } else {
-                        GpuContext::new(&display, &surface, width, height, can_shrink).map(
-                            |(gpu, wgpu)| {
-                                state.gpu = Some(gpu);
-                                wgpu
-                            },
-                        )
-                    };
-                    match wgpu {
-                        Ok(wgpu) => output_state.wgpu = Some(wgpu),
-                        Err(error) => {
-                            state.fatal_error = Some(error);
-                            return;
-                        }
-                    }
-
-                    // Some compositors require a buffer with the initial configure.
-                    state.render(*output);
+                    return;
                 }
+                output_state.configure_scale();
+                let [width, height] = output_state.buffer_size();
+                let can_shrink = output_state.fractional_scale.is_some();
+                let (surface, display) = (&output_state.surface, &state.wayland.display);
+                let wgpu = if let Some(gpu) = &state.gpu {
+                    gpu.create_surface(display, surface)
+                        .and_then(|surface| WgpuState::new(gpu, surface, width, height, can_shrink))
+                } else {
+                    GpuContext::new(display, surface, width, height, can_shrink).map(
+                        |(gpu, wgpu)| {
+                            state.gpu = Some(gpu);
+                            wgpu
+                        },
+                    )
+                };
+                match wgpu {
+                    Ok(wgpu) => output_state.wgpu = Some(wgpu),
+                    Err(error) => {
+                        state.fatal_error = Some(error);
+                        return;
+                    }
+                }
+                // Some compositors require a buffer with the initial configure.
+                state.render(*output);
             }
             Event::Closed => {
                 state.remove_output(*output);

@@ -15,36 +15,17 @@ use wayland_client::protocol::{
 use wayland_client::{Connection, Dispatch, QueueHandle};
 
 use super::State;
-use crate::draw::{Action, TextInputSnapshot};
+use crate::draw::Action;
 
 const TEXT_TYPES: [&str; 3] = ["text/plain;charset=utf-8", "text/plain", "UTF8_STRING"];
 const MAX_TEXT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_WRITES: usize = 16;
 
-struct PasteTarget {
-    session: u64,
-    generation: parley::Generation,
-}
-
-impl From<TextInputSnapshot<'_>> for PasteTarget {
-    fn from(snapshot: TextInputSnapshot<'_>) -> Self {
-        Self {
-            session: snapshot.session,
-            generation: snapshot.generation,
-        }
-    }
-}
-
-impl PasteTarget {
-    fn matches(&self, snapshot: TextInputSnapshot<'_>) -> bool {
-        self.session == snapshot.session && self.generation == snapshot.generation
-    }
-}
-
 struct Paste {
     stream: UnixStream,
     bytes: Vec<u8>,
-    target: PasteTarget,
+    // The text input session and generation that requested the paste.
+    target: (u64, parley::Generation),
 }
 
 struct Send {
@@ -104,7 +85,9 @@ impl State {
     pub(super) fn paste_text(&mut self) {
         let (Some(offer), Some(target)) = (
             &self.clipboard.selection,
-            self.draw.text_input_snapshot().map(PasteTarget::from),
+            self.draw
+                .text_input_snapshot()
+                .map(|snapshot| (snapshot.session, snapshot.generation)),
         ) else {
             return;
         };
@@ -138,43 +121,40 @@ impl State {
             && self
                 .draw
                 .text_input_snapshot()
-                .is_none_or(|snapshot| !paste.target.matches(snapshot))
+                .is_none_or(|snapshot| (snapshot.session, snapshot.generation) != paste.target)
         {
             self.clipboard.paste = None;
         }
-        let mut completed = false;
+        let mut finished = None;
         if let Some(paste) = &mut self.clipboard.paste {
             let mut buffer = [0; 8192];
             // Bound each dispatch so a large transfer cannot monopolize drawing.
             for _ in 0..32 {
-                match paste.stream.read(&mut buffer) {
-                    Ok(0) => {
-                        completed = true;
-                        break;
-                    }
+                finished = match paste.stream.read(&mut buffer) {
+                    Ok(0) => Some(
+                        String::from_utf8(std::mem::take(&mut paste.bytes))
+                            .map_err(|error| format!("clipboard is not UTF-8 text: {error}")),
+                    ),
                     Ok(size) if paste.bytes.len() + size <= MAX_TEXT_BYTES => {
                         paste.bytes.extend_from_slice(&buffer[..size]);
+                        continue;
                     }
-                    Ok(_) => {
-                        log::warn!("clipboard text exceeds {MAX_TEXT_BYTES} bytes");
-                        self.clipboard.paste = None;
-                        break;
-                    }
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                    Ok(_) => Some(Err(format!(
+                        "clipboard text exceeds {MAX_TEXT_BYTES} bytes"
+                    ))),
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => None,
                     Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-                    Err(error) => {
-                        log::warn!("could not read clipboard: {error}");
-                        self.clipboard.paste = None;
-                        break;
-                    }
-                }
+                    Err(error) => Some(Err(format!("could not read clipboard: {error}"))),
+                };
+                break;
             }
         }
-        if completed && let Some(paste) = self.clipboard.paste.take() {
-            match String::from_utf8(paste.bytes) {
+        if let Some(result) = finished {
+            self.clipboard.paste = None;
+            match result {
                 Ok(text) if !text.is_empty() => self.apply_action(Action::PasteText(text)),
                 Ok(_) => {}
-                Err(error) => log::warn!("clipboard is not UTF-8 text: {error}"),
+                Err(error) => log::warn!("{error}"),
             }
         }
         self.clipboard.sends.retain_mut(|send| {

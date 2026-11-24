@@ -9,68 +9,46 @@ use wayland_client::protocol::{wl_buffer::WlBuffer, wl_shm, wl_shm::WlShm};
 
 use super::super::State;
 
-pub struct ShmBuffer {
-    pub width: u32,
-    pub height: u32,
-    fd: OwnedFd,
+/// Returns the buffer with its memfd, which the compositor maps but Vellum does not.
+pub fn create_shm_buffer(
+    shm: &WlShm,
+    qh: &QueueHandle<State>,
+    width: u32,
+    height: u32,
     format: wl_shm::Format,
-    stride: i32,
-    size: i32,
-}
-
-impl ShmBuffer {
-    pub fn new(width: u32, height: u32, format: wl_shm::Format) -> Result<Self, String> {
-        let bytes_per_pixel = match format {
-            wl_shm::Format::Argb8888
-            | wl_shm::Format::Xrgb8888
-            | wl_shm::Format::Abgr8888
-            | wl_shm::Format::Xbgr8888 => 4,
-            wl_shm::Format::Rgb888 | wl_shm::Format::Bgr888 => 3,
-            _ => return Err(format!("unsupported capture format: {format:?}")),
-        };
-        let stride = width
-            .checked_mul(bytes_per_pixel)
-            .and_then(|n| i32::try_from(n).ok());
-        let size = width
-            .checked_mul(bytes_per_pixel)
-            .and_then(|n| n.checked_mul(height))
-            .and_then(|n| i32::try_from(n).ok());
-        let (Some(stride), Some(size)) = (stride, size) else {
-            return Err("capture buffer is too large".into());
-        };
-        let fd = memfd_create(
-            "vellum-capture",
-            MemfdFlags::CLOEXEC | MemfdFlags::ALLOW_SEALING,
-        )
-        .map_err(|error| format!("create capture memfd: {error}"))?;
-        ftruncate(&fd, size as u64).map_err(|error| format!("resize capture memfd: {error}"))?;
-        fcntl_add_seals(&fd, SealFlags::SHRINK | SealFlags::GROW | SealFlags::SEAL)
-            .map_err(|error| format!("seal capture memfd: {error}"))?;
-        // Size seals prevent truncation while the compositor maps the buffer.
-        Ok(Self {
-            width,
-            height,
-            fd,
-            format,
-            stride,
-            size,
-        })
-    }
-
-    pub fn create_buffer(&self, shm: &WlShm, qh: &QueueHandle<State>) -> WlBuffer {
-        let pool = shm.create_pool(self.fd.as_fd(), self.size, qh, ());
-        let buffer = pool.create_buffer(
-            0,
-            self.width as i32,
-            self.height as i32,
-            self.stride,
-            self.format,
-            qh,
-            (),
-        );
-        pool.destroy();
-        buffer
-    }
+) -> Result<(WlBuffer, OwnedFd), String> {
+    let bytes_per_pixel = match format {
+        wl_shm::Format::Argb8888
+        | wl_shm::Format::Xrgb8888
+        | wl_shm::Format::Abgr8888
+        | wl_shm::Format::Xbgr8888 => 4,
+        wl_shm::Format::Rgb888 | wl_shm::Format::Bgr888 => 3,
+        _ => return Err(format!("unsupported capture format: {format:?}")),
+    };
+    let stride = u64::from(width) * bytes_per_pixel;
+    let size = i32::try_from(stride * u64::from(height))
+        .map_err(|_| "capture buffer is too large".to_owned())?;
+    let fd = memfd_create(
+        "vellum-capture",
+        MemfdFlags::CLOEXEC | MemfdFlags::ALLOW_SEALING,
+    )
+    .map_err(|error| format!("create capture memfd: {error}"))?;
+    ftruncate(&fd, size as u64).map_err(|error| format!("resize capture memfd: {error}"))?;
+    // Size seals prevent truncation while the compositor maps the buffer.
+    fcntl_add_seals(&fd, SealFlags::SHRINK | SealFlags::GROW | SealFlags::SEAL)
+        .map_err(|error| format!("seal capture memfd: {error}"))?;
+    let pool = shm.create_pool(fd.as_fd(), size, qh, ());
+    let buffer = pool.create_buffer(
+        0,
+        width as i32,
+        height as i32,
+        stride as i32,
+        format,
+        qh,
+        (),
+    );
+    pool.destroy();
+    Ok((buffer, fd))
 }
 
 pub struct DmabufPlane {
@@ -80,8 +58,6 @@ pub struct DmabufPlane {
 }
 
 pub struct DmabufBuffer {
-    pub width: u32,
-    pub height: u32,
     pub format: u32,
     pub modifier: u64,
     pub planes: Vec<DmabufPlane>,
@@ -154,8 +130,6 @@ pub fn allocate_dmabuf(
                 .collect();
             let Some(planes) = planes else { continue };
             return Some(DmabufBuffer {
-                width,
-                height,
                 format: format as u32,
                 modifier,
                 planes,
@@ -177,24 +151,21 @@ fn open_render_node(device: u64) -> Option<File> {
         .ok()
     };
     let target = sysfs_device(device);
-    for entry in std::fs::read_dir("/dev/dri").ok()?.flatten() {
-        if !entry.file_name().as_encoded_bytes().starts_with(b"renderD") {
-            continue;
-        }
-        let Ok(file) = OpenOptions::new().read(true).write(true).open(entry.path()) else {
-            continue;
-        };
-        let Ok(metadata) = file.metadata() else {
-            continue;
-        };
-        if metadata.file_type().is_char_device()
+    let matches = |metadata: std::fs::Metadata| {
+        metadata.file_type().is_char_device()
             && (metadata.rdev() == device
-                || target
-                    .as_ref()
-                    .is_some_and(|target| sysfs_device(metadata.rdev()).as_ref() == Some(target)))
-        {
-            return Some(file);
-        }
-    }
-    None
+                || target.is_some() && sysfs_device(metadata.rdev()) == target)
+    };
+    std::fs::read_dir("/dev/dri")
+        .ok()?
+        .flatten()
+        .filter(|entry| entry.file_name().as_encoded_bytes().starts_with(b"renderD"))
+        .filter_map(|entry| {
+            OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(entry.path())
+                .ok()
+        })
+        .find(|file| file.metadata().is_ok_and(matches))
 }

@@ -69,7 +69,6 @@ impl State {
         let (globals, event_queue) = registry_queue_init::<State>(&connection)
             .map_err(|error| format!("Wayland setup failed: {error}"))?;
         let qhandle = event_queue.handle();
-        let display = connection.display();
         let compositor = globals
             .bind::<WlCompositor, _, _>(&qhandle, 3..=6, ())
             .map_err(|_| "compositor does not provide wl_compositor version 3 or newer")?;
@@ -79,41 +78,13 @@ impl State {
         let layer_shell = globals
             .bind::<ZwlrLayerShellV1, _, _>(&qhandle, 1..=4, ())
             .map_err(|_| "compositor does not provide zwlr_layer_shell_v1")?;
-        let data_device_manager = globals
-            .bind::<WlDataDeviceManager, _, _>(&qhandle, 1..=3, ())
-            .ok();
-        let data_device = data_device_manager
-            .as_ref()
-            .map(|manager| manager.get_data_device(&seat, &qhandle, ()));
-        let cursor_shape_manager = globals
-            .bind::<WpCursorShapeManagerV1, _, _>(&qhandle, 1..=1, ())
-            .ok();
+        let data_device_manager: Option<WlDataDeviceManager> =
+            globals.bind(&qhandle, 1..=3, ()).ok();
         if let Ok(manager) = globals.bind::<ZwpTabletManagerV2, _, _>(&qhandle, 1..=1, ()) {
             manager.get_tablet_seat(&seat, &qhandle, ());
             manager.destroy();
         }
-        let xdg_output_manager = globals
-            .bind::<ZxdgOutputManagerV1, _, _>(&qhandle, 1..=3, ())
-            .ok();
-        let viewporter = globals.bind::<WpViewporter, _, _>(&qhandle, 1..=1, ()).ok();
-        let subcompositor = globals
-            .bind::<WlSubcompositor, _, _>(&qhandle, 1..=1, ())
-            .ok();
-        let dmabuf = globals
-            .bind::<ZwpLinuxDmabufV1, _, _>(&qhandle, 3..=3, ())
-            .ok();
-        let shm = globals.bind::<WlShm, _, _>(&qhandle, 1..=1, ()).ok();
-        let image_copy_manager = globals
-            .bind::<ExtImageCopyCaptureManagerV1, _, _>(&qhandle, 1..=1, ())
-            .ok();
-        let image_capture_source_manager = globals
-            .bind::<ExtOutputImageCaptureSourceManagerV1, _, _>(&qhandle, 1..=1, ())
-            .ok();
-        let fractional_scale_manager = viewporter.as_ref().and_then(|_| {
-            globals
-                .bind::<WpFractionalScaleManagerV1, _, _>(&qhandle, 1..=1, ())
-                .ok()
-        });
+        let viewporter: Option<WpViewporter> = globals.bind(&qhandle, 1..=1, ()).ok();
         let text_input = globals
             .bind::<ZwpTextInputManagerV3, _, _>(&qhandle, 1..=2, ())
             .ok()
@@ -137,26 +108,30 @@ impl State {
             pending_pen_motion: PendingPenMotion::default(),
             render_requested: false,
             wayland: WaylandState {
-                _connection: connection,
-                display,
                 registry: globals.registry().clone(),
                 compositor,
-                subcompositor,
-                dmabuf,
-                shm,
-                image_copy_manager,
-                image_capture_source_manager,
+                subcompositor: globals.bind(&qhandle, 1..=1, ()).ok(),
+                dmabuf: globals.bind(&qhandle, 3..=3, ()).ok(),
+                shm: globals.bind(&qhandle, 1..=1, ()).ok(),
+                image_copy_manager: globals.bind(&qhandle, 1..=1, ()).ok(),
+                image_capture_source_manager: globals.bind(&qhandle, 1..=1, ()).ok(),
                 layer_shell,
                 outputs: BTreeMap::new(),
                 pointer: None,
                 keyboard: None,
                 text_input,
+                data_device: data_device_manager
+                    .as_ref()
+                    .map(|manager| manager.get_data_device(&seat, &qhandle, ())),
                 data_device_manager,
-                data_device,
-                cursor_shape_manager,
-                xdg_output_manager,
+                cursor_shape_manager: globals.bind(&qhandle, 1..=1, ()).ok(),
+                xdg_output_manager: globals.bind(&qhandle, 1..=3, ()).ok(),
+                fractional_scale_manager: viewporter
+                    .as_ref()
+                    .and_then(|_| globals.bind(&qhandle, 1..=1, ()).ok()),
                 viewporter,
-                fractional_scale_manager,
+                display: connection.display(),
+                _connection: connection,
             },
             draw: draw::DrawState::new(settings),
             keyboard: input::KeyboardState::new(
