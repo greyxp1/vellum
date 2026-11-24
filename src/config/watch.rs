@@ -1,14 +1,15 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
+use std::io::ErrorKind;
 use std::mem::MaybeUninit;
 use std::os::fd::OwnedFd;
 use std::os::unix::ffi::OsStrExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use rustix::fs::inotify::{self, CreateFlags, ReadFlags, WatchFlags};
 
-use super::{Settings, default_config_paths, read_config, read_first_config};
+use super::{FileConfig, Settings, default_config_paths};
 use crate::cli::Cli;
 
 pub(crate) struct Config {
@@ -40,12 +41,18 @@ impl Config {
     }
 
     pub(crate) fn load(&self) -> Result<Settings, String> {
-        let file = if self.required {
-            read_config(&self.paths[0])?
-        } else {
-            read_first_config(self.paths.iter().cloned())?
-        };
-        Settings::resolve(file)
+        for path in &self.paths {
+            let contents = match std::fs::read_to_string(path) {
+                Ok(contents) => contents,
+                Err(error) if !self.required && error.kind() == ErrorKind::NotFound => continue,
+                Err(error) => return Err(format!("could not read {}: {error}", path.display())),
+            };
+            let mut file: FileConfig = toml::from_str(&contents)
+                .map_err(|error| format!("invalid {}: {error}", path.display()))?;
+            file.directory = path.parent().unwrap_or(Path::new("")).to_owned();
+            return Settings::resolve(file);
+        }
+        Settings::resolve(FileConfig::default())
     }
 
     pub(crate) fn watch(&mut self) {

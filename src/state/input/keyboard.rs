@@ -5,7 +5,7 @@ use wayland_client::protocol::wl_keyboard::{KeyState, KeymapFormat, WlKeyboard};
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, WEnum};
 use xkbcommon::xkb;
 
-use crate::config::{BindingAction, Keybinds, MouseButton};
+use crate::config::{BindingAction, Input, Keybinds, MouseButton};
 use crate::draw::{Action, Modifiers};
 use crate::state::State;
 
@@ -52,6 +52,26 @@ struct KeyRepeat {
 }
 
 impl KeyboardState {
+    /// Looks up text bindings while editing, then gestures unless the chord types text.
+    fn binding(
+        &self,
+        input: Input,
+        shift_free: Option<Input>,
+        editing_text: bool,
+        typed: bool,
+        modifiers: Modifiers,
+        logo: bool,
+    ) -> Option<BindingAction> {
+        let lookup = |keybinds: &Keybinds, gestures_only| {
+            keybinds.lookup(input, shift_free, modifiers, logo, gestures_only)
+        };
+        if !editing_text {
+            return lookup(&self.keybinds, false);
+        }
+        lookup(&self.text_keybinds, false)
+            .or_else(|| (!typed).then(|| lookup(&self.keybinds, true)).flatten())
+    }
+
     pub(in crate::state) fn mouse_binding(
         &self,
         button: MouseButton,
@@ -59,13 +79,9 @@ impl KeyboardState {
         modifiers: Modifiers,
         logo: bool,
     ) -> Option<BindingAction> {
-        if editing_text {
-            self.text_keybinds
-                .mouse_binding(button, modifiers, logo, false)
-                .or_else(|| self.keybinds.mouse_binding(button, modifiers, logo, true))
-        } else {
-            self.keybinds.mouse_binding(button, modifiers, logo, false)
-        }
+        let input = Input::Mouse(button);
+        let shift_free = modifiers.shift.then_some(input);
+        self.binding(input, shift_free, editing_text, false, modifiers, logo)
     }
 
     pub(in crate::state) fn logo(&self) -> bool {
@@ -171,62 +187,36 @@ impl KeyboardState {
         let keycode = (evdev_key + KEYCODE_OFFSET).into();
         let keysym = state.key_get_one_sym(keycode);
         let (modifiers, logo) = (self.modifiers, self.logo);
-        let bindings = if editing_text {
-            &self.text_keybinds
-        } else {
-            &self.keybinds
-        };
-        let shift_free_key = modifiers
-            .shift
-            .then(|| {
-                self.shift_free_state
-                    .as_ref()
-                    .map(|state| state.key_get_one_sym(keycode).raw())
-            })
-            .flatten();
-        let mut key_text = None;
-        let binding = bindings
-            .lookup(keysym.raw(), shift_free_key, modifiers, logo, false)
-            .or_else(|| {
-                if !editing_text {
-                    return None;
-                }
-                // Keys that type text are not gestures while editing.
-                let text = key_text.insert(state.key_get_utf8(keycode));
-                if !(modifiers.ctrl || modifiers.alt || logo)
-                    && !text.is_empty()
-                    && !text.chars().any(char::is_control)
-                {
-                    return None;
-                }
-                self.keybinds
-                    .lookup(keysym.raw(), shift_free_key, modifiers, logo, true)
-            });
+        let shift_free = self
+            .shift_free_state
+            .as_ref()
+            .filter(|_| modifiers.shift)
+            .map(|state| Input::Keyboard(state.key_get_one_sym(keycode).raw()));
+        let mut text = state.key_get_utf8(keycode);
+        let shortcut = modifiers.ctrl || modifiers.alt || logo;
+        let typed = !shortcut && !text.is_empty() && !text.chars().any(char::is_control);
+        let input = Input::Keyboard(keysym.raw());
+        let binding = self.binding(input, shift_free, editing_text, typed, modifiers, logo);
         let mut composed = false;
-        let text = if binding.is_some() || !editing_text || modifiers.ctrl || modifiers.alt || logo
-        {
+        if binding.is_some() || !editing_text || shortcut {
             self.reset_compose();
-            String::new()
-        } else {
-            let mut text = key_text.unwrap_or_else(|| state.key_get_utf8(keycode));
-            if compose_enabled && let Some(compose) = &mut self.compose {
-                compose.feed(keysym);
-                match compose.status() {
-                    xkb::compose::Status::Composing => text.clear(),
-                    xkb::compose::Status::Cancelled => {
-                        compose.reset();
-                        text.clear();
-                    }
-                    xkb::compose::Status::Composed => {
-                        text = compose.utf8().unwrap_or_default();
-                        compose.reset();
-                        composed = true;
-                    }
-                    xkb::compose::Status::Nothing => {}
+            text.clear();
+        } else if compose_enabled && let Some(compose) = &mut self.compose {
+            compose.feed(keysym);
+            match compose.status() {
+                xkb::compose::Status::Composing => text.clear(),
+                xkb::compose::Status::Cancelled => {
+                    compose.reset();
+                    text.clear();
                 }
+                xkb::compose::Status::Composed => {
+                    text = compose.utf8().unwrap_or_default();
+                    compose.reset();
+                    composed = true;
+                }
+                xkb::compose::Status::Nothing => {}
             }
-            text
-        };
+        }
         Some(KeyChord {
             binding,
             text,

@@ -4,7 +4,6 @@ mod preview;
 mod properties;
 
 use self::interaction::Interaction;
-pub(super) use self::properties::Property;
 use super::Modifiers;
 use super::history::{Entry as HistoryEntry, History};
 use super::picker::{Choice, Picker, choice};
@@ -14,7 +13,7 @@ use super::selection;
 use super::text_edit::TextEdit;
 use super::text_edit::{CursorMove, TextInputBatch};
 use crate::Rgba;
-use crate::config::{ToolDefinition, ToolProperties};
+use crate::config::{Property, ToolDefinition, ToolProperties};
 use crate::tool::Primitive;
 use crate::tool::ToolId;
 use std::sync::Arc;

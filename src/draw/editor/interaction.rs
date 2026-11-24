@@ -407,7 +407,7 @@ impl Editor {
     fn text_size_range(&self, element: &Element) -> [f32; 2] {
         let id = super::ToolDefinition::preset(&self.tools, &element.preset, Primitive::Text);
         let range = self.tools[id.0].size_range;
-        [range.min(), range.max()]
+        [range.min, range.max]
     }
 
     pub(in crate::draw) fn cursor(&self, point: Point, tool_override: ToolOverride) -> Cursor {

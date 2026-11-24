@@ -16,9 +16,10 @@ use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use crate::OutputId;
+use crate::config::Property;
 
 pub(crate) use self::editor::Action;
-use self::editor::{Editor, EditorEffect, Property};
+use self::editor::{Editor, EditorEffect};
 pub(crate) use self::scene::{Point, Style};
 pub(crate) use self::selection::CursorHint;
 use self::text_edit::TextEdit;

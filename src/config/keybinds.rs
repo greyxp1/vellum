@@ -149,9 +149,22 @@ impl MouseButton {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Input {
+pub(crate) enum Input {
     Keyboard(u32),
     Mouse(MouseButton),
+}
+
+impl Input {
+    // Ignore letter case from Caps Lock while matching Shift explicitly.
+    fn normalized(self) -> Self {
+        match self {
+            Self::Keyboard(key) => {
+                let name = xkb::keysym_get_name(key.into());
+                Self::Keyboard(xkb::keysym_from_name(&name, xkb::KEYSYM_CASE_INSENSITIVE).raw())
+            }
+            mouse => mouse,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -343,97 +356,51 @@ impl Keybinds {
 
     pub(crate) fn lookup(
         &self,
-        key: u32,
-        shift_free_key: Option<u32>,
+        input: Input,
+        shift_free: Option<Input>,
         modifiers: Modifiers,
         logo: bool,
         gestures_only: bool,
     ) -> Option<BindingAction> {
-        // Ignore letter case from Caps Lock while matching Shift explicitly.
-        let normalize = |key: u32| {
-            let name = xkb::keysym_get_name(key.into());
-            xkb::keysym_from_name(&name, xkb::KEYSYM_CASE_INSENSITIVE).raw()
-        };
-        let key = normalize(key);
+        let (input, shift_free) = (input.normalized(), shift_free.map(Input::normalized));
         let chord = Keybind {
-            key: Input::Keyboard(key),
+            key: input,
             modifiers,
             logo,
         };
-        let explicit = |chord: Keybind| {
-            self.0.iter().find(move |entry| {
-                !entry.automatic_selection
-                    && entry.key == chord
-                    && (!gestures_only || entry.action.pointer_gesture())
-            })
+        let unshifted = Keybind {
+            modifiers: Modifiers {
+                shift: false,
+                ..modifiers
+            },
+            ..chord
         };
-        // Prefer explicit symbols, then match the key without Shift.
-        if let Some(entry) = explicit(chord) {
-            return Some(entry.action);
-        }
-        let shift_free_key = shift_free_key.map(normalize);
-        shift_free_key
-            .and_then(|key| {
-                let selection = Keybind {
-                    key: Input::Keyboard(key),
-                    ..chord
-                };
-                self.0.iter().find(|entry| {
-                    entry.key == selection && (!gestures_only || entry.action.pointer_gesture())
-                })
-            })
-            .or_else(|| {
-                // Shift produced the symbol, as with plus on US layouts.
-                if shift_free_key? == key {
-                    return None;
-                }
-                explicit(Keybind {
-                    modifiers: Modifiers {
-                        shift: false,
-                        ..modifiers
-                    },
-                    ..chord
-                })
-            })
-            .or_else(|| {
-                let plain = Keybind {
-                    key: Input::Keyboard(shift_free_key.unwrap_or(key)),
-                    modifiers: Modifiers::default(),
-                    logo: false,
-                };
-                self.0
-                    .iter()
-                    .find(|entry| entry.key == plain && entry.action.pointer_gesture())
-            })
-            .map(|entry| entry.action)
-    }
-
-    pub(crate) fn mouse_binding(
-        &self,
-        button: MouseButton,
-        modifiers: Modifiers,
-        logo: bool,
-        gestures_only: bool,
-    ) -> Option<BindingAction> {
-        let chord = Keybind {
-            key: Input::Mouse(button),
-            modifiers,
-            logo,
+        // Drawing modifiers still work with unmodified gesture bindings.
+        let plain = Keybind {
+            key: shift_free.unwrap_or(input),
+            modifiers: Modifiers::default(),
+            logo: false,
         };
-        self.0
-            .iter()
-            .find(|entry| entry.key == chord && (!gestures_only || entry.action.pointer_gesture()))
-            .or_else(|| {
-                // Drawing modifiers still work with unmodified gesture bindings.
-                let plain = Keybind {
-                    modifiers: Modifiers::default(),
-                    logo: false,
-                    ..chord
-                };
-                self.0
-                    .iter()
-                    .find(|entry| entry.action.pointer_gesture() && entry.key == plain)
+        // Prefer explicit symbols, then match the key without Shift. Candidates also
+        // choose whether generated selections and non-gesture actions match.
+        [
+            Some((chord, false, gestures_only)),
+            shift_free.map(|key| (Keybind { key, ..chord }, true, gestures_only)),
+            // Shift produced the symbol, as with plus on US layouts.
+            shift_free
+                .filter(|&key| key != input)
+                .map(|_| (unshifted, false, gestures_only)),
+            Some((plain, true, true)),
+        ]
+        .into_iter()
+        .flatten()
+        .find_map(|(key, automatic, gestures)| {
+            self.0.iter().find(|entry| {
+                entry.key == key
+                    && (automatic || !entry.automatic_selection)
+                    && (!gestures || entry.action.pointer_gesture())
             })
-            .map(|entry| entry.action)
+        })
+        .map(|entry| entry.action)
     }
 }

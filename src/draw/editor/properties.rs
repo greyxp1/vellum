@@ -1,7 +1,7 @@
 use super::{Editor, HistoryEntry, Interaction};
 use crate::Rgba;
 use crate::cli::ToolSetting;
-use crate::config::{MIN_OPACITY, ToolDefinition, ToolProperties};
+use crate::config::{Property, ToolDefinition, ToolProperties};
 use crate::draw::scene::{ElementKind, Style, tool_for};
 use crate::tool::{Primitive, ToolId};
 
@@ -79,22 +79,7 @@ fn stepped_with_stops(
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(in crate::draw) enum Property {
-    Size,
-    Opacity,
-    Roundness,
-}
-
 impl Property {
-    fn supported(self, tool: Primitive) -> bool {
-        match self {
-            Self::Size => tool != Primitive::Select,
-            Self::Opacity => tool.supports_opacity(),
-            Self::Roundness => tool.supports_roundness(),
-        }
-    }
-
     fn style_value(self, style: &mut Style) -> &mut f32 {
         match self {
             Self::Size => &mut style.size,
@@ -114,16 +99,8 @@ impl Property {
     fn adjust(self, tool: &ToolDefinition, value: f32, steps: f32) -> (StepAdjustment, String) {
         let mut properties = tool.properties;
         let default = *self.tool_value(&mut properties);
-        let (min, max, increment, stops) = match self {
-            Self::Size => (
-                tool.size_range.min(),
-                tool.size_range.max(),
-                tool.steps.size,
-                &*tool.stops.size,
-            ),
-            Self::Opacity => (MIN_OPACITY, 1.0, tool.steps.opacity, &*tool.stops.opacity),
-            Self::Roundness => (0.0, 1.0, tool.steps.roundness, &*tool.stops.roundness),
-        };
+        let (min, max) = self.bounds(tool.size_range);
+        let (increment, stops) = (*tool.steps.get(self), tool.stops.get(self));
         let adjustment = stepped_with_stops(value, default, steps, increment, min, max, stops);
         let label = match self {
             Self::Size => size_label(adjustment.value, default),
@@ -160,9 +137,9 @@ impl Editor {
         let primitive = definition.primitive;
         let supported = match setting {
             ToolSetting::Size { .. } => Property::Size.supported(primitive),
-            ToolSetting::Opacity { .. } => primitive.supports_opacity(),
+            ToolSetting::Opacity { .. } => Property::Opacity.supported(primitive),
             ToolSetting::Color { .. } => true,
-            ToolSetting::Roundness { .. } => primitive.supports_roundness(),
+            ToolSetting::Roundness { .. } => Property::Roundness.supported(primitive),
             ToolSetting::Filled { .. } => primitive.supports_fill() || primitive == Primitive::Text,
         };
         if !supported {
@@ -176,9 +153,7 @@ impl Editor {
                 if !definition.size_range.contains(value) {
                     return Err(format!(
                         "{} size must be between {} and {}",
-                        definition.id,
-                        definition.size_range.min(),
-                        definition.size_range.max()
+                        definition.id, definition.size_range.min, definition.size_range.max
                     ));
                 }
                 properties.size = value;

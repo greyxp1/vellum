@@ -8,7 +8,7 @@ pub(crate) use icon::{SvgCommand, SvgIcon, ToolIcon};
 pub(crate) use watch::Config;
 
 use font::FontConfig;
-pub(crate) use keybinds::{BindingAction, Keybinds, MouseButton};
+pub(crate) use keybinds::{BindingAction, Input, Keybinds, MouseButton};
 pub(crate) use size::SizeRange;
 use size::SizeRangeConfig;
 
@@ -17,7 +17,7 @@ pub(crate) use crate::cli::MIN_OPACITY;
 use crate::draw::Style;
 use crate::tool::{Primitive, ToolId};
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -29,41 +29,32 @@ const DEFAULT_PALETTE: [&str; 8] = [
 ];
 
 #[derive(Debug, Default, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(default, deny_unknown_fields)]
 struct FileConfig {
     #[serde(skip)]
     directory: PathBuf,
-    #[serde(default)]
     keybinds: keybinds::KeybindConfig,
-    #[serde(default)]
     text_keybinds: keybinds::KeybindConfig,
-    draw_on: Option<DrawOn>,
+    draw_on: DrawOn,
     default_tool: Option<String>,
     remember_last_tool: Option<bool>,
     remember_tool_properties: Option<bool>,
     stroke_size: Option<f32>,
-    #[serde(default)]
     size_range: SizeRangeConfig,
-    #[serde(default)]
-    steps: StepConfig,
-    #[serde(default)]
-    stops: StopConfig,
+    steps: PerProperty<Option<f32>>,
+    stops: PerProperty<Option<Vec<f32>>>,
     default_color: Option<String>,
     palette: Option<Vec<String>>,
     feedback_duration_ms: Option<u64>,
-    clear_on_cancel: Option<bool>,
-    freeze_on_activate: Option<bool>,
+    clear_on_cancel: bool,
+    freeze_on_activate: bool,
     annotations_visible: Option<bool>,
-    #[serde(default)]
     whiteboard: WhiteboardConfig,
-    default_fill_shapes: Option<bool>,
+    default_fill_shapes: bool,
     annotation_shadows: Option<bool>,
-    annotation_shadow_overlap: Option<bool>,
-    #[serde(default)]
+    annotation_shadow_overlap: bool,
     presentation: PresentationConfig,
-    #[serde(default)]
     cursor: CursorVisibility,
-    #[serde(default)]
     tools: BTreeMap<String, ToolConfig>,
     tool_wheel: Option<Vec<String>>,
 }
@@ -75,16 +66,13 @@ struct WhiteboardConfig {
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(default, deny_unknown_fields)]
 struct PresentationConfig {
     remember: Option<bool>,
     hold_ms: Option<u64>,
     fade_duration_ms: Option<u64>,
-    #[serde(default)]
     pen_effect: PenEffect,
-    #[serde(default)]
     erase_duration_ms: EraseDuration,
-    #[serde(default)]
     erase_pace: ErasePace,
 }
 
@@ -128,30 +116,32 @@ pub(crate) struct PresentationSettings {
     pub erase_pace: ErasePace,
 }
 
+fn duration(name: &str, ms: u64, min: u64) -> Result<Duration, String> {
+    if (min..=60_000).contains(&ms) {
+        Ok(Duration::from_millis(ms))
+    } else if min == 0 {
+        Err(format!("{name} must not exceed 60000"))
+    } else {
+        Err(format!("{name} must be between {min} and 60000"))
+    }
+}
+
 impl PresentationConfig {
     fn resolve(self) -> Result<PresentationSettings, String> {
-        let hold_ms = self.hold_ms.unwrap_or(3000);
-        if hold_ms > 60_000 {
-            return Err("presentation.hold_ms must not exceed 60000".into());
-        }
-        let fade_duration_ms = self.fade_duration_ms.unwrap_or(1000);
-        let erase_duration_ms = match self.erase_duration_ms {
-            EraseDuration::Fixed(ms) => Some(ms),
-            EraseDuration::Drawn(_) => None,
-        };
-        for (name, ms) in std::iter::once(("fade_duration_ms", fade_duration_ms))
-            .chain(erase_duration_ms.map(|ms| ("erase_duration_ms", ms)))
-        {
-            if !(1..=60_000).contains(&ms) {
-                return Err(format!("presentation.{name} must be between 1 and 60000"));
-            }
-        }
+        let name = |field| format!("presentation.{field}");
         Ok(PresentationSettings {
             remember: self.remember.unwrap_or(true),
-            hold: Duration::from_millis(hold_ms),
-            fade_duration: Duration::from_millis(fade_duration_ms),
+            hold: duration(&name("hold_ms"), self.hold_ms.unwrap_or(3000), 0)?,
+            fade_duration: duration(
+                &name("fade_duration_ms"),
+                self.fade_duration_ms.unwrap_or(1000),
+                1,
+            )?,
             pen_effect: self.pen_effect,
-            erase_duration: erase_duration_ms.map(Duration::from_millis),
+            erase_duration: match self.erase_duration_ms {
+                EraseDuration::Fixed(ms) => Some(duration(&name("erase_duration_ms"), ms, 1)?),
+                EraseDuration::Drawn(_) => None,
+            },
             erase_pace: self.erase_pace,
         })
     }
@@ -181,9 +171,9 @@ struct ToolConfig {
     size: Option<f32>,
     size_range: Option<SizeRangeConfig>,
     #[serde(default)]
-    steps: StepConfig,
+    steps: PerProperty<Option<f32>>,
     #[serde(default)]
-    stops: StopConfig,
+    stops: PerProperty<Option<Vec<f32>>>,
     opacity: Option<f32>,
     roundness: Option<f32>,
     filled: Option<bool>,
@@ -193,14 +183,24 @@ struct ToolConfig {
     cursor: CursorVisibility,
 }
 
+impl ToolConfig {
+    fn value(&self, property: Property) -> Option<f32> {
+        match property {
+            Property::Size => self.size,
+            Property::Opacity => self.opacity,
+            Property::Roundness => self.roundness,
+        }
+    }
+}
+
 pub(crate) struct ToolDefinition {
     pub id: Arc<str>,
     pub primitive: Primitive,
     pub icon: ToolIcon,
     pub properties: ToolProperties,
     pub size_range: SizeRange,
-    pub steps: Steps,
-    pub stops: Stops,
+    pub steps: PerProperty<f32>,
+    pub stops: PerProperty<Arc<[f32]>>,
     pub font: Option<Arc<crate::text::TextFont>>,
     pub cursor: bool,
 }
@@ -250,19 +250,66 @@ pub(crate) struct CursorVisibility {
     pub(crate) visible: Option<bool>,
 }
 
-#[derive(Debug, Default, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct StepConfig {
-    size: Option<f32>,
-    opacity: Option<f32>,
-    roundness: Option<f32>,
+/// A numeric tool property with a value, step size and stops.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Property {
+    Size,
+    Opacity,
+    Roundness,
 }
 
-#[derive(Clone, Copy)]
-pub(crate) struct Steps {
-    pub(crate) size: f32,
-    pub(crate) opacity: f32,
-    pub(crate) roundness: f32,
+impl Property {
+    const ALL: [Self; 3] = [Self::Size, Self::Opacity, Self::Roundness];
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Size => "size",
+            Self::Opacity => "opacity",
+            Self::Roundness => "roundness",
+        }
+    }
+
+    pub(crate) fn supported(self, primitive: Primitive) -> bool {
+        match self {
+            Self::Size => primitive != Primitive::Select,
+            Self::Opacity => primitive.supports_opacity(),
+            Self::Roundness => primitive.supports_roundness(),
+        }
+    }
+
+    pub(crate) fn bounds(self, size_range: SizeRange) -> (f32, f32) {
+        match self {
+            Self::Size => (size_range.min, size_range.max),
+            Self::Opacity => (MIN_OPACITY, 1.0),
+            Self::Roundness => (0.0, 1.0),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct PerProperty<T> {
+    size: T,
+    opacity: T,
+    roundness: T,
+}
+
+impl<T> PerProperty<T> {
+    fn try_new(mut resolve: impl FnMut(Property) -> Result<T, String>) -> Result<Self, String> {
+        Ok(Self {
+            size: resolve(Property::Size)?,
+            opacity: resolve(Property::Opacity)?,
+            roundness: resolve(Property::Roundness)?,
+        })
+    }
+
+    pub(crate) fn get(&self, property: Property) -> &T {
+        match property {
+            Property::Size => &self.size,
+            Property::Opacity => &self.opacity,
+            Property::Roundness => &self.roundness,
+        }
+    }
 }
 
 fn valid_step(name: &str, value: f32) -> Result<f32, String> {
@@ -272,22 +319,7 @@ fn valid_step(name: &str, value: f32) -> Result<f32, String> {
     Ok(value)
 }
 
-#[derive(Debug, Default, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct StopConfig {
-    size: Option<Vec<f32>>,
-    opacity: Option<Vec<f32>>,
-    roundness: Option<Vec<f32>>,
-}
-
-#[derive(Clone)]
-pub(crate) struct Stops {
-    pub(crate) size: Arc<[f32]>,
-    pub(crate) opacity: Arc<[f32]>,
-    pub(crate) roundness: Arc<[f32]>,
-}
-
-fn stops(name: &str, values: &[f32], min: f32, max: f32) -> Result<Arc<[f32]>, String> {
+fn valid_stops(name: &str, values: &[f32], (min, max): (f32, f32)) -> Result<Arc<[f32]>, String> {
     if values
         .iter()
         .any(|value| !value.is_finite() || !(min..=max).contains(value))
@@ -325,7 +357,7 @@ impl Settings {
     fn resolve(file: FileConfig) -> Result<Self, String> {
         let global_range = file
             .size_range
-            .resolve(&SizeRange::default())
+            .resolve(SizeRange::DEFAULT)
             .validate("size_range")?;
         let stroke_size = file.stroke_size.unwrap_or_else(|| global_range.clamp(5.0));
         if !global_range.contains(stroke_size) {
@@ -351,10 +383,11 @@ impl Settings {
         if !palette.contains(&default_color) {
             return Err("default_color must be present in palette".into());
         }
-        let feedback_duration_ms = file.feedback_duration_ms.unwrap_or(500);
-        if feedback_duration_ms > 60_000 {
-            return Err("feedback_duration_ms must not exceed 60000".into());
-        }
+        let feedback_duration = duration(
+            "feedback_duration_ms",
+            file.feedback_duration_ms.unwrap_or(500),
+            0,
+        )?;
         let mut configs = file.tools;
         for primitive in Primitive::ALL {
             let config = configs
@@ -368,29 +401,16 @@ impl Settings {
                 return Err(format!("tools.{name}.primitive must be {name:?}"));
             }
         }
-        let global_size_stops = stops(
-            "stops.size",
-            file.stops.size.as_deref().unwrap_or_default(),
-            global_range.min(),
-            global_range.max(),
-        )?;
-        let global_opacity_stops = stops(
-            "stops.opacity",
-            file.stops.opacity.as_deref().unwrap_or_default(),
-            MIN_OPACITY,
-            1.0,
-        )?;
-        let global_roundness_stops = stops(
-            "stops.roundness",
-            file.stops.roundness.as_deref().unwrap_or_default(),
-            0.0,
-            1.0,
-        )?;
-        let global_steps = Steps {
-            size: valid_step("steps.size", file.steps.size.unwrap_or(1.0))?,
-            opacity: valid_step("steps.opacity", file.steps.opacity.unwrap_or(0.01))?,
-            roundness: valid_step("steps.roundness", file.steps.roundness.unwrap_or(0.01))?,
-        };
+        let global_stops = PerProperty::try_new(|property| {
+            let values = file.stops.get(property).as_deref().unwrap_or_default();
+            let name = format!("stops.{}", property.name());
+            valid_stops(&name, values, property.bounds(global_range))
+        })?;
+        for property in Property::ALL {
+            if let Some(step) = file.steps.get(property) {
+                valid_step(&format!("steps.{}", property.name()), *step)?;
+            }
+        }
         let mut tools = Vec::with_capacity(configs.len());
         for (id, config) in configs {
             crate::cli::tool_name(&id).map_err(|error| format!("tools.{id}: {error}"))?;
@@ -398,57 +418,26 @@ impl Settings {
             let primitive = config.primitive;
             let built_in = id == primitive.name();
             let built_in_text = built_in && primitive == Primitive::Text;
+            let unsupported = |field: &str| {
+                let tool = primitive.name();
+                Err(format!("{prefix}.{field} is not supported by {tool}"))
+            };
+            for property in Property::ALL
+                .into_iter()
+                .filter(|p| !p.supported(primitive))
+            {
+                let name = property.name();
+                if config.value(property).is_some() {
+                    return unsupported(name);
+                } else if property == Property::Size && config.size_range.is_some() {
+                    return unsupported("size_range");
+                } else if config.steps.get(property).is_some() {
+                    return unsupported(&format!("steps.{name}"));
+                } else if config.stops.get(property).is_some() {
+                    return unsupported(&format!("stops.{name}"));
+                }
+            }
             for (field, configured, supported) in [
-                (
-                    "size",
-                    config.size.is_some(),
-                    primitive != Primitive::Select,
-                ),
-                (
-                    "size_range",
-                    config.size_range.is_some(),
-                    primitive != Primitive::Select,
-                ),
-                (
-                    "steps.size",
-                    config.steps.size.is_some(),
-                    primitive != Primitive::Select,
-                ),
-                (
-                    "stops.size",
-                    config.stops.size.is_some(),
-                    primitive != Primitive::Select,
-                ),
-                (
-                    "opacity",
-                    config.opacity.is_some(),
-                    primitive.supports_opacity(),
-                ),
-                (
-                    "steps.opacity",
-                    config.steps.opacity.is_some(),
-                    primitive.supports_opacity(),
-                ),
-                (
-                    "stops.opacity",
-                    config.stops.opacity.is_some(),
-                    primitive.supports_opacity(),
-                ),
-                (
-                    "roundness",
-                    config.roundness.is_some(),
-                    primitive.supports_roundness(),
-                ),
-                (
-                    "steps.roundness",
-                    config.steps.roundness.is_some(),
-                    primitive.supports_roundness(),
-                ),
-                (
-                    "stops.roundness",
-                    config.stops.roundness.is_some(),
-                    primitive.supports_roundness(),
-                ),
                 ("filled", config.filled.is_some(), primitive.supports_fill()),
                 (
                     "background",
@@ -458,10 +447,7 @@ impl Settings {
                 ("font", config.font.is_some(), primitive == Primitive::Text),
             ] {
                 if configured && !supported {
-                    return Err(format!(
-                        "{prefix}.{field} is not supported by {}",
-                        primitive.name()
-                    ));
+                    return unsupported(field);
                 }
             }
             if !built_in {
@@ -482,90 +468,70 @@ impl Settings {
                 }
             }
             let fallback_range = if built_in_text {
-                file.size_range.resolve(&SizeRange::text())
+                file.size_range.resolve(SizeRange::TEXT)
             } else {
                 global_range
             };
             let range = config
                 .size_range
                 .as_ref()
-                .map_or(fallback_range, |value| value.resolve(&fallback_range))
+                .map_or(fallback_range, |value| value.resolve(fallback_range))
                 .validate(&format!("{prefix}.size_range"))?;
-            let size = config.size.unwrap_or_else(|| {
-                range.clamp(match (built_in, primitive) {
-                    (true, Primitive::Text) => 16.0,
-                    (true, Primitive::Eraser) => 10.0,
-                    _ => stroke_size,
-                })
-            });
-            if !range.contains(size) {
-                return Err(format!("{prefix}.size must be within its size_range"));
-            }
-            let opacity = config.opacity.unwrap_or(default_color[3]);
-            if !(MIN_OPACITY..=1.0).contains(&opacity) {
-                return Err(format!(
-                    "{prefix}.opacity must be between {MIN_OPACITY} and 1"
-                ));
-            }
-            let roundness = config.roundness.unwrap_or(match primitive {
-                Primitive::Pen => 1.0,
-                Primitive::Line => 0.5,
-                Primitive::Arrow => 0.25,
-                Primitive::Rectangle | Primitive::Text => 0.1,
-                _ => 0.0,
-            });
-            if !roundness.is_finite() || !(0.0..=1.0).contains(&roundness) {
-                return Err(format!("{prefix}.roundness must be between 0 and 1"));
-            }
-            let steps = Steps {
-                size: valid_step(
-                    &format!("{prefix}.steps.size"),
-                    config
-                        .steps
-                        .size
-                        .unwrap_or(if built_in_text && file.steps.size.is_none() {
-                            DEFAULT_TEXT_SIZE_STEP
-                        } else {
-                            global_steps.size
-                        }),
-                )?,
-                opacity: valid_step(
-                    &format!("{prefix}.steps.opacity"),
-                    config.steps.opacity.unwrap_or(global_steps.opacity),
-                )?,
-                roundness: valid_step(
-                    &format!("{prefix}.steps.roundness"),
-                    config.steps.roundness.unwrap_or(global_steps.roundness),
-                )?,
-            };
-            let stop_set = Stops {
-                size: match config.stops.size {
-                    Some(values) => stops(
-                        &format!("{prefix}.stops.size"),
-                        &values,
-                        range.min(),
-                        range.max(),
-                    )?,
-                    None => global_size_stops
+            let values = PerProperty::try_new(|property| {
+                let value = config.value(property).unwrap_or_else(|| match property {
+                    Property::Size => range.clamp(match (built_in, primitive) {
+                        (true, Primitive::Text) => 16.0,
+                        (true, Primitive::Eraser) => 10.0,
+                        _ => stroke_size,
+                    }),
+                    Property::Opacity => default_color[3],
+                    Property::Roundness => match primitive {
+                        Primitive::Pen => 1.0,
+                        Primitive::Line => 0.5,
+                        Primitive::Arrow => 0.25,
+                        Primitive::Rectangle | Primitive::Text => 0.1,
+                        _ => 0.0,
+                    },
+                });
+                let (min, max) = property.bounds(range);
+                if value.is_finite() && (min..=max).contains(&value) {
+                    Ok(value)
+                } else if property == Property::Size {
+                    Err(format!("{prefix}.size must be within its size_range"))
+                } else {
+                    Err(format!(
+                        "{prefix}.{} must be between {min} and {max}",
+                        property.name()
+                    ))
+                }
+            })?;
+            let steps = PerProperty::try_new(|property| {
+                let default = match property {
+                    Property::Size if built_in_text => DEFAULT_TEXT_SIZE_STEP,
+                    Property::Size => 1.0,
+                    Property::Opacity | Property::Roundness => 0.01,
+                };
+                let step = config.steps.get(property).or(*file.steps.get(property));
+                let name = format!("{prefix}.steps.{}", property.name());
+                valid_step(&name, step.unwrap_or(default))
+            })?;
+            let stops = PerProperty::try_new(|property| {
+                let bounds = property.bounds(range);
+                match config.stops.get(property) {
+                    Some(values) => valid_stops(
+                        &format!("{prefix}.stops.{}", property.name()),
+                        values,
+                        bounds,
+                    ),
+                    // Inherited size stops outside this tool's range are dropped.
+                    None => Ok(global_stops
+                        .get(property)
                         .iter()
                         .copied()
-                        .filter(|v| range.contains(*v))
-                        .collect(),
-                },
-                opacity: match config.stops.opacity {
-                    Some(values) => stops(
-                        &format!("{prefix}.stops.opacity"),
-                        &values,
-                        MIN_OPACITY,
-                        1.0,
-                    )?,
-                    None => global_opacity_stops.clone(),
-                },
-                roundness: match config.stops.roundness {
-                    Some(values) => stops(&format!("{prefix}.stops.roundness"), &values, 0.0, 1.0)?,
-                    None => global_roundness_stops.clone(),
-                },
-            };
+                        .filter(|value| (bounds.0..=bounds.1).contains(value))
+                        .collect()),
+                }
+            })?;
             let font = (primitive == Primitive::Text)
                 .then(|| {
                     config
@@ -586,20 +552,20 @@ impl Settings {
                 primitive,
                 icon,
                 properties: ToolProperties {
-                    size,
-                    opacity,
-                    roundness,
+                    size: values.size,
+                    opacity: values.opacity,
+                    roundness: values.roundness,
                     filled: if primitive == Primitive::Text {
                         config.background.unwrap_or(false)
                     } else {
-                        config.filled.unwrap_or(
-                            file.default_fill_shapes.unwrap_or(false) && primitive.supports_fill(),
-                        )
+                        config
+                            .filled
+                            .unwrap_or(file.default_fill_shapes && primitive.supports_fill())
                     },
                 },
                 size_range: range,
                 steps,
-                stops: stop_set,
+                stops,
                 font,
                 cursor: config.cursor.visible.or(file.cursor.visible).unwrap_or(
                     !built_in
@@ -647,7 +613,7 @@ impl Settings {
         Ok(Self {
             keybinds: Keybinds::resolve(file.keybinds, false)?,
             text_keybinds: Keybinds::resolve(file.text_keybinds, true)?,
-            draw_on: file.draw_on.unwrap_or_default(),
+            draw_on: file.draw_on,
             tools: tools.into(),
             default_tool,
             tool_wheel,
@@ -655,12 +621,12 @@ impl Settings {
             remember_tool_properties: file.remember_tool_properties.unwrap_or(true),
             default_color,
             palette,
-            feedback_duration: Duration::from_millis(feedback_duration_ms),
+            feedback_duration,
             presentation: file.presentation.resolve()?,
             annotation_shadows: file.annotation_shadows.unwrap_or(true),
-            annotation_shadow_overlap: file.annotation_shadow_overlap.unwrap_or(false),
-            clear_on_cancel: file.clear_on_cancel.unwrap_or(false),
-            freeze_on_activate: file.freeze_on_activate.unwrap_or(false),
+            annotation_shadow_overlap: file.annotation_shadow_overlap,
+            clear_on_cancel: file.clear_on_cancel,
+            freeze_on_activate: file.freeze_on_activate,
             annotations_visible: file.annotations_visible.unwrap_or(true),
             whiteboard_color: crate::color_to_srgb(
                 crate::cli::opaque_color(file.whiteboard.color.as_deref().unwrap_or("#EBEBEB"))
@@ -668,36 +634,6 @@ impl Settings {
             ),
         })
     }
-}
-
-fn read_config(path: &Path) -> Result<FileConfig, String> {
-    let contents = std::fs::read_to_string(path)
-        .map_err(|error| format!("could not read {}: {error}", path.display()))?;
-    parse_config(path, &contents)
-}
-
-fn read_optional_config(path: &Path) -> Result<Option<FileConfig>, String> {
-    match std::fs::read_to_string(path) {
-        Ok(contents) => parse_config(path, &contents).map(Some),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(format!("could not read {}: {error}", path.display())),
-    }
-}
-
-fn parse_config(path: &Path, contents: &str) -> Result<FileConfig, String> {
-    let mut file: FileConfig =
-        toml::from_str(contents).map_err(|error| format!("invalid {}: {error}", path.display()))?;
-    file.directory = path.parent().unwrap_or(Path::new("")).to_owned();
-    Ok(file)
-}
-
-fn read_first_config(paths: impl IntoIterator<Item = PathBuf>) -> Result<FileConfig, String> {
-    for path in paths {
-        if let Some(config) = read_optional_config(&path)? {
-            return Ok(config);
-        }
-    }
-    Ok(FileConfig::default())
 }
 
 fn default_config_paths() -> Vec<PathBuf> {
