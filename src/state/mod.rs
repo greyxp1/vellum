@@ -11,7 +11,7 @@ mod wayland;
 use wayland_client::QueueHandle;
 
 use crate::OutputId;
-use crate::cli::{PresentationCommand, VisibilityCommand, WhiteboardCommand};
+use crate::cli::{Visibility, WhiteboardCommand};
 use crate::config::DrawOn;
 use crate::draw::{self, Action, Canvas, Presentation};
 use crate::render::GpuContext;
@@ -30,6 +30,16 @@ impl Mode {
         match self {
             Self::Whiteboard => Canvas::Whiteboard,
             Self::Inactive | Self::Desktop => Canvas::Desktop,
+        }
+    }
+}
+
+impl Visibility {
+    fn apply(self, visible: bool) -> bool {
+        match self {
+            Self::Show => true,
+            Self::Hide => false,
+            Self::Toggle => !visible,
         }
     }
 }
@@ -184,12 +194,13 @@ impl State {
 
     pub(crate) fn whiteboard(&mut self, command: WhiteboardCommand) {
         match command {
-            WhiteboardCommand::Show => self.set_mode(Mode::Whiteboard),
-            WhiteboardCommand::Hide if self.mode == Mode::Whiteboard => {
-                self.set_mode(Mode::Desktop)
+            WhiteboardCommand::Visibility(visibility) => {
+                if visibility.apply(self.is_whiteboard()) {
+                    self.set_mode(Mode::Whiteboard);
+                } else if self.is_whiteboard() {
+                    self.set_mode(Mode::Desktop);
+                }
             }
-            WhiteboardCommand::Hide => {}
-            WhiteboardCommand::Toggle => self.toggle_whiteboard(),
             WhiteboardCommand::Clear => {
                 if self.mode == Mode::Whiteboard {
                     self.clear();
@@ -210,19 +221,11 @@ impl State {
     }
 
     fn toggle_whiteboard(&mut self) {
-        self.set_mode(if self.mode == Mode::Whiteboard {
-            Mode::Desktop
-        } else {
-            Mode::Whiteboard
-        });
+        self.whiteboard(WhiteboardCommand::Visibility(Visibility::Toggle));
     }
 
-    pub(crate) fn set_presentation(&mut self, command: PresentationCommand) {
-        let enabled = match command {
-            PresentationCommand::Show => true,
-            PresentationCommand::Hide => false,
-            PresentationCommand::Toggle => !self.draw.is_presenting(),
-        };
+    pub(crate) fn set_presentation(&mut self, visibility: Visibility) {
+        let enabled = visibility.apply(self.draw.is_presenting());
         if enabled && !self.is_active() {
             self.set_mode(Mode::Desktop);
         }
@@ -245,15 +248,11 @@ impl State {
     }
 
     fn toggle_presentation(&mut self) {
-        self.set_presentation(PresentationCommand::Toggle);
+        self.set_presentation(Visibility::Toggle);
     }
 
-    pub(crate) fn annotations(&mut self, command: VisibilityCommand) {
-        let visible = match command {
-            VisibilityCommand::Show => true,
-            VisibilityCommand::Hide => false,
-            VisibilityCommand::Toggle => !self.annotations_visible,
-        };
+    pub(crate) fn annotations(&mut self, visibility: Visibility) {
+        let visible = visibility.apply(self.annotations_visible);
         if self.annotations_visible != visible {
             self.annotations_visible = visible;
             self.damage_presentation();

@@ -2,8 +2,7 @@ use std::borrow::Cow;
 use std::fmt::Write;
 
 use clap::ValueEnum;
-use serde::Serialize;
-use serde::ser::{SerializeMap, Serializer};
+use serde::{Serialize, Serializer};
 
 use super::{Mode, State};
 use crate::cli::StatusField;
@@ -30,21 +29,21 @@ impl StatusField {
         )
     }
 
-    fn names(self) -> (&'static str, &'static str) {
+    fn label(self) -> &'static str {
         match self {
-            Self::Active => ("active", "Active"),
-            Self::Mode => ("mode", "Mode"),
-            Self::Whiteboard => ("whiteboard", "Whiteboard"),
-            Self::Presentation => ("presentation", "Presentation"),
-            Self::Tool => ("tool", "Tool"),
-            Self::Color => ("color", "Drawing color"),
-            Self::Size => ("size", "Tool size"),
-            Self::Opacity => ("opacity", "Tool opacity"),
-            Self::Roundness => ("roundness", "Tool roundness"),
-            Self::Filled => ("filled", "Tool fill/background"),
-            Self::TextEditing => ("text_editing", "Text editing"),
-            Self::AnnotationsVisible => ("annotations_visible", "Annotations outside drawing mode"),
-            Self::WhiteboardColor => ("whiteboard_color", "Whiteboard color"),
+            Self::Active => "Active",
+            Self::Mode => "Mode",
+            Self::Whiteboard => "Whiteboard",
+            Self::Presentation => "Presentation",
+            Self::Tool => "Tool",
+            Self::Color => "Drawing color",
+            Self::Size => "Tool size",
+            Self::Opacity => "Tool opacity",
+            Self::Roundness => "Tool roundness",
+            Self::Filled => "Tool fill/background",
+            Self::TextEditing => "Text editing",
+            Self::AnnotationsVisible => "Annotations outside drawing mode",
+            Self::WhiteboardColor => "Whiteboard color",
         }
     }
 }
@@ -62,37 +61,12 @@ enum Value {
 impl Value {
     fn plain(self) -> Cow<'static, str> {
         match self {
-            Self::Boolean(true) => "true".into(),
-            Self::Boolean(false) => "false".into(),
+            Self::Boolean(value) => value.to_string().into(),
             Self::Text(text) => text.into(),
             Self::Number(number) => number.to_string().into(),
             Self::Color([r, g, b, a]) => format!("color(srgb {r} {g} {b} / {a})").into(),
             Self::Null => "null".into(),
         }
-    }
-}
-
-fn fields(tool: Option<&str>) -> impl Iterator<Item = StatusField> + '_ {
-    StatusField::value_variants()
-        .iter()
-        .copied()
-        .filter(move |field| tool.is_none() || field.is_tool_field())
-}
-
-struct Snapshot<'a> {
-    state: &'a State,
-    target: Option<&'a str>,
-    style: (Primitive, Style),
-}
-
-impl Serialize for Snapshot<'_> {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut map = serializer.serialize_map(None)?;
-        for field in fields(self.target) {
-            let value = self.state.status_value(field, self.target, self.style);
-            map.serialize_entry(field.names().0, &value)?;
-        }
-        map.end()
     }
 }
 
@@ -146,49 +120,40 @@ impl State {
     ) -> Result<Cow<'static, str>, String> {
         let tool = tool.as_deref();
         let style = self.draw.named_tool_style(tool)?;
-        if let Some(field) = field {
-            let value = self.status_value(field, tool, style);
-            return if json && !matches!(value, Value::Boolean(_) | Value::Null) {
-                serde_json::to_string(&value)
-                    .map(Cow::Owned)
-                    .map_err(|error| error.to_string())
-            } else {
-                Ok(value.plain())
-            };
-        }
+        let value = |field| self.status_value(field, tool, style);
+        let fields = StatusField::value_variants()
+            .iter()
+            .copied()
+            .filter(|field| tool.is_none() || field.is_tool_field());
         if json {
-            return serde_json::to_string(&Snapshot {
-                state: self,
-                target: tool,
-                style,
-            })
-            .map(Cow::Owned)
-            .map_err(|error| error.to_string());
+            let mut output = Vec::new();
+            let mut serializer = serde_json::Serializer::new(&mut output);
+            match field {
+                Some(field) => value(field).serialize(&mut serializer),
+                None => serializer.collect_map(fields.map(|field| {
+                    let name = field.to_possible_value().unwrap().get_name().to_owned();
+                    (name.replace('-', "_"), value(field))
+                })),
+            }
+            .map_err(|error| error.to_string())?;
+            return Ok(String::from_utf8(output).unwrap().into());
+        }
+        if let Some(field) = field {
+            return Ok(value(field).plain());
         }
         let mut output = String::new();
-        for field in fields(tool) {
-            let value = self.status_value(field, tool, style);
-            if matches!(field, StatusField::Active | StatusField::Whiteboard)
-                || matches!(value, Value::Null)
-            {
-                continue;
-            }
-            let label = field.names().1;
-            match value {
-                Value::Number(number) if matches!(field, StatusField::Size) => {
-                    writeln!(output, "{label}: {number} px")
+        for field in fields {
+            let value = match value(field) {
+                _ if matches!(field, StatusField::Active | StatusField::Whiteboard) => continue,
+                Value::Null => continue,
+                Value::Number(number) if field == StatusField::Size => {
+                    format!("{number} px").into()
                 }
-                Value::Number(number)
-                    if matches!(field, StatusField::Roundness | StatusField::Opacity) =>
-                {
-                    writeln!(output, "{label}: {:.0}%", number * 100.0)
-                }
-                Value::Boolean(value) => {
-                    writeln!(output, "{label}: {}", if value { "yes" } else { "no" })
-                }
-                value => writeln!(output, "{label}: {}", value.plain()),
-            }
-            .expect("writing to a String cannot fail");
+                Value::Number(number) => format!("{:.0}%", number * 100.0).into(),
+                Value::Boolean(value) => if value { "yes" } else { "no" }.into(),
+                value => value.plain(),
+            };
+            writeln!(output, "{}: {value}", field.label()).unwrap();
         }
         Ok(output.into())
     }

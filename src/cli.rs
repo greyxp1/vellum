@@ -20,7 +20,7 @@ pub(super) struct Cli {
     pub(super) no_config: bool,
 }
 
-#[derive(clap::Subcommand)]
+#[derive(Clone, PartialEq, clap::Subcommand)]
 pub(crate) enum Command {
     /// Show drawing status
     Status {
@@ -33,7 +33,7 @@ pub(crate) enum Command {
             value_parser = tool_name,
             hide_possible_values = true,
             next_line_help = true,
-            long_help = tool_values_help()
+            long_help = TOOL_HELP
         )]
         tool: Option<String>,
         /// Output JSON
@@ -49,7 +49,7 @@ pub(crate) enum Command {
             value_parser = tool_name,
             hide_possible_values = true,
             next_line_help = true,
-            long_help = tool_values_help()
+            long_help = TOOL_HELP
         )]
         tool: String,
     },
@@ -61,7 +61,7 @@ pub(crate) enum Command {
             global = true,
             hide_possible_values = true,
             next_line_help = true,
-            long_help = tool_values_help()
+            long_help = TOOL_HELP
         )]
         tool: Option<String>,
         #[command(subcommand)]
@@ -80,27 +80,43 @@ pub(crate) enum Command {
         deactivate: bool,
     },
     /// Manage the whiteboard
-    Whiteboard {
-        #[command(subcommand)]
-        command: WhiteboardCommand,
-    },
+    #[command(subcommand, mut_subcommands(visibility_help([
+        "Enter whiteboard mode",
+        "Return to desktop mode",
+        "Switch between desktop and whiteboard modes",
+    ])))]
+    Whiteboard(WhiteboardCommand),
     /// Manage presentation mode
-    Presentation {
-        #[command(subcommand)]
-        command: PresentationCommand,
-    },
+    #[command(subcommand, mut_subcommands(visibility_help([
+        "Enable temporary marks",
+        "Disable temporary marks",
+        "Toggle temporary marks",
+    ])))]
+    Presentation(Visibility),
     /// Manage desktop annotations
-    Annotations {
-        #[command(subcommand)]
-        command: VisibilityCommand,
-    },
+    #[command(subcommand, mut_subcommands(visibility_help([
+        "Show desktop annotations when inactive",
+        "Hide desktop annotations when inactive",
+        "Toggle desktop annotations when inactive",
+    ])))]
+    Annotations(Visibility),
     /// Stop Vellum
     Exit,
 }
 
-fn tool_values_help() -> String {
-    "Tool name, such as pen or a name from [tools.<name>]".into()
+/// Describes the shared show, hide and toggle operations for one command family.
+fn visibility_help(
+    [show, hide, toggle]: [&'static str; 3],
+) -> impl FnMut(clap::Command) -> clap::Command {
+    move |command| match command.get_name() {
+        "show" => command.about(show),
+        "hide" => command.about(hide),
+        "toggle" => command.about(toggle),
+        _ => command,
+    }
 }
+
+const TOOL_HELP: &str = "Tool name, such as pen or a name from [tools.<name>]";
 
 pub(crate) fn tool_name(value: &str) -> Result<String, String> {
     // Leave room for a request's fields and the settings returned with the name.
@@ -120,7 +136,7 @@ pub(crate) fn tool_name(value: &str) -> Result<String, String> {
     Ok(value.into())
 }
 
-#[derive(clap::Subcommand)]
+#[derive(Clone, PartialEq, clap::Subcommand)]
 pub(crate) enum ToolSetting {
     /// Size in logical pixels
     Size {
@@ -173,7 +189,7 @@ pub(crate) fn roundness(value: &str) -> Result<f32, String> {
     number_in_range(value, 0.0, 1.0)
 }
 
-#[derive(Clone, Copy, clap::ValueEnum)]
+#[derive(Clone, Copy, PartialEq, clap::ValueEnum)]
 pub(crate) enum StatusField {
     /// Drawing is active
     Active,
@@ -203,34 +219,17 @@ pub(crate) enum StatusField {
     WhiteboardColor,
 }
 
-#[derive(clap::Subcommand)]
-pub(crate) enum VisibilityCommand {
-    /// Show desktop annotations when inactive
+#[derive(Clone, Copy, PartialEq, clap::Subcommand)]
+pub(crate) enum Visibility {
     Show,
-    /// Hide desktop annotations when inactive
     Hide,
-    /// Toggle desktop annotations when inactive
     Toggle,
 }
 
-#[derive(clap::Subcommand)]
-pub(crate) enum PresentationCommand {
-    /// Enable temporary marks
-    Show,
-    /// Disable temporary marks
-    Hide,
-    /// Toggle temporary marks
-    Toggle,
-}
-
-#[derive(clap::Subcommand)]
+#[derive(Clone, PartialEq, clap::Subcommand)]
 pub(crate) enum WhiteboardCommand {
-    /// Enter whiteboard mode
-    Show,
-    /// Return to desktop mode
-    Hide,
-    /// Switch between desktop and whiteboard modes
-    Toggle,
+    #[command(flatten)]
+    Visibility(Visibility),
     /// Clear the board's annotations
     Clear,
     /// Set the board's background color

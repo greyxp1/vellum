@@ -36,41 +36,8 @@ fn main() -> ExitCode {
 
 fn run() -> Result<ExitCode, String> {
     let arguments = Cli::parse();
-    if let Some(subcommand) = &arguments.command {
-        match subcommand {
-            Command::Set { .. } | Command::Use { .. } => {
-                let response = ipc::query(subcommand)?.ok_or("overlay is not running")?;
-                if response != "ok" {
-                    return Err("invalid command response".into());
-                }
-            }
-            Command::Status {
-                field, tool, check, ..
-            } => {
-                if tool.is_some() && field.is_some_and(|field| !field.is_tool_field()) {
-                    return Err("--target requires a tool property".into());
-                }
-                if *check && field.is_none_or(|field| !field.is_boolean()) {
-                    return Err("--check requires a boolean field".into());
-                }
-                let response = ipc::query(subcommand)?;
-                if *check {
-                    return match response.as_deref() {
-                        Some("true") => Ok(ExitCode::SUCCESS),
-                        Some("false") | None => Ok(ExitCode::from(1)),
-                        Some("null") => Err("field is not applicable to this tool".into()),
-                        _ => Err("invalid boolean status response".into()),
-                    };
-                }
-                let response = response.ok_or("overlay is not running")?;
-                print!("{response}");
-                if !response.ends_with('\n') {
-                    println!();
-                }
-            }
-            _ => ipc::send_command(subcommand)?,
-        }
-        return Ok(ExitCode::SUCCESS);
+    if let Some(command) = &arguments.command {
+        return run_command(command);
     }
     let mut config = config::Config::new(arguments)?;
     let started = Instant::now();
@@ -107,5 +74,37 @@ fn run() -> Result<ExitCode, String> {
     let settings = config.load()?;
     log::info!("Vellum {} starting", env!("CARGO_PKG_VERSION"));
     event_loop::run(settings, config)?;
+    Ok(ExitCode::SUCCESS)
+}
+
+fn run_command(command: &Command) -> Result<ExitCode, String> {
+    let Command::Status {
+        field, tool, check, ..
+    } = command
+    else {
+        let reply = matches!(command, Command::Set { .. } | Command::Use { .. });
+        return match ipc::send(command, reply)? {
+            None if reply => Err("overlay is not running".into()),
+            Some(response) if response != "ok" => Err("invalid command response".into()),
+            _ => Ok(ExitCode::SUCCESS),
+        };
+    };
+    if tool.is_some() && field.is_some_and(|field| !field.is_tool_field()) {
+        return Err("--target requires a tool property".into());
+    }
+    if *check && field.is_none_or(|field| !field.is_boolean()) {
+        return Err("--check requires a boolean field".into());
+    }
+    let response = ipc::send(command, true)?;
+    if *check {
+        return match response.as_deref() {
+            Some("true") => Ok(ExitCode::SUCCESS),
+            Some("false") | None => Ok(ExitCode::from(1)),
+            Some("null") => Err("field is not applicable to this tool".into()),
+            _ => Err("invalid boolean status response".into()),
+        };
+    }
+    let response = response.ok_or("overlay is not running")?;
+    println!("{}", response.strip_suffix('\n').unwrap_or(&response));
     Ok(ExitCode::SUCCESS)
 }

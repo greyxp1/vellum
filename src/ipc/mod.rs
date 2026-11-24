@@ -1,8 +1,7 @@
 mod client;
 
-pub(crate) use client::{query, send_command};
+pub(crate) use client::send;
 
-use std::borrow::Cow;
 use std::fs::File;
 use std::io::IoSliceMut;
 use std::mem::MaybeUninit;
@@ -10,9 +9,12 @@ use std::os::linux::net::SocketAddrExt;
 use std::os::unix::net::{SocketAddr, UnixDatagram};
 use std::path::PathBuf;
 
+use clap::ValueEnum;
 use rustix::net::{RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, SocketAddrAny};
 
-use crate::cli::{Command, PresentationCommand, ToolSetting, VisibilityCommand, WhiteboardCommand};
+use crate::cli::Visibility::{Hide, Show, Toggle};
+use crate::cli::WhiteboardCommand::{self as Board, Visibility as BoardView};
+use crate::cli::{self, Command, StatusField, ToolSetting};
 
 fn control_socket_addresses() -> Result<[SocketAddr; 2], String> {
     use std::os::unix::ffi::OsStrExt;
@@ -106,10 +108,51 @@ impl Drop for ControlSocket {
     }
 }
 
+/// Datagrams of the commands without a payload.
+const FIXED_COMMANDS: [(&str, Command); 16] = [
+    ("toggle", Command::Toggle),
+    ("activate", Command::Activate),
+    ("deactivate", Command::Deactivate),
+    ("clear", Command::Clear { deactivate: false }),
+    ("clear_and_deactivate", Command::Clear { deactivate: true }),
+    ("exit", Command::Exit),
+    ("annotations_show", Command::Annotations(Show)),
+    ("annotations_hide", Command::Annotations(Hide)),
+    ("annotations_toggle", Command::Annotations(Toggle)),
+    ("presentation_show", Command::Presentation(Show)),
+    ("presentation_hide", Command::Presentation(Hide)),
+    ("presentation_toggle", Command::Presentation(Toggle)),
+    ("whiteboard_show", Command::Whiteboard(BoardView(Show))),
+    ("whiteboard_hide", Command::Whiteboard(BoardView(Hide))),
+    ("whiteboard_toggle", Command::Whiteboard(BoardView(Toggle))),
+    ("whiteboard_clear", Command::Whiteboard(Board::Clear)),
+];
+
+/// Splits a `name[@tool][=payload]` request.
+fn split_request(request: &str) -> (&str, Option<&str>, Option<&str>) {
+    let (target, payload) = request
+        .split_once('=')
+        .map_or((request, None), |(target, payload)| (target, Some(payload)));
+    let (name, tool) = target
+        .split_once('@')
+        .map_or((target, None), |(name, tool)| (name, Some(tool)));
+    (name, tool, payload)
+}
+
+fn parse_tool(tool: Option<&str>, error: &'static str) -> Result<Option<String>, &'static str> {
+    tool.map(|tool| cli::tool_name(tool).map_err(|_| error))
+        .transpose()
+}
+
 impl Command {
-    fn serialize(&self) -> Cow<'static, str> {
+    fn serialize(&self) -> String {
+        let target = |tool: &Option<String>| {
+            tool.as_ref()
+                .map(|tool| format!("@{tool}"))
+                .unwrap_or_default()
+        };
         match self {
-            Self::Use { tool } => format!("use={tool}").into(),
+            Self::Use { tool } => format!("use={tool}"),
             Self::Set { tool, setting } => {
                 let (property, value) = match setting {
                     ToolSetting::Size { value } => ("size", value.to_string()),
@@ -118,71 +161,56 @@ impl Command {
                     ToolSetting::Filled { value } => ("filled", value.to_string()),
                     ToolSetting::Color { value } => ("color", value.to_string()),
                 };
-                let target = tool
-                    .as_ref()
-                    .map_or(String::new(), |tool| format!("@{tool}"));
-                format!("set{target}={property}={value}").into()
+                format!("set{}={property}={value}", target(tool))
             }
             Self::Status {
                 field, tool, json, ..
             } => {
                 let name = if *json { "status_json" } else { "status" };
-                let name: Cow<'_, str> = match tool {
-                    Some(tool) => format!("{name}@{tool}").into(),
-                    None => Cow::Borrowed(name),
-                };
-                match field {
-                    None => name,
-                    Some(field) => format!(
-                        "{name}={}",
-                        clap::ValueEnum::to_possible_value(field)
-                            .unwrap()
-                            .get_name()
-                    )
-                    .into(),
-                }
+                let field = field
+                    .map(|field| format!("={}", field.to_possible_value().unwrap().get_name()))
+                    .unwrap_or_default();
+                format!("{name}{}{field}", target(tool))
             }
-            Self::Toggle => "toggle".into(),
-            Self::Activate => "activate".into(),
-            Self::Deactivate => "deactivate".into(),
-            Self::Clear { deactivate: false } => "clear".into(),
-            Self::Clear { deactivate: true } => "clear_and_deactivate".into(),
-            Self::Exit => "exit".into(),
-            Self::Annotations { command } => match command {
-                VisibilityCommand::Show => "annotations_show".into(),
-                VisibilityCommand::Hide => "annotations_hide".into(),
-                VisibilityCommand::Toggle => "annotations_toggle".into(),
-            },
-            Self::Presentation { command } => match command {
-                PresentationCommand::Show => "presentation_show".into(),
-                PresentationCommand::Hide => "presentation_hide".into(),
-                PresentationCommand::Toggle => "presentation_toggle".into(),
-            },
-            Self::Whiteboard { command } => match command {
-                WhiteboardCommand::Show => "whiteboard_show".into(),
-                WhiteboardCommand::Hide => "whiteboard_hide".into(),
-                WhiteboardCommand::Toggle => "whiteboard_toggle".into(),
-                WhiteboardCommand::Clear => "whiteboard_clear".into(),
-                WhiteboardCommand::SetColor { color } => format!("whiteboard_color={color}").into(),
-            },
+            Self::Whiteboard(Board::SetColor { color }) => format!("whiteboard_color={color}"),
+            fixed @ (Self::Toggle
+            | Self::Activate
+            | Self::Deactivate
+            | Self::Clear { deactivate: false }
+            | Self::Clear { deactivate: true }
+            | Self::Exit
+            | Self::Annotations(Show)
+            | Self::Annotations(Hide)
+            | Self::Annotations(Toggle)
+            | Self::Presentation(Show)
+            | Self::Presentation(Hide)
+            | Self::Presentation(Toggle)
+            | Self::Whiteboard(BoardView(Show))
+            | Self::Whiteboard(BoardView(Hide))
+            | Self::Whiteboard(BoardView(Toggle))
+            | Self::Whiteboard(Board::Clear)) => {
+                let (name, _) = FIXED_COMMANDS
+                    .iter()
+                    .find(|(_, command)| command == fixed)
+                    .expect("commands without a payload have a fixed datagram");
+                name.to_string()
+            }
         }
     }
 
     pub(crate) fn deserialize(message: &[u8]) -> Result<Self, &'static str> {
+        let text = |error| std::str::from_utf8(message).map_err(|_| error);
         match message {
             _ if let Some(tool) = message.strip_prefix(b"use=") => {
                 let tool = std::str::from_utf8(tool).map_err(|_| "invalid tool")?;
                 Ok(Self::Use {
-                    tool: crate::cli::tool_name(tool).map_err(|_| "invalid tool")?,
+                    tool: cli::tool_name(tool).map_err(|_| "invalid tool")?,
                 })
             }
             _ if message.starts_with(b"set=") || message.starts_with(b"set@") => {
-                let message = std::str::from_utf8(message).map_err(|_| "invalid setter request")?;
-                let (target, setting) = message.split_once('=').ok_or("missing setting")?;
-                let tool = target
-                    .strip_prefix("set@")
-                    .map(|tool| crate::cli::tool_name(tool).map_err(|_| "invalid tool"))
-                    .transpose()?;
+                let (_, tool, setting) = split_request(text("invalid setter request")?);
+                let setting = setting.ok_or("missing setting")?;
+                let tool = parse_tool(tool, "invalid tool")?;
                 let (property, value) = setting.split_once('=').ok_or("missing value")?;
                 use crate::cli::{opacity, positive_size, roundness};
                 let setting = match property {
@@ -199,36 +227,25 @@ impl Command {
                         value: value.parse().map_err(|_| "invalid fill")?,
                     },
                     "color" => ToolSetting::Color {
-                        value: crate::cli::visible_color(value).map_err(|_| "invalid color")?,
+                        value: cli::visible_color(value).map_err(|_| "invalid color")?,
                     },
                     _ => return Err("invalid tool property"),
                 };
                 Ok(Self::Set { tool, setting })
             }
             _ if message.starts_with(b"status") => {
-                let message = std::str::from_utf8(message).map_err(|_| "invalid status request")?;
-                let (target, field) = message
-                    .split_once('=')
-                    .map_or((message, None), |(target, field)| (target, Some(field)));
-                let (name, tool) = target
-                    .split_once('@')
-                    .map_or((target, None), |(name, tool)| (name, Some(tool)));
+                let (name, tool, field) = split_request(text("invalid status request")?);
                 let json = match name {
                     "status" => false,
                     "status_json" => true,
                     _ => return Err("invalid status request"),
                 };
-                let tool = tool
-                    .map(|tool| crate::cli::tool_name(tool).map_err(|_| "invalid status tool"))
-                    .transpose()?;
+                let tool = parse_tool(tool, "invalid status tool")?;
                 let field = field
-                    .map(|field| {
-                        clap::ValueEnum::from_str(field, false).map_err(|_| "invalid status field")
-                    })
-                    .transpose()?;
-                if tool.is_some()
-                    && field.is_some_and(|field: crate::cli::StatusField| !field.is_tool_field())
-                {
+                    .map(|field| StatusField::from_str(field, false))
+                    .transpose()
+                    .map_err(|_| "invalid status field")?;
+                if tool.is_some() && field.is_some_and(|field| !field.is_tool_field()) {
                     return Err("tool target requires a tool property");
                 }
                 Ok(Self::Status {
@@ -238,54 +255,18 @@ impl Command {
                     check: false,
                 })
             }
-            b"toggle" => Ok(Self::Toggle),
-            b"activate" => Ok(Self::Activate),
-            b"deactivate" => Ok(Self::Deactivate),
-            b"clear" => Ok(Self::Clear { deactivate: false }),
-            b"clear_and_deactivate" => Ok(Self::Clear { deactivate: true }),
-            b"exit" => Ok(Self::Exit),
-            b"annotations_show" => Ok(Self::Annotations {
-                command: VisibilityCommand::Show,
-            }),
-            b"annotations_hide" => Ok(Self::Annotations {
-                command: VisibilityCommand::Hide,
-            }),
-            b"annotations_toggle" => Ok(Self::Annotations {
-                command: VisibilityCommand::Toggle,
-            }),
-            b"presentation_show" => Ok(Self::Presentation {
-                command: PresentationCommand::Show,
-            }),
-            b"presentation_hide" => Ok(Self::Presentation {
-                command: PresentationCommand::Hide,
-            }),
-            b"presentation_toggle" => Ok(Self::Presentation {
-                command: PresentationCommand::Toggle,
-            }),
-            b"whiteboard_show" => Ok(Self::Whiteboard {
-                command: WhiteboardCommand::Show,
-            }),
-            b"whiteboard_hide" => Ok(Self::Whiteboard {
-                command: WhiteboardCommand::Hide,
-            }),
-            b"whiteboard_toggle" => Ok(Self::Whiteboard {
-                command: WhiteboardCommand::Toggle,
-            }),
-            b"whiteboard_clear" => Ok(Self::Whiteboard {
-                command: WhiteboardCommand::Clear,
-            }),
             _ if let Some(color) = message.strip_prefix(b"whiteboard_color=") => {
-                let color = crate::cli::opaque_color(color_str(color)?)
+                let color =
+                    std::str::from_utf8(color).map_err(|_| "expected color to be valid utf8")?;
+                let color = cli::opaque_color(color)
                     .map_err(|_| "invalid or transparent whiteboard color")?;
-                Ok(Self::Whiteboard {
-                    command: WhiteboardCommand::SetColor { color },
-                })
+                Ok(Self::Whiteboard(Board::SetColor { color }))
             }
-            _ => Err("invalid command"),
+            _ => FIXED_COMMANDS
+                .iter()
+                .find(|(name, _)| name.as_bytes() == message)
+                .map(|(_, command)| command.clone())
+                .ok_or("invalid command"),
         }
     }
-}
-
-fn color_str(color: &[u8]) -> Result<&str, &'static str> {
-    std::str::from_utf8(color).map_err(|_| "expected color to be valid utf8")
 }

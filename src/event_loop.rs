@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::time::Instant;
 
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
@@ -6,7 +7,7 @@ use wayland_client::backend::WaylandError;
 use crate::cli::{Command, MAX_COMMAND_SIZE};
 use crate::config::{Config, Settings};
 use crate::ipc::ControlSocket;
-use crate::state;
+use crate::state::{self, State};
 
 // Yield to drawing, input and the other endpoint even when a queue stays full.
 const MAX_SOCKET_BATCH: usize = 32;
@@ -120,62 +121,57 @@ pub(crate) fn run(mut settings: Settings, mut config: Config) -> Result<(), Stri
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
                     Err(error) => return Err(format!("socket read failed: {error}")),
                 };
-                let reply = |response: &[u8]| {
-                    if let Some(sender) = &sender
-                        && let Err(error) = rustix::net::sendto(
-                            socket,
-                            response,
-                            rustix::net::SendFlags::empty(),
-                            sender,
-                        )
+                let response = if size > MAX_COMMAND_SIZE {
+                    log::warn!("socket message exceeded {MAX_COMMAND_SIZE} bytes");
+                    Some(Err("command is too large".into()))
+                } else {
+                    match Command::deserialize(&message[..size]) {
+                        Ok(Command::Exit) => return Ok(()),
+                        Ok(command) => handle(&mut state, command),
+                        Err(error) => {
+                            log::warn!("ignored socket message: {error}");
+                            Some(Err(error.into()))
+                        }
+                    }
+                };
+                if let (Some(response), Some(sender)) = (response, &sender) {
+                    let response = response.unwrap_or_else(|error| format!("error:{error}").into());
+                    let flags = rustix::net::SendFlags::empty();
+                    if let Err(error) =
+                        rustix::net::sendto(socket, response.as_bytes(), flags, sender)
                     {
                         log::warn!("could not send response: {error}");
                     }
-                };
-                if size > MAX_COMMAND_SIZE {
-                    log::warn!("socket message exceeded {MAX_COMMAND_SIZE} bytes");
-                    reply(b"error:command is too large");
-                    continue;
-                }
-                let command = match Command::deserialize(&message[..size]) {
-                    Ok(command) => command,
-                    Err(error) => {
-                        log::warn!("ignored socket message: {error}");
-                        reply(format!("error:{error}").as_bytes());
-                        continue;
-                    }
-                };
-                match command {
-                    Command::Use { tool } => match state.select_tool(tool) {
-                        Ok(()) => reply(b"ok"),
-                        Err(error) => reply(format!("error:{error}").as_bytes()),
-                    },
-                    Command::Set { tool, setting } => match state.set_tool_setting(tool, setting) {
-                        Ok(()) => reply(b"ok"),
-                        Err(error) => reply(format!("error:{error}").as_bytes()),
-                    },
-                    Command::Toggle => state.toggle_input(),
-                    Command::Activate => state.set_input_active(true),
-                    Command::Deactivate => state.set_input_active(false),
-                    Command::Clear { deactivate } => {
-                        state.clear();
-                        if deactivate {
-                            state.set_input_active(false);
-                        }
-                    }
-                    Command::Whiteboard { command } => state.whiteboard(command),
-                    Command::Presentation { command } => state.set_presentation(command),
-                    Command::Annotations { command } => state.annotations(command),
-                    Command::Status {
-                        field, tool, json, ..
-                    } => match state.status_reply(field, tool, json) {
-                        Ok(response) => reply(response.as_bytes()),
-                        Err(error) => reply(format!("error:{error}").as_bytes()),
-                    },
-                    Command::Exit => return Ok(()),
                 }
             }
         }
         state.handle_timeouts(Instant::now());
     }
+}
+
+/// Applies a command and returns the reply for commands that expect one.
+fn handle(state: &mut State, command: Command) -> Option<Result<Cow<'static, str>, String>> {
+    let ok = |result: Result<(), String>| Some(result.map(|()| "ok".into()));
+    match command {
+        Command::Use { tool } => return ok(state.select_tool(tool)),
+        Command::Set { tool, setting } => return ok(state.set_tool_setting(tool, setting)),
+        Command::Status {
+            field, tool, json, ..
+        } => return Some(state.status_reply(field, tool, json)),
+        Command::Toggle => state.toggle_input(),
+        Command::Activate => state.set_input_active(true),
+        Command::Deactivate => state.set_input_active(false),
+        Command::Clear { deactivate } => {
+            state.clear();
+            if deactivate {
+                state.set_input_active(false);
+            }
+        }
+        Command::Whiteboard(command) => state.whiteboard(command),
+        Command::Presentation(visibility) => state.set_presentation(visibility),
+        Command::Annotations(visibility) => state.annotations(visibility),
+        // The event loop stops before handling exit.
+        Command::Exit => {}
+    }
+    None
 }
