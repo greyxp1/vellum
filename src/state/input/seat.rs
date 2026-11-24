@@ -27,7 +27,7 @@ impl Dispatch<WlSeat, ()> for State {
                 .cursor_shape_manager
                 .as_ref()
                 .map(|manager| manager.get_pointer(&pointer, qhandle, ()));
-            state.pointer.set_cursor_device(shape_device);
+            state.pointer.focus.device = shape_device;
             state.wayland.pointer = Some(pointer);
         } else if !capabilities.contains(Capability::Pointer)
             && let Some(pointer) = state.wayland.pointer.take()

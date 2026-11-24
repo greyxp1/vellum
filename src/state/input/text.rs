@@ -139,9 +139,7 @@ impl State {
         if self.text_input.focused_output == Some(output) {
             self.text_input.focused_output = None;
             self.text_input.reset();
-            if self.draw.clear_preedit() {
-                self.request_render();
-            }
+            self.render_requested |= self.draw.clear_preedit();
         }
     }
 
@@ -225,9 +223,7 @@ impl Dispatch<ZwpTextInputV3, ()> for State {
                     state.draw.damage(output);
                 }
                 state.apply_action(Action::ApplyTextInput(batch));
-                if resume {
-                    state.request_render();
-                }
+                state.render_requested |= resume;
             }
             Event::Action {
                 action: WEnum::Value(ProtocolAction::Submit),

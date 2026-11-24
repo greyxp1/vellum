@@ -20,12 +20,16 @@ pub(super) use pointer::PointerState;
 pub(super) use tablet::TabletState;
 pub(super) use text::TextInputState;
 
+use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::{
+    Shape, WpCursorShapeDeviceV1,
+};
 use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::KeyboardInteractivity;
 
 use super::State;
 use crate::OutputId;
-use crate::config::DrawOn;
-use crate::draw::{self, Action, Modifiers, Point};
+use crate::cli::{Visibility, WhiteboardCommand};
+use crate::config::{BindingAction, DrawOn};
+use crate::draw::{self, Action, Cursor, CursorHint, DrawState, Modifiers, Point, ToolOverride};
 use crate::tool::Primitive;
 
 const MAX_PENDING_PEN_SAMPLES: usize = 64;
@@ -78,26 +82,101 @@ impl PendingPenMotion {
     }
 }
 
+/// Output, position and compositor cursor of one pointing device.
+#[derive(Default)]
+struct CursorFocus {
+    device: Option<WpCursorShapeDeviceV1>,
+    output: Option<OutputId>,
+    position: Option<Point>,
+    serial: Option<u32>,
+    shown: Option<Cursor>,
+}
+
+impl CursorFocus {
+    fn enter(&mut self, output: Option<OutputId>, serial: u32) {
+        self.output = output;
+        self.serial = Some(serial);
+        self.shown = None;
+    }
+
+    fn leave(&mut self) {
+        self.output = None;
+        self.serial = None;
+    }
+
+    fn clear(&mut self) {
+        self.leave();
+        self.position = None;
+    }
+
+    fn restore(&mut self) {
+        if let (Some(serial), Some(device)) = (self.serial, &self.device) {
+            device.set_shape(serial, Shape::Default);
+        }
+        self.shown = None;
+    }
+
+    /// Shows the tool cursor at the device position, returning whether its preview changed.
+    fn show(
+        &mut self,
+        draw: &mut DrawState,
+        tool_override: ToolOverride,
+        pen_tip: Option<Point>,
+        hide: impl FnOnce(u32),
+    ) -> Option<bool> {
+        let point = self.position?;
+        let cursor = draw.cursor(point, tool_override);
+        let changed = draw.set_tool_cursor(match cursor.tool() {
+            Some(preview) if self.device.is_some() => {
+                let pen_tip = pen_tip.filter(|_| preview.tool == Primitive::Pen);
+                Some((pen_tip.unwrap_or(point), preview))
+            }
+            _ => None,
+        });
+        if let (Some(serial), Some(device)) = (self.serial, &self.device)
+            && !self
+                .shown
+                .is_some_and(|shown| shown.same_compositor_cursor(cursor))
+        {
+            match cursor.shape() {
+                Some(hint) => device.set_shape(serial, cursor_shape(hint)),
+                None => hide(serial),
+            }
+            self.shown = Some(cursor);
+        }
+        Some(changed)
+    }
+}
+
+fn cursor_shape(hint: CursorHint) -> Shape {
+    match hint {
+        CursorHint::Crosshair => Shape::Crosshair,
+        CursorHint::Move => Shape::Move,
+        CursorHint::NsResize => Shape::NsResize,
+        CursorHint::EwResize => Shape::EwResize,
+        CursorHint::NwseResize => Shape::NwseResize,
+        CursorHint::NeswResize => Shape::NeswResize,
+        CursorHint::Text => Shape::Text,
+    }
+}
+
 impl State {
     fn focus_output(&mut self, output: OutputId) {
-        if !self.is_active() || !self.wayland.outputs.contains_key(&output) {
+        let current = self.draw_on == DrawOn::Current;
+        if !self.is_active()
+            || !self.wayland.outputs.contains_key(&output)
+            || (current
+                && self
+                    .selected_output
+                    .is_some_and(|selected| selected != output))
+        {
             return;
         }
-        let selection_changed =
-            self.draw_on == DrawOn::Current && self.selected_output != Some(output);
-        if self.draw_on == DrawOn::Current {
-            if let Some(selected) = self.selected_output
-                && selected != output
-            {
-                return;
-            }
-            self.selected_output = Some(output);
-            if selection_changed {
-                self.damage_presentation();
-            }
-        }
+        let selection_changed = current && self.selected_output.is_none();
         self.input_output = Some(output);
         if selection_changed {
+            self.selected_output = Some(output);
+            self.damage_presentation();
             self.freeze_output_selected();
         }
         if self.draw.is_editing_text() || self.pointer.keyboard_grab_active() {
@@ -177,10 +256,16 @@ impl State {
         self.request_render();
     }
 
+    /// Ends pointer and tablet gestures. Suppression drains held input first.
+    pub(super) fn cancel_gestures(&mut self, suppress: bool) {
+        self.pointer.cancel_gesture(suppress);
+        self.tablet.cancel_gesture(suppress);
+    }
+
     fn interrupt_pointer_gesture(&mut self) {
         let was_grabbed = self.pointer.input_grab_active();
-        let position = self.pointer.position();
-        self.pointer.cancel_gesture();
+        let position = self.pointer.focus.position;
+        self.pointer.cancel_gesture(false);
         if was_grabbed {
             self.finish_interrupted_gesture(position);
             self.update_output_input();
@@ -189,13 +274,22 @@ impl State {
 
     pub(super) fn finish_interrupted_gesture(&mut self, position: Option<Point>) {
         self.flush_pen_motion();
-        if self
-            .draw
-            .finish_pointer_interaction(position, self.modifiers())
-        {
-            self.request_render();
-        }
+        let modifiers = self.modifiers();
+        self.render_requested |= self.draw.finish_pointer_interaction(position, modifiers);
         self.pending_pen_motion.reset(None);
+    }
+
+    /// Applies state-level toggles, returning whether the binding was one.
+    fn toggle_binding(&mut self, binding: BindingAction) -> bool {
+        match binding {
+            BindingAction::ToggleWhiteboard => {
+                self.whiteboard(WhiteboardCommand::Visibility(Visibility::Toggle));
+            }
+            BindingAction::TogglePresentation => self.set_presentation(Visibility::Toggle),
+            BindingAction::ToggleFreeze => self.toggle_freeze(),
+            _ => return false,
+        }
+        true
     }
 
     pub(super) fn apply_action(&mut self, action: Action) {
@@ -215,16 +309,14 @@ impl State {
             _ => {}
         }
         self.flush_pen_motion();
-        self.pointer.clear_released_pen_tip();
+        self.pointer.released_pen_tip = None;
         let clear_on_cancel = self.clear_on_cancel && matches!(action, Action::Cancel);
-        let anchor = self.pointer.position();
+        let anchor = self.pointer.focus.position;
         let effect = self.draw.handle_action(action, anchor);
         if self.freeze.capturing() {
             self.stop_freeze(false);
         }
-        if effect.changed {
-            self.request_render();
-        }
+        self.render_requested |= effect.changed;
         if effect.deactivate {
             if clear_on_cancel {
                 self.clear();
@@ -242,9 +334,7 @@ impl State {
     pub(super) fn modifiers_changed(&mut self) {
         self.flush_pen_motion();
         let modifiers = self.modifiers();
-        if self.draw.modifiers_changed(modifiers) {
-            self.request_render();
-        }
+        self.render_requested |= self.draw.modifiers_changed(modifiers);
         self.refresh_cursor();
     }
 
@@ -252,34 +342,26 @@ impl State {
         &mut self,
         point: Point,
         modifiers: Modifiers,
-        tool_override: draw::ToolOverride,
+        tool_override: ToolOverride,
     ) {
         self.pending_pen_motion.reset(None);
         if self.draw.picker_active() {
-            if tool_override == draw::ToolOverride::Eraser {
-                self.dismiss_picker();
-            } else {
-                if self.draw.picker_motion(point) {
-                    self.request_render();
-                }
+            if tool_override != ToolOverride::Eraser {
+                self.render_requested |= self.draw.picker_motion(point);
                 return;
             }
+            self.dismiss_picker();
         }
         self.focus_keyboard_on_input();
-        let changed = self.draw.pointer_down(point, modifiers, tool_override);
+        self.render_requested |= self.draw.pointer_down(point, modifiers, tool_override);
         if self.draw.is_drawing_pen() {
             self.pending_pen_motion.reset(Some(point));
-        }
-        if changed {
-            self.request_render();
         }
     }
 
     pub(super) fn pointer_motion(&mut self, point: Point, modifiers: Modifiers) {
         if self.draw.picker_active() {
-            if self.draw.picker_motion(point) {
-                self.request_render();
-            }
+            self.render_requested |= self.draw.picker_motion(point);
             return;
         }
         // Preserve one real bend inside each display frame without letting a
@@ -293,9 +375,7 @@ impl State {
             self.request_render();
             return;
         }
-        if self.draw.pointer_motion(point, modifiers) {
-            self.request_render();
-        }
+        self.render_requested |= self.draw.pointer_motion(point, modifiers);
     }
 
     pub(super) fn pointer_up(
@@ -316,18 +396,13 @@ impl State {
             return None;
         }
         let pen_tip = self.draw.pen_release_tip(point, modifiers);
-        if self.draw.pointer_up(point, modifiers) {
-            self.request_render();
-        }
+        self.render_requested |= self.draw.pointer_up(point, modifiers);
         self.pending_pen_motion.reset(None);
         pen_tip
     }
 
     pub(super) fn open_picker(&mut self, point: Point) {
-        self.flush_pen_motion();
-        self.draw
-            .finish_pointer_interaction(Some(point), self.modifiers());
-        self.pending_pen_motion.reset(None);
+        self.finish_interrupted_gesture(Some(point));
         self.draw.open_picker(point);
         self.request_render();
     }
@@ -341,9 +416,7 @@ impl State {
     }
 
     pub(super) fn dismiss_picker(&mut self) {
-        if self.draw.dismiss_picker() {
-            self.request_render();
-        }
+        self.render_requested |= self.draw.dismiss_picker();
     }
 
     pub(super) fn text_click_at(&mut self, point: Point, clicks: u8) -> bool {
@@ -351,9 +424,7 @@ impl State {
             return false;
         };
         self.focus_keyboard_on_input();
-        if changed {
-            self.request_render();
-        }
+        self.render_requested |= changed;
         true
     }
 
@@ -364,44 +435,17 @@ impl State {
     }
 
     pub(super) fn refresh_cursor(&mut self) {
-        if !self.is_active() {
-            self.clear_tool_cursor();
-            return;
+        let mut shown = None;
+        if self.is_active() && !self.pointer.input_grab_active() {
+            shown = self.tablet.show_cursor(&mut self.draw);
         }
-        if !self.pointer.input_grab_active()
-            && let Some(preview_changed) = self.tablet.refresh_cursor(&mut self.draw)
+        if self.is_active()
+            && shown.is_none()
+            && let Some(pointer) = &self.wayland.pointer
         {
-            if preview_changed {
-                self.request_render();
-            }
-            return;
+            shown = self.pointer.show_cursor(&mut self.draw, pointer);
         }
-        let (Some(point), Some(pointer)) = (self.pointer.position(), &self.wayland.pointer) else {
-            self.clear_tool_cursor();
-            return;
-        };
-        let cursor = self.draw.cursor(point, self.pointer.tool_override());
-        let preview_changed = self.draw.set_tool_cursor(match cursor.tool() {
-            Some(preview) if self.pointer.tool_cursor_supported() => {
-                let point = if preview.tool == Primitive::Pen {
-                    self.pointer.released_pen_tip().unwrap_or(point)
-                } else {
-                    point
-                };
-                Some((point, preview))
-            }
-            _ => None,
-        });
-        self.pointer.refresh_cursor(pointer, cursor);
-        if preview_changed {
-            self.request_render();
-        }
-    }
-
-    fn clear_tool_cursor(&mut self) {
-        if self.draw.set_tool_cursor(None) {
-            self.request_render();
-        }
+        self.render_requested |= shown.unwrap_or_else(|| self.draw.set_tool_cursor(None));
     }
 
     pub(super) fn flush_pen_motion(&mut self) {

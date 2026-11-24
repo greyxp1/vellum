@@ -181,8 +181,7 @@ impl State {
         {
             self.pending_pen_motion.reset(None);
             self.keyboard.cancel_repeat();
-            self.pointer.suppress_gesture();
-            self.tablet.suppress_gestures();
+            self.cancel_gestures(true);
             self.draw.deactivate(false);
             self.sync_text_input();
         }

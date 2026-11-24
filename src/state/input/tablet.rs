@@ -6,10 +6,6 @@ use wayland_client::Proxy;
 use wayland_client::QueueHandle;
 use wayland_client::WEnum;
 
-use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::{
-    Shape, WpCursorShapeDeviceV1,
-};
-
 use wayland_protocols::wp::tablet::zv2::client::zwp_tablet_pad_group_v2::ZwpTabletPadGroupV2;
 use wayland_protocols::wp::tablet::zv2::client::zwp_tablet_pad_ring_v2::ZwpTabletPadRingV2;
 use wayland_protocols::wp::tablet::zv2::client::zwp_tablet_pad_strip_v2::ZwpTabletPadStripV2;
@@ -26,10 +22,9 @@ use wayland_protocols::wp::tablet::zv2::client::zwp_tablet_seat_v2::EVT_PAD_ADDE
 use wayland_protocols::wp::tablet::zv2::client::zwp_tablet_seat_v2::EVT_TABLET_ADDED_OPCODE;
 use wayland_protocols::wp::tablet::zv2::client::zwp_tablet_seat_v2::EVT_TOOL_ADDED_OPCODE;
 
-use super::pointer::update_cursor;
-use super::short_click;
+use super::{CursorFocus, short_click};
 use crate::OutputId;
-use crate::draw::{Cursor, DrawState, Point, ToolOverride};
+use crate::draw::{DrawState, Point, ToolOverride};
 use crate::state::State;
 
 const EVDEV_STYLUS: u32 = 331;
@@ -46,13 +41,9 @@ pub(in crate::state) struct TabletState {
 
 #[derive(Default)]
 struct ToolState {
-    event_sequence: EventSequence,
-    cursor_shape_device: Option<WpCursorShapeDeviceV1>,
-    cursor_serial: Option<u32>,
-    current_cursor: Option<Cursor>,
+    frame: ToolFrame,
+    focus: CursorFocus,
     eraser: bool,
-    output: Option<OutputId>,
-    pos: Option<Point>,
     pen_held: bool,
     buttons_held: u8,
     suppressed_gesture: bool,
@@ -63,41 +54,31 @@ impl ToolState {
     fn clear_gesture(&mut self) {
         self.pen_held = false;
         self.buttons_held = 0;
-        self.suppressed_gesture = false;
-        self.button_press_time = None;
+        self.suppress_gesture();
     }
 
-    fn refresh_cursor(&mut self, tablet_tool: &ZwpTabletToolV2, cursor: Cursor) {
-        update_cursor(
-            self.cursor_serial,
-            self.cursor_shape_device.as_ref(),
-            &mut self.current_cursor,
-            cursor,
-            |serial| tablet_tool.set_cursor(serial, None, 0, 0),
-        );
+    /// Ignores held input until it is released.
+    fn suppress_gesture(&mut self) {
+        self.suppressed_gesture = self.pen_held || self.buttons_held != 0;
+        self.button_press_time = None;
     }
 }
 
 impl TabletState {
-    pub(in crate::state) fn refresh_cursor(&mut self, draw: &mut DrawState) -> Option<bool> {
-        let tablet_tool = self.gesture_owner.as_ref().or(self.cursor_tool.as_ref())?;
+    pub(super) fn show_cursor(&mut self, draw: &mut DrawState) -> Option<bool> {
+        let id = self.gesture_owner.as_ref().or(self.cursor_tool.as_ref())?;
         let tool = self
             .tools
-            .get_mut(tablet_tool)
-            .filter(|tool| tool.cursor_serial.is_some() && tool.output.is_some())?;
-        let point = tool.pos?;
+            .get_mut(id)
+            .filter(|tool| tool.focus.serial.is_some() && tool.focus.output.is_some())?;
         let tool_override =
             ToolOverride::from_eraser(tool.eraser || (tool.buttons_held != 0 && tool.pen_held));
-        let cursor = draw.cursor(point, tool_override);
-        let changed = draw.set_tool_cursor(match cursor.tool() {
-            Some(preview) if tool.cursor_shape_device.is_some() => Some((point, preview)),
-            _ => None,
-        });
-        tool.refresh_cursor(tablet_tool, cursor);
-        Some(changed)
+        tool.focus.show(draw, tool_override, None, |serial| {
+            id.set_cursor(serial, None, 0, 0)
+        })
     }
 
-    pub(in crate::state) fn clear_cursor_tool(&mut self) {
+    pub(super) fn clear_cursor_tool(&mut self) {
         self.cursor_tool = None;
     }
 
@@ -105,52 +86,41 @@ impl TabletState {
         self.gesture_owner.is_some()
     }
 
-    pub(in crate::state) fn cancel_gesture(&mut self) {
+    /// Ends the gesture. Suppression keeps held input so its release drains.
+    pub(super) fn cancel_gesture(&mut self, suppress: bool) {
         self.gesture_owner = None;
         for tool in self.tools.values_mut() {
-            tool.event_sequence.pressed = 0;
-            tool.event_sequence.released = 0;
-            tool.clear_gesture();
+            tool.frame.pressed = 0;
+            tool.frame.released = 0;
+            if suppress {
+                tool.suppress_gesture();
+            } else {
+                tool.clear_gesture();
+            }
         }
     }
 
     pub(in crate::state) fn restore_cursors(&mut self) {
         for tool in self.tools.values_mut() {
-            if let (Some(serial), Some(device)) = (tool.cursor_serial, &tool.cursor_shape_device) {
-                device.set_shape(serial, Shape::Default);
-            }
-            tool.current_cursor = None;
-        }
-    }
-
-    pub(in crate::state) fn suppress_gestures(&mut self) {
-        self.gesture_owner = None;
-        for tool in self.tools.values_mut() {
-            tool.event_sequence.pressed = 0;
-            tool.event_sequence.released = 0;
-            tool.suppressed_gesture = tool.pen_held || tool.buttons_held != 0;
-            tool.button_press_time = None;
+            tool.focus.restore();
         }
     }
 
     pub(in crate::state) fn remove_output(&mut self, output: OutputId) -> Option<Point> {
         let mut end_position = None;
         for (id, tool) in &mut self.tools {
-            if tool.output != Some(output) {
+            if tool.focus.output != Some(output) {
                 continue;
             }
             if self.gesture_owner.as_ref() == Some(id) {
-                end_position = tool.pos;
+                end_position = tool.focus.position;
                 self.gesture_owner = None;
             }
             if self.cursor_tool.as_ref() == Some(id) {
                 self.cursor_tool = None;
             }
-            tool.event_sequence = EventSequence::default();
-            tool.output = None;
-            tool.pos = None;
-            tool.cursor_serial = None;
-            tool.current_cursor = None;
+            tool.frame = ToolFrame::default();
+            tool.focus.clear();
             tool.clear_gesture();
         }
         end_position
@@ -168,18 +138,14 @@ impl Dispatch<ZwpTabletSeatV2, (), State> for TabletState {
     ) {
         use wayland_protocols::wp::tablet::zv2::client::zwp_tablet_seat_v2::Event;
         if let Event::ToolAdded { id } = event {
-            let cursor_shape_device = state
+            let device = state
                 .wayland
                 .cursor_shape_manager
                 .as_ref()
                 .map(|manager| manager.get_tablet_tool_v2(&id, qhandle, ()));
-            state.tablet.tools.insert(
-                id,
-                ToolState {
-                    cursor_shape_device,
-                    ..Default::default()
-                },
-            );
+            let mut tool = ToolState::default();
+            tool.focus.device = device;
+            state.tablet.tools.insert(id, tool);
         }
     }
 
@@ -266,12 +232,12 @@ impl Dispatch<ZwpTabletToolV2, (), State> for TabletState {
             return;
         }
         if let Event::Removed = event {
-            let tool = state.tablet.tools.remove(tablet_tool);
+            let tool = state.tablet.tools.remove(tablet_tool).unwrap_or_default();
             if state.tablet.gesture_owner.as_ref() == Some(tablet_tool) {
                 state.tablet.gesture_owner = None;
-                state.finish_interrupted_gesture(tool.as_ref().and_then(|tool| tool.pos));
+                state.finish_interrupted_gesture(tool.focus.position);
             }
-            if let Some(device) = tool.and_then(|tool| tool.cursor_shape_device) {
+            if let Some(device) = tool.focus.device {
                 device.destroy();
             }
             if state.tablet.cursor_tool.as_ref() == Some(tablet_tool) {
@@ -282,80 +248,62 @@ impl Dispatch<ZwpTabletToolV2, (), State> for TabletState {
             state.update_output_input();
             return;
         }
-        let proximity_output = match &event {
-            Event::ProximityIn { surface, .. } => Some(state.output_for_surface(surface)),
+        let entered = match &event {
+            Event::ProximityIn {
+                serial, surface, ..
+            } => Some((state.output_for_surface(surface), *serial)),
             _ => None,
         };
         let active = state.is_active();
         let Some(tool) = state.tablet.tools.get_mut(tablet_tool) else {
             return;
         };
-        if let Some(output) = proximity_output {
-            tool.output = output;
+        if let Some((output, serial)) = entered {
+            tool.focus.enter(output, serial);
         }
         if let Event::Type { tool_type } = &event {
             tool.eraser = matches!(tool_type, WEnum::Value(Type::Eraser));
         }
-        let output = tool.output;
+        let output = tool.focus.output;
         let origin = output
             .and_then(|output| state.wayland.outputs.get(&output))
             .map_or_else(Point::default, |output| output.origin);
-        let Some(sequence) = tool
-            .event_sequence
-            .dispatch(event, origin, &mut tool.buttons_held)
-        else {
+        let Some(frame) = tool.frame.dispatch(event, origin, &mut tool.buttons_held) else {
             return;
         };
-        if let Some(pos) = sequence.motion {
-            tool.pos = Some(pos);
+        if let Some(pos) = frame.motion {
+            tool.focus.position = Some(pos);
         }
-        if sequence.pressed(PEN) {
-            tool.pen_held = true;
-        }
-        if sequence.released(PEN) {
-            tool.pen_held = false;
-        }
-        if let Some(serial) = sequence.enter_serial {
-            tool.cursor_serial = Some(serial);
-            tool.current_cursor = None;
-        }
-        if sequence.proximity_out {
-            tool.cursor_serial = None;
-            tool.current_cursor = None;
-            tool.output = None;
+        tool.pen_held = (tool.pen_held || frame.pressed(PEN)) && !frame.released(PEN);
+        if frame.proximity_out {
+            tool.focus.leave();
         }
         if !active || state.freeze.capturing() || output.is_none() {
             tool.clear_gesture();
             return;
         }
-        let pen_pressed = sequence.pressed(PEN);
-        let pen_released = sequence.released(PEN);
-        let button_pressed = sequence.pressed(BUTTON);
-        let button_released = sequence.released(BUTTON);
-        let eraser = tool.eraser;
+        let (pen_pressed, pen_released) = (frame.pressed(PEN), frame.released(PEN));
+        let (button_pressed, button_released) = (frame.pressed(BUTTON), frame.released(BUTTON));
         if button_pressed {
-            tool.button_press_time = Some(sequence.time);
+            tool.button_press_time = Some(frame.time);
         }
         let short_button_click =
-            button_released && short_click(tool.button_press_time.take(), Some(sequence.time));
-        let pos = tool.pos;
-        let pen_held = tool.pen_held;
+            button_released && short_click(tool.button_press_time.take(), Some(frame.time));
+        let (eraser, pos, pen_held) = (tool.eraser, tool.focus.position, tool.pen_held);
         let button_held = tool.buttons_held != 0;
-        if sequence.proximity_out {
-            tool.pen_held = false;
-            tool.buttons_held = 0;
-            tool.button_press_time = None;
-        }
-        if state.pointer.input_grab_active()
+        let suppressed = state.pointer.input_grab_active()
             || tool.suppressed_gesture
             || state
                 .tablet
                 .gesture_owner
                 .as_ref()
-                .is_some_and(|owner| owner != tablet_tool)
-        {
-            tool.suppressed_gesture = !sequence.proximity_out && (pen_held || button_held);
-            tool.button_press_time = None;
+                .is_some_and(|owner| owner != tablet_tool);
+        if frame.proximity_out {
+            tool.clear_gesture();
+        } else if suppressed {
+            tool.suppress_gesture();
+        }
+        if suppressed {
             return;
         }
         if let Some(output) = output {
@@ -363,100 +311,77 @@ impl Dispatch<ZwpTabletToolV2, (), State> for TabletState {
         }
         // Selecting the first output can start an activation-time capture.
         if state.freeze.capturing() {
-            state.tablet.cancel_gesture();
+            state.tablet.cancel_gesture(false);
             return;
         }
+        let tablet = &mut state.tablet;
         if (pen_pressed || button_pressed) && pos.is_some() {
-            state.tablet.gesture_owner = Some(tablet_tool.clone());
+            tablet.gesture_owner = Some(tablet_tool.clone());
         }
-        if !sequence.proximity_out {
-            state.tablet.cursor_tool = Some(tablet_tool.clone());
-        } else if state.tablet.cursor_tool.as_ref() == Some(tablet_tool) {
-            state.tablet.cursor_tool = None;
+        if !frame.proximity_out {
+            tablet.cursor_tool = Some(tablet_tool.clone());
+        } else if tablet.cursor_tool.as_ref() == Some(tablet_tool) {
+            tablet.cursor_tool = None;
         }
         let modifiers = state.modifiers();
-        if state.tablet.gesture_owner.as_ref() == Some(tablet_tool) {
-            if button_pressed && let Some(pos) = pos {
-                if pen_held {
-                    state.pointer_up(pos, modifiers, false);
-                    state.pointer_down(pos, modifiers, ToolOverride::Eraser);
-                } else {
-                    state.toggle_picker(pos);
-                }
-            }
-            if pen_pressed
-                && !button_pressed
-                && let Some(pos) = pos
-            {
+        if state.tablet.gesture_owner.as_ref() == Some(tablet_tool)
+            && let Some(pos) = pos
+        {
+            if button_pressed && pen_held {
+                state.pointer_up(pos, modifiers, false);
+                state.pointer_down(pos, modifiers, ToolOverride::Eraser);
+            } else if button_pressed {
+                state.toggle_picker(pos);
+            } else if pen_pressed {
                 if eraser {
                     state.dismiss_picker();
                 }
-                state.pointer_down(
-                    pos,
-                    modifiers,
-                    ToolOverride::from_eraser(eraser || button_held),
-                );
+                let tool_override = ToolOverride::from_eraser(eraser || button_held);
+                state.pointer_down(pos, modifiers, tool_override);
             }
-            if button_released
-                && pen_held
-                && !pen_released
-                && let Some(pos) = pos
-            {
+            if button_released && pen_held && !pen_released {
                 state.pointer_up(pos, modifiers, false);
                 state.pointer_down(pos, modifiers, ToolOverride::from_eraser(eraser));
-            } else if button_released
-                && state.draw.picker_active()
-                && let Some(pos) = pos
-            {
+            } else if button_released && state.draw.picker_active() {
                 state.pointer_up(pos, modifiers, short_button_click);
             }
             if !button_pressed
                 && !button_released
-                && sequence.motion.is_some()
+                && frame.motion.is_some()
                 && (pen_held || (state.draw.picker_active() && button_held))
-                && let Some(pos) = pos
             {
                 state.pointer_motion(pos, modifiers);
             }
-            if pen_released && let Some(pos) = pos {
+            if pen_released || frame.proximity_out {
                 state.pointer_up(pos, modifiers, false);
             }
         }
-        if sequence.proximity_out
-            && !pen_released
-            && state.tablet.gesture_owner.as_ref() == Some(tablet_tool)
-            && let Some(pos) = pos
-        {
-            state.pointer_up(pos, modifiers, false);
-        }
-        if sequence.proximity_out || (!pen_held && !button_held) {
+        if frame.proximity_out || (!pen_held && !button_held) {
             state.tablet.gesture_owner = None;
         }
         state.refresh_cursor();
-        if (sequence.pressed | sequence.released) != 0 || sequence.proximity_out {
+        if (frame.pressed | frame.released) != 0 || frame.proximity_out {
             state.update_output_input();
         }
     }
 }
 
-#[derive(Default, Clone, Copy)]
-struct EventSequence {
+/// Tool events accumulated until their frame.
+#[derive(Default)]
+struct ToolFrame {
     motion: Option<Point>,
-
     pressed: u8,
     released: u8,
-
-    enter_serial: Option<u32>,
     proximity_out: bool,
     time: u32,
 }
 
-impl EventSequence {
-    fn pressed(self, input: u8) -> bool {
+impl ToolFrame {
+    fn pressed(&self, input: u8) -> bool {
         self.pressed & input != 0
     }
 
-    fn released(self, input: u8) -> bool {
+    fn released(&self, input: u8) -> bool {
         self.released & input != 0
     }
 
@@ -466,40 +391,20 @@ impl EventSequence {
         origin: Point,
         buttons_held: &mut u8,
     ) -> Option<Self> {
-        use wayland_protocols::wp::tablet::zv2::client::zwp_tablet_tool_v2::Event;
+        use wayland_protocols::wp::tablet::zv2::client::zwp_tablet_tool_v2::{ButtonState, Event};
         match event {
-            Event::ProximityIn {
-                serial,
-                tablet: _,
-                surface: _,
-            } => {
-                self.enter_serial = Some(serial);
-            }
-            Event::ProximityOut => {
-                self.proximity_out = true;
-            }
-            Event::Down { serial: _ } => {
-                self.pressed |= PEN;
-            }
-            Event::Up => {
-                self.released |= PEN;
-            }
-            Event::Motion { x, y } => {
-                self.motion = Some(Point::new(x as f32, y as f32) + origin);
-            }
-            Event::Button {
-                serial: _,
-                button,
-                state: button_state,
-            } => {
-                use wayland_protocols::wp::tablet::zv2::client::zwp_tablet_tool_v2::ButtonState;
+            Event::ProximityOut => self.proximity_out = true,
+            Event::Down { .. } => self.pressed |= PEN,
+            Event::Up => self.released |= PEN,
+            Event::Motion { x, y } => self.motion = Some(Point::new(x as f32, y as f32) + origin),
+            Event::Button { button, state, .. } => {
                 let mask = match button {
                     EVDEV_STYLUS => 1,
                     EVDEV_STYLUS2 => 2,
                     _ => return None,
                 };
                 let was_held = *buttons_held != 0;
-                match button_state {
+                match state {
                     WEnum::Value(ButtonState::Pressed) => *buttons_held |= mask,
                     WEnum::Value(ButtonState::Released) => *buttons_held &= !mask,
                     _ => return None,

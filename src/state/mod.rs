@@ -148,13 +148,7 @@ impl State {
         self.pending_pen_motion.reset(None);
         self.keyboard.cancel_repeat();
         if !preserve_picker {
-            if was_active && mode != Mode::Inactive {
-                self.pointer.suppress_gesture();
-                self.tablet.suppress_gestures();
-            } else {
-                self.pointer.cancel_gesture();
-                self.tablet.cancel_gesture();
-            }
+            self.cancel_gestures(was_active && mode != Mode::Inactive);
         }
         self.draw.deactivate(preserve_picker);
         self.sync_text_input();
@@ -220,10 +214,6 @@ impl State {
         }
     }
 
-    fn toggle_whiteboard(&mut self) {
-        self.whiteboard(WhiteboardCommand::Visibility(Visibility::Toggle));
-    }
-
     pub(crate) fn set_presentation(&mut self, visibility: Visibility) {
         let enabled = visibility.apply(self.draw.is_presenting());
         if enabled && !self.is_active() {
@@ -237,18 +227,13 @@ impl State {
         self.pending_pen_motion.reset(None);
         self.keyboard.cancel_repeat();
         if !preserve_picker {
-            self.pointer.suppress_gesture();
-            self.tablet.suppress_gestures();
+            self.cancel_gestures(true);
         }
         self.draw.deactivate(preserve_picker);
         self.sync_text_input();
         self.draw.set_presentation(enabled);
         self.damage_presentation();
         self.refresh_cursor();
-    }
-
-    fn toggle_presentation(&mut self) {
-        self.set_presentation(Visibility::Toggle);
     }
 
     pub(crate) fn annotations(&mut self, visibility: Visibility) {

@@ -90,7 +90,6 @@ impl KeyboardState {
 
     pub(in crate::state) fn reload(&mut self, keybinds: Keybinds, text_keybinds: Keybinds) {
         self.cancel_repeat();
-        self.reset_compose();
         self.keybinds = keybinds;
         self.text_keybinds = text_keybinds;
     }
@@ -129,8 +128,7 @@ impl KeyboardState {
     }
 
     fn clear_keymap(&mut self) {
-        self.reset_compose();
-        self.repeat = None;
+        self.cancel_repeat();
         self.state = None;
         self.shift_free_state = None;
         self.modifiers = Modifiers::default();
@@ -326,19 +324,13 @@ impl Dispatch<WlKeyboard, ()> for State {
         use wayland_client::protocol::wl_keyboard::Event;
 
         match event {
-            Event::Keymap {
-                format: WEnum::Value(KeymapFormat::XkbV1),
-                fd,
-                size,
-            } => {
+            Event::Keymap { format, fd, size } => {
                 state.release_keyboard_gestures();
-                if let Err(error) = state.keyboard.set_keymap(fd, size) {
+                if format != WEnum::Value(KeymapFormat::XkbV1) {
+                    state.keyboard.clear_keymap();
+                } else if let Err(error) = state.keyboard.set_keymap(fd, size) {
                     log::error!("failed to load XKB keymap: {error}");
                 }
-            }
-            Event::Keymap { .. } => {
-                state.release_keyboard_gestures();
-                state.keyboard.clear_keymap();
             }
             Event::Modifiers {
                 mods_depressed,
@@ -375,26 +367,10 @@ impl Dispatch<WlKeyboard, ()> for State {
                 let editing = state.draw.is_editing_text();
                 let chord = state.keyboard.chord(key, editing, true);
                 let binding = chord.as_ref().and_then(|chord| chord.binding);
-                if state.keyboard_gesture(key, binding, true, time) {
-                    state.keyboard.cancel_repeat();
-                    return;
-                }
-                if binding == Some(BindingAction::ToggleWhiteboard) {
-                    state.keyboard.cancel_repeat();
-                    state.toggle_whiteboard();
-                    return;
-                }
-                if binding == Some(BindingAction::TogglePresentation) {
-                    state.keyboard.cancel_repeat();
-                    state.toggle_presentation();
-                    return;
-                }
-                if binding == Some(BindingAction::ToggleFreeze) {
-                    state.keyboard.cancel_repeat();
-                    state.toggle_freeze();
-                    return;
-                }
-                if state.freeze.capturing() {
+                if state.keyboard_gesture(key, binding, true, time)
+                    || binding.is_some_and(|binding| state.toggle_binding(binding))
+                    || state.freeze.capturing()
+                {
                     state.keyboard.cancel_repeat();
                     if binding == Some(BindingAction::Cancel) {
                         state.apply_action(Action::Cancel);
