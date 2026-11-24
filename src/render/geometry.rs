@@ -4,17 +4,28 @@ use peniko::Fill;
 use crate::config::SvgIcon;
 
 #[derive(Debug, Clone)]
-pub(super) enum DrawCommand {
-    Fill {
-        path: BezPath,
-        fill_rule: Fill,
-        color: [f32; 4],
-    },
-    Stroke {
-        path: BezPath,
-        stroke: Stroke,
-        color: [f32; 4],
-    },
+pub enum Paint {
+    Fill(Fill),
+    Stroke(Stroke),
+}
+
+impl From<Fill> for Paint {
+    fn from(rule: Fill) -> Self {
+        Self::Fill(rule)
+    }
+}
+
+impl From<Stroke> for Paint {
+    fn from(stroke: Stroke) -> Self {
+        Self::Stroke(stroke)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct DrawCommand {
+    pub path: BezPath,
+    pub paint: Paint,
+    pub color: [f32; 4],
 }
 
 #[derive(Debug, Clone, Default)]
@@ -49,9 +60,9 @@ impl Geometry {
     pub fn bounds(&self) -> Option<kurbo::Rect> {
         self.commands
             .iter()
-            .map(|command| match command {
-                DrawCommand::Fill { path, .. } => path.control_box(),
-                DrawCommand::Stroke { path, stroke, .. } => {
+            .map(|DrawCommand { path, paint, .. }| match paint {
+                Paint::Fill(_) => path.control_box(),
+                Paint::Stroke(stroke) => {
                     let expansion = stroke.width * 0.5 * stroke.miter_limit.max(1.0);
                     path.control_box().inflate(expansion, expansion)
                 }
@@ -59,40 +70,15 @@ impl Geometry {
             .reduce(|first, second| first.union(second))
     }
 
-    pub fn fill(path: BezPath, fill_rule: Fill, color: [f32; 4]) -> Self {
-        Self {
-            commands: vec![DrawCommand::Fill {
-                path,
-                fill_rule,
-                color,
-            }],
-        }
+    pub fn new(path: BezPath, paint: impl Into<Paint>, color: [f32; 4]) -> Self {
+        let mut geometry = Self::default();
+        geometry.push(path, paint, color);
+        geometry
     }
 
-    pub fn stroke(path: BezPath, stroke: Stroke, color: [f32; 4]) -> Self {
-        Self {
-            commands: vec![DrawCommand::Stroke {
-                path,
-                stroke,
-                color,
-            }],
-        }
-    }
-
-    pub fn push_fill(&mut self, path: BezPath, fill_rule: Fill, color: [f32; 4]) {
-        self.commands.push(DrawCommand::Fill {
-            path,
-            fill_rule,
-            color,
-        });
-    }
-
-    pub fn push_stroke(&mut self, path: BezPath, stroke: Stroke, color: [f32; 4]) {
-        self.commands.push(DrawCommand::Stroke {
-            path,
-            stroke,
-            color,
-        });
+    pub fn push(&mut self, path: BezPath, paint: impl Into<Paint>, color: [f32; 4]) {
+        let paint = paint.into();
+        self.commands.push(DrawCommand { path, paint, color });
     }
 
     pub fn append(&mut self, other: Self) {
@@ -101,10 +87,7 @@ impl Geometry {
 
     pub fn set_color(&mut self, color: [f32; 4]) {
         for command in &mut self.commands {
-            match command {
-                DrawCommand::Fill { color: current, .. }
-                | DrawCommand::Stroke { color: current, .. } => *current = color,
-            }
+            command.color = color;
         }
     }
 
@@ -113,14 +96,10 @@ impl Geometry {
         let length = delta.hypot();
         let to_local =
             Affine::rotate(-delta.y.atan2(delta.x)) * Affine::translate(-line.p0.to_vec2());
-        self.commands.iter().any(|command| {
-            let (path, tolerance, fill_rule) = match command {
-                DrawCommand::Fill {
-                    path, fill_rule, ..
-                } => (path, radius, Some(fill_rule)),
-                DrawCommand::Stroke { path, stroke, .. } => {
-                    (path, radius + stroke.width * 0.5, None)
-                }
+        self.commands.iter().any(|DrawCommand { path, paint, .. }| {
+            let (tolerance, fill_rule) = match paint {
+                Paint::Fill(rule) => (radius, Some(rule)),
+                Paint::Stroke(stroke) => (radius + stroke.width * 0.5, None),
             };
             let bounds = line.bounding_box().inflate(tolerance, tolerance);
             let hit_edge = path.segments().any(|segment| {

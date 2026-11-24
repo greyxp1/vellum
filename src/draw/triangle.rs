@@ -7,7 +7,7 @@ pub(super) fn geometry(outline: BezPath, style: Style) -> Geometry {
     if style.size <= f32::EPSILON {
         return Geometry::default();
     }
-    Geometry::fill(outline, Fill::EvenOdd, style.color)
+    Geometry::new(outline, Fill::EvenOdd, style.color)
 }
 
 pub(super) fn outline(vertices: &[Point; 3], style: Style) -> BezPath {

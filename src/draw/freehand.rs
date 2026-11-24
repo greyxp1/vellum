@@ -22,7 +22,7 @@ fn stabilizer_delay(size: f32) -> f32 {
 // perfect_freehand exactly.
 #[derive(Debug)]
 struct CacheAnchor {
-    centerline: [f64; 2],
+    centerline: kurbo::Point,
     raw_index: usize,
 }
 
@@ -264,15 +264,15 @@ impl LiveStroke {
             true,
             false,
         ));
-        Geometry::fill(path, Fill::NonZero, self.style.color)
+        Geometry::new(path, Fill::NonZero, self.style.color)
     }
 
-    fn tail_centerline(&self, raw_end: usize, complete: bool) -> Vec<[f64; 2]> {
+    fn tail_centerline(&self, raw_end: usize, complete: bool) -> Vec<kurbo::Point> {
         let Some(anchor) = &self.cache_anchor else {
-            return centerline_points(&[], &self.points[..raw_end], self.style.size, complete);
+            return centerline_points(None, &self.points[..raw_end], self.style.size, complete);
         };
         centerline_points(
-            &[anchor.centerline],
+            Some(anchor.centerline),
             &self.points[anchor.raw_index + 1..raw_end],
             0.0,
             complete,
@@ -315,9 +315,15 @@ impl LiveStroke {
 }
 
 pub(super) fn geometry(points: &[Point], style: Style) -> Geometry {
-    stroke_path(points, style).map_or_else(Geometry::default, |path| {
-        Geometry::fill(path, Fill::NonZero, style.color)
-    })
+    let path = match snapped_samples(points, style, 1.0) {
+        None => return Geometry::default(),
+        Some(Err(stamp)) => stamp,
+        Some(Ok(points)) => {
+            let centerline = centerline_points(None, &points, style.size, true);
+            centerline_path(&centerline, style, false, false)
+        }
+    };
+    Geometry::new(path, Fill::NonZero, style.color)
 }
 
 pub(super) fn erasing_geometry(
@@ -326,35 +332,13 @@ pub(super) fn erasing_geometry(
     style: Style,
     remaining: f32,
 ) -> Geometry {
-    let points = pixel_aligned_points(points, style.size);
-    let mut points = points.into_owned();
-    points.dedup();
-    let Some(&first) = points.first() else {
-        return Geometry::default();
+    let points = match snapped_samples(points, style, remaining) {
+        None => return Geometry::default(),
+        Some(Err(stamp)) => return Geometry::new(stamp, Fill::NonZero, style.color),
+        Some(Ok(points)) => points,
     };
-    let radius = style.size * 0.5;
-    let roundness = style.roundness.clamp(0.0, 1.0);
-    if points.len() == 1
-        || (points.len() == 2 && first.distance_squared(points[1]) < MIN_SAMPLE_DISTANCE_SQUARED)
-    {
-        let direction = points.last().copied().unwrap() - first;
-        return Geometry::fill(
-            brush_stamp(
-                kurbo_point(first),
-                radius * remaining,
-                roundness,
-                direction.y.atan2(direction.x) + std::f32::consts::FRAC_PI_2,
-            ),
-            Fill::NonZero,
-            style.color,
-        );
-    }
-    let centerline = centerline_points(&[], &points, style.size, true)
-        .into_iter()
-        .map(|[x, y]| kurbo::Point::new(x, y))
-        .collect::<Vec<_>>();
-    let centerline = smoothed_centerline(&centerline, false, false);
-    let segments = centerline
+    let centerline = centerline_points(None, &points, style.size, true);
+    let segments = smoothed_centerline(&centerline, false, false)
         .segments()
         .map(|segment| (segment, segment.arclen(0.01)))
         .collect::<Vec<_>>();
@@ -384,9 +368,7 @@ pub(super) fn erasing_geometry(
     let (Some(first), Some(last)) = (tail.segments().next(), tail.segments().last()) else {
         return Geometry::default();
     };
-    let stroke = Stroke::new(f64::from(style.size)).with_caps(Cap::Butt);
-    let mut path = kurbo::stroke(&tail, &stroke, &StrokeOpts::default(), 0.1);
-    for (segment, start) in [(first, true), (last, false)] {
+    let caps = [(first, true), (last, false)].map(|(segment, start)| {
         let curve = segment.to_cubic();
         let (center, controls) = if start {
             (curve.p0, [curve.p1, curve.p2, curve.p3])
@@ -398,121 +380,89 @@ pub(super) fn erasing_geometry(
             .map(|point| center - point)
             .find(|direction| direction.hypot2() > f64::EPSILON)
             .unwrap_or_default();
-        append_partial_cap(&mut path, center, outward, radius, roundness);
-    }
-    Geometry::fill(path, Fill::NonZero, style.color)
+        (center, outward)
+    });
+    let path = capped_stroke(&tail, style, caps);
+    Geometry::new(path, Fill::NonZero, style.color)
 }
 
-fn stroke_path(points: &[Point], style: Style) -> Option<kurbo::BezPath> {
-    let points = pixel_aligned_points(points, style.size);
-    let points = points.as_ref();
-    let distinct = points.windows(2).any(|pair| pair[0] == pair[1]).then(|| {
-        let mut distinct = points.to_vec();
-        distinct.dedup();
-        distinct
-    });
-    let points = distinct.as_deref().unwrap_or(points);
-    let &first = points.first()?;
-    let radius = style.size.max(0.0) * 0.5;
+// Snaps samples to the pixel grid, or returns a brush stamp scaled by `scale` for a dot.
+fn snapped_samples(
+    points: &[Point],
+    style: Style,
+    scale: f32,
+) -> Option<Result<Vec<Point>, BezPath>> {
+    let mut points = pixel_aligned_points(points, style.size).into_owned();
+    points.dedup();
+    let (&first, &last) = (points.first()?, points.last()?);
+    let radius = style.size * 0.5;
     if radius <= f32::EPSILON {
         return None;
     }
+    if points.len() > 2 || first.distance_squared(last) >= MIN_SAMPLE_DISTANCE_SQUARED {
+        return Some(Ok(points));
+    }
+    let direction = last - first;
+    let angle = direction.y.atan2(direction.x) + std::f32::consts::FRAC_PI_2;
     let roundness = style.roundness.clamp(0.0, 1.0);
-    if points.len() == 1 {
-        return Some(brush_stamp(kurbo_point(first), radius, roundness, 0.0));
-    }
-    if points.len() == 2 && first.distance_squared(points[1]) < MIN_SAMPLE_DISTANCE_SQUARED {
-        let direction = points[1] - first;
-        return Some(brush_stamp(
-            kurbo_point(first),
-            radius,
-            roundness,
-            direction.y.atan2(direction.x) + std::f32::consts::FRAC_PI_2,
-        ));
-    }
-
-    Some(centerline_path(
-        &centerline_points(&[], points, style.size, true),
-        style,
-        false,
-        false,
-    ))
+    let stamp = brush_stamp(kurbo_point(first), radius * scale, roundness, angle);
+    Some(Err(stamp))
 }
 
 fn centerline_points(
-    start: &[[f64; 2]],
+    start: Option<kurbo::Point>,
     points: &[Point],
     width: f32,
     complete: bool,
-) -> Vec<[f64; 2]> {
+) -> Vec<kurbo::Point> {
     let input = start
-        .iter()
-        .copied()
-        .chain(
-            points
-                .iter()
-                .map(|point| [f64::from(point.x), f64::from(point.y)]),
-        )
-        .map(|point| perfect_freehand::InputPoint::Array(point, None))
-        .collect::<Vec<_>>();
-    perfect_freehand::get_stroke_points(&input, &stroke_options(width, complete))
         .into_iter()
-        .map(|point| point.point)
-        .collect()
-}
-
-fn stroke_options(width: f32, complete: bool) -> perfect_freehand::StrokeOptions {
-    perfect_freehand::StrokeOptions {
+        .chain(points.iter().copied().map(kurbo_point))
+        .map(|point| perfect_freehand::InputPoint::Array([point.x, point.y], None))
+        .collect::<Vec<_>>();
+    let options = perfect_freehand::StrokeOptions {
         size: Some(f64::from(width)),
         streamline: Some(0.5),
         last: Some(complete),
         ..Default::default()
-    }
+    };
+    perfect_freehand::get_stroke_points(&input, &options)
+        .into_iter()
+        .map(|point| kurbo::Point::new(point.point[0], point.point[1]))
+        .collect()
 }
 
 fn centerline_path(
-    centerline_points: &[[f64; 2]],
+    centerline: &[kurbo::Point],
     style: Style,
     start_cut: bool,
     end_cut: bool,
-) -> kurbo::BezPath {
-    let centerline = centerline_points
-        .iter()
-        .map(|&[x, y]| kurbo::Point::new(x, y))
-        .collect::<Vec<_>>();
-    let radius = style.size.max(0.0) * 0.5;
-    let roundness = style.roundness.clamp(0.0, 1.0);
-    let centerline_path = smoothed_centerline(&centerline, start_cut, end_cut);
-    let stroke = Stroke::new(f64::from(radius) * 2.0).with_caps(Cap::Butt);
-    let mut path = kurbo::stroke(centerline_path, &stroke, &StrokeOpts::default(), 0.1);
-    append_endpoint_caps(
-        &mut path,
-        &centerline,
-        radius,
-        roundness,
-        start_cut,
-        end_cut,
-    );
-    path
+) -> BezPath {
+    let smoothed = smoothed_centerline(centerline, start_cut, end_cut);
+    let (&[start, second, ..], &[.., penultimate, end]) = (centerline, centerline) else {
+        return capped_stroke(&smoothed, style, []);
+    };
+    let caps = [
+        (!start_cut).then_some((start, start - second)),
+        (!end_cut).then_some((end, end - penultimate)),
+    ];
+    capped_stroke(&smoothed, style, caps.into_iter().flatten())
 }
 
-fn append_endpoint_caps(
-    path: &mut kurbo::BezPath,
-    centerline: &[kurbo::Point],
-    radius: f32,
-    roundness: f32,
-    start_cut: bool,
-    end_cut: bool,
-) {
-    let (&[start, second, ..], &[.., penultimate, end]) = (centerline, centerline) else {
-        return;
-    };
-    if !start_cut {
-        append_partial_cap(path, start, start - second, radius, roundness);
+// Strokes the centerline with butt ends and appends a partial cap at each endpoint.
+fn capped_stroke(
+    centerline: &BezPath,
+    style: Style,
+    caps: impl IntoIterator<Item = (kurbo::Point, kurbo::Vec2)>,
+) -> BezPath {
+    let radius = style.size.max(0.0) * 0.5;
+    let roundness = style.roundness.clamp(0.0, 1.0);
+    let stroke = Stroke::new(f64::from(radius) * 2.0).with_caps(Cap::Butt);
+    let mut path = kurbo::stroke(centerline, &stroke, &StrokeOpts::default(), 0.1);
+    for (center, outward) in caps {
+        append_partial_cap(&mut path, center, outward, radius, roundness);
     }
-    if !end_cut {
-        append_partial_cap(path, end, end - penultimate, radius, roundness);
-    }
+    path
 }
 
 fn smoothed_centerline(points: &[kurbo::Point], start_cut: bool, end_cut: bool) -> kurbo::BezPath {

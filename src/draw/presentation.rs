@@ -18,6 +18,7 @@ impl DrawState {
         wgpu: &mut WgpuState,
         before_present: impl FnOnce(Option<TextInputSnapshot<'_>>),
     ) -> Result<(), String> {
+        let margin = self.shadow_margin();
         let Some(damage) = self.outputs.get_mut(&output).filter(|damage| damage.dirty) else {
             return Ok(());
         };
@@ -33,7 +34,7 @@ impl DrawState {
             min: origin,
             max: Point::new(viewport.x1 as f32, viewport.y1 as f32),
         }
-        .expanded(if self.shadows { 10.0 } else { 1.0 });
+        .expanded(margin as f32);
         let active_canvas = presentation.canvas == Some(self.editor.canvas);
         let active_text = active_canvas.then(|| self.editor.text_edit()).flatten();
         let elements = presentation
@@ -92,29 +93,22 @@ impl DrawState {
             if let Some(edit) = active_text.filter(|edit| edit.id.is_none()) {
                 items.push(SceneItem::Text(edit.spec(), 1.0));
             }
-            if let Some(Feedback {
-                text, anchor: at, ..
-            }) = self.feedback.as_ref().filter(|feedback| {
-                presentation.interactive
-                    && viewport
-                        .contains((f64::from(feedback.anchor.x), f64::from(feedback.anchor.y)))
-            }) {
-                const OUTLINE: [f32; 4] = [0.0, 0.0, 0.0, 0.9];
+            let feedback = self.feedback.as_ref().filter(|feedback| {
+                presentation.interactive && viewport.contains(scene::kurbo_point(feedback.anchor))
+            });
+            if let Some(Feedback { text, anchor, .. }) = feedback {
                 let layout = text.layout();
                 let cursor_radius = self
                     .tool_cursor
                     .map_or(0.0, |(_, cursor)| cursor.size * 0.5);
                 let top =
-                    (at.y - layout.height() - cursor_radius.max(8.0) - 8.0).max(origin.y + 1.0);
+                    (anchor.y - layout.height() - cursor_radius.max(8.0) - 8.0).max(origin.y + 1.0);
                 let right = (viewport.x1 as f32 - layout.width() - 1.0).max(origin.x + 1.0);
-                let left = (at.x + 16.0).min(right);
-                for ([x, y], color) in [
-                    ([-1.0, 0.0], OUTLINE),
-                    ([1.0, 0.0], OUTLINE),
-                    ([0.0, -1.0], OUTLINE),
-                    ([0.0, 1.0], OUTLINE),
-                    ([0.0, 0.0], [1.0; 4]),
-                ] {
+                let left = (anchor.x + 16.0).min(right);
+                // Four offset dark copies outline the white label.
+                let outline = [[-1.0, 0.0], [1.0, 0.0], [0.0, -1.0], [0.0, 1.0]];
+                let outline = outline.map(|offset| (offset, [0.0, 0.0, 0.0, 0.9]));
+                for ([x, y], color) in outline.into_iter().chain([([0.0; 2], [1.0; 4])]) {
                     items.push(SceneItem::Feedback(TextSpec {
                         layout,
                         left: left + x,
@@ -129,25 +123,22 @@ impl DrawState {
             items
         };
 
+        let shown = |geometry: &crate::render::Geometry, margin: f64| {
+            geometry.bounds().is_some_and(|bounds| {
+                bounds.inflate(margin, margin).intersect(viewport).area() > 0.0
+            })
+        };
         let mut previews = Vec::new();
         if active_canvas {
             self.editor.append_preview_geometry(&mut previews);
         }
-        previews.retain(|geometry| {
-            geometry
-                .bounds()
-                .is_some_and(|bounds| bounds.inflate(10.0, 10.0).intersect(viewport).area() > 0.0)
-        });
+        previews.retain(|geometry| shown(geometry, 10.0));
         let annotation_previews = previews.len();
         let mut cursor_rectangle = None;
         if let Some(edit) = active_text.filter(|_| presentation.interactive) {
             let [scale_x, scale_y] = edit.scale;
-            cursor_rectangle = Some(text_cursor_rectangle(
-                edit.origin,
-                edit.ime_area(),
-                edit.scale,
-                origin,
-            ));
+            let area = edit.ime_area();
+            cursor_rectangle = Some(text_cursor_rectangle(edit.origin, area, edit.scale, origin));
             if self.caret_visible && edit.shows_caret() {
                 previews.push(edit.caret());
             }
@@ -171,16 +162,11 @@ impl DrawState {
             .then(|| self.editor.picker_geometry(viewport))
             .flatten();
         let (annotations, decorations) = previews.split_at(annotation_previews);
-        let margin = if self.shadows { 10.0 } else { 1.0 };
         let cursor = self
             .tool_cursor
             .filter(|_| presentation.interactive)
             .map(|(point, cursor)| tool_cursor_geometry(point, cursor))
-            .filter(|geometry| {
-                geometry.bounds().is_some_and(|bounds| {
-                    bounds.inflate(margin, margin).intersect(viewport).area() > 0.0
-                })
-            });
+            .filter(|geometry| shown(geometry, margin));
         if wgpu.render(
             &items,
             Previews {

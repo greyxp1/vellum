@@ -122,7 +122,7 @@ pub(super) fn append_handles(kind: &ElementKind, style: Style, output: &mut Vec<
 fn endpoint_geometry(center: Point) -> Geometry {
     use kurbo::Shape;
 
-    let mut output = Geometry::fill(
+    let mut output = Geometry::new(
         kurbo::Circle::new(
             (f64::from(center.x), f64::from(center.y)),
             f64::from(VISUAL_RADIUS),

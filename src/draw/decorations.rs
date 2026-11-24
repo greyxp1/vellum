@@ -1,3 +1,4 @@
+use kurbo::Shape;
 use peniko::Fill;
 
 use super::{Point, PreeditHint, ToolCursor, scene};
@@ -6,53 +7,35 @@ use crate::text::text_line_height;
 use crate::tool::Primitive;
 
 pub(super) fn tool_cursor_geometry(point: Point, cursor: ToolCursor) -> Geometry {
-    use kurbo::Shape;
-
-    let radius = f64::from(match cursor.tool {
-        Primitive::Pen | Primitive::Eraser => cursor.size * 0.5,
+    let radius = f64::from(cursor.size * 0.5);
+    match cursor.tool {
+        Primitive::Eraser => {
+            let center = scene::kurbo_point(point);
+            let outline = kurbo::Circle::new(center, radius + 0.75).to_path(0.1);
+            let mut geometry = Geometry::new(outline, Fill::NonZero, [0.0, 0.0, 0.0, 1.0]);
+            let inner = kurbo::Circle::new(center, radius).to_path(0.1);
+            geometry.push(inner, Fill::NonZero, [1.0, 1.0, 1.0, 1.0]);
+            geometry
+        }
+        Primitive::Pen => {
+            let center = scene::kurbo_point(scene::pixel_aligned_point(point, cursor.size));
+            let corner_radius = radius * f64::from(cursor.roundness.clamp(0.0, 1.0));
+            let square = kurbo::Rect::from_center_size(center, (radius * 2.0, radius * 2.0))
+                .to_rounded_rect(corner_radius);
+            let [red, green, blue, alpha] = cursor.color;
+            let color = [red, green, blue, alpha.sqrt()];
+            Geometry::new(square.to_path(0.1), Fill::NonZero, color)
+        }
         _ => unreachable!("only pen and eraser have tool cursors"),
-    });
-    let point = if cursor.tool == Primitive::Pen {
-        scene::pixel_aligned_point(point, cursor.size)
-    } else {
-        point
-    };
-    let center = kurbo::Point::new(f64::from(point.x), f64::from(point.y));
-    if cursor.tool == Primitive::Eraser {
-        const OUTLINE_WIDTH: f64 = 0.75;
-        let mut geometry = Geometry::fill(
-            kurbo::Circle::new(center, radius + OUTLINE_WIDTH).to_path(0.1),
-            Fill::NonZero,
-            [0.0, 0.0, 0.0, 1.0],
-        );
-        geometry.push_fill(
-            kurbo::Circle::new(center, radius).to_path(0.1),
-            Fill::NonZero,
-            [1.0, 1.0, 1.0, 1.0],
-        );
-        return geometry;
     }
+}
 
-    let mut color = cursor.color;
-    color[3] = color[3].sqrt();
-    let corner_radius = radius * f64::from(cursor.roundness.clamp(0.0, 1.0));
-    Geometry::fill(
-        kurbo::RoundedRect::new(
-            center.x - radius,
-            center.y - radius,
-            center.x + radius,
-            center.y + radius,
-            corner_radius,
-        )
-        .to_path(0.1),
-        Fill::NonZero,
-        color,
-    )
+fn rectangle(left: f32, top: f32, right: f32, bottom: f32) -> kurbo::BezPath {
+    let [left, top, right, bottom] = [left, top, right, bottom].map(f64::from);
+    kurbo::Rect::new(left, top, right, bottom).to_path(0.1)
 }
 
 pub(super) fn text_caret(left: f32, top: f32, scaled_font_size: f32) -> Geometry {
-    use kurbo::Shape;
-
     let line_height = text_line_height(scaled_font_size);
     let caret_height = (scaled_font_size.abs() - 2.0)
         .max(1.0)
@@ -63,17 +46,8 @@ pub(super) fn text_caret(left: f32, top: f32, scaled_font_size: f32) -> Geometry
     let (top, bottom) = (top.min(bottom), top.max(bottom));
     let mut geometry = Geometry::default();
     for (half_width, color) in [(1.0, [0.0, 0.0, 0.0, 1.0]), (0.5, [1.0, 1.0, 1.0, 1.0])] {
-        geometry.push_fill(
-            kurbo::Rect::new(
-                f64::from(left - half_width),
-                f64::from(top),
-                f64::from(left + half_width),
-                f64::from(bottom),
-            )
-            .to_path(0.1),
-            Fill::NonZero,
-            color,
-        );
+        let path = rectangle(left - half_width, top, left + half_width, bottom);
+        geometry.push(path, Fill::NonZero, color);
     }
     geometry
 }
@@ -106,8 +80,6 @@ pub(super) fn text_preedit_span(
     line_height: f32,
     style: PreeditHint,
 ) -> Geometry {
-    use kurbo::Shape;
-
     let left = start.min(end);
     let right = start.max(end).max(left + 1.0);
     let bottom = top + line_height;
@@ -123,15 +95,5 @@ pub(super) fn text_preedit_span(
         let baseline = bottom - 1.5;
         (baseline, baseline + 1.5, color)
     };
-    Geometry::fill(
-        kurbo::Rect::new(
-            f64::from(left),
-            f64::from(top),
-            f64::from(right),
-            f64::from(bottom),
-        )
-        .to_path(0.1),
-        Fill::NonZero,
-        color,
-    )
+    Geometry::new(rectangle(left, top, right, bottom), Fill::NonZero, color)
 }

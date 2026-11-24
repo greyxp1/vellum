@@ -1,6 +1,4 @@
-use std::ops::Range;
-
-use super::scene::Point;
+use super::scene::{Point, kurbo_point};
 use crate::Rgba;
 use crate::config::ToolIcon;
 use crate::render::{Geometry, LocalGeometry, contrasting_color};
@@ -60,105 +58,61 @@ fn radial_index(center: Point, point: Point, count: usize) -> usize {
         % count
 }
 
-fn radial_point(center: Point, radius: f32, angle: f32) -> kurbo::Point {
-    let (sin, cos) = angle.sin_cos();
-    kurbo::Point::new(
-        f64::from(center.x + radius * cos),
-        f64::from(center.y + radius * sin),
-    )
-}
-
 fn push_color_preview(output: &mut Geometry, center: Point, color: Rgba, presentation: bool) {
-    let preview_radius = CENTER_RADIUS - WHEEL_BORDER_WIDTH;
-    let inner = Circle::new(
-        (f64::from(center.x), f64::from(center.y)),
-        f64::from(preview_radius - PREVIEW_BORDER_WIDTH),
-    )
-    .to_path(0.02);
-    output.push_fill(inner, Fill::NonZero, opaque(color));
+    let center = kurbo_point(center);
+    let radius = CENTER_RADIUS - WHEEL_BORDER_WIDTH - PREVIEW_BORDER_WIDTH;
+    let inner = Circle::new(center, f64::from(radius)).to_path(0.02);
+    output.push(inner, Fill::NonZero, opaque(color));
     if !presentation {
         return;
     }
-    let center = kurbo::Point::new(f64::from(center.x), f64::from(center.y));
     let mut path = Circle::new(center, 8.0).to_path(0.02);
     path.move_to(center + (0.0, -4.0));
     path.line_to(center);
     path.line_to(center + (3.0, 2.0));
-    output.push_stroke(
-        path,
-        kurbo::Stroke::new(1.8)
-            .with_caps(kurbo::Cap::Round)
-            .with_join(kurbo::Join::Round),
-        contrasting_color(opaque(color)),
-    );
+    let stroke = kurbo::Stroke::new(1.8)
+        .with_caps(kurbo::Cap::Round)
+        .with_join(kurbo::Join::Round);
+    output.push(path, stroke, contrasting_color(opaque(color)));
 }
 
-fn wedge(center: Point, inner: f32, outer: f32, angles: Range<f32>, edge_inset: f32) -> BezPath {
-    let inner_inset = (edge_inset / inner).asin();
-    let outer_inset = (edge_inset / outer).asin();
-    let inner_start = angles.start + inner_inset;
-    let inner_end = angles.end - inner_inset;
-    let outer_start = angles.start + outer_inset;
-    let outer_end = angles.end - outer_inset;
-    let mut path = BezPath::new();
-    path.move_to(radial_point(center, inner, inner_start));
-    path.extend(
-        Arc::new(
-            (f64::from(center.x), f64::from(center.y)),
-            (f64::from(inner), f64::from(inner)),
-            f64::from(inner_start),
-            f64::from(inner_end - inner_start),
-            0.0,
-        )
-        .append_iter(0.02),
-    );
-    path.line_to(radial_point(center, outer, outer_end));
-    path.extend(
-        Arc::new(
-            (f64::from(center.x), f64::from(center.y)),
-            (f64::from(outer), f64::from(outer)),
-            f64::from(outer_end),
-            f64::from(outer_start - outer_end),
-            0.0,
-        )
-        .append_iter(0.02),
-    );
-    path.close_path();
-    path
-}
-
-fn push_palette(output: &mut Geometry, center: Point, hovered: Option<Choice>, palette: &[Rgba]) {
-    let step = std::f32::consts::TAU / palette.len() as f32;
-    for (index, &color) in palette.iter().enumerate() {
-        let is_hovered = hovered == Some(Choice::Color(index));
-        let start = index as f32 * step - step * 0.5;
-        let end = start + step;
-        if is_hovered {
-            output.push_fill(
-                wedge(
-                    center,
-                    CENTER_RADIUS - WHEEL_BORDER_WIDTH,
-                    COLOR_OUTER_RADIUS + WHEEL_BORDER_WIDTH,
-                    start..end,
-                    0.0,
-                ),
-                Fill::NonZero,
-                HOVER_COLOR,
-            );
-        }
-        let swatch = wedge(
-            center,
-            CENTER_RADIUS,
-            COLOR_OUTER_RADIUS,
-            start..end,
-            if is_hovered {
-                WHEEL_BORDER_WIDTH
+// Pushes segment `index` of `count` between two radii, insetting its edges by `edge_inset`
+// and drawing `border` behind it.
+fn push_segment(
+    output: &mut Geometry,
+    center: Point,
+    [inner, outer]: [f32; 2],
+    (index, count): (usize, usize),
+    edge_inset: f32,
+    border: Option<Rgba>,
+    color: Rgba,
+) {
+    let step = std::f32::consts::TAU / count as f32;
+    let wedge = |inner: f32, outer: f32, edge_inset: f32| {
+        let center = kurbo_point(center);
+        let mut path = BezPath::new();
+        // The inner arc runs forward and the outer arc returns, joined by straight edges.
+        for (radius, direction) in [(inner, 1.0), (outer, -1.0)] {
+            let half = (step * 0.5 - (edge_inset / radius).asin()) * direction;
+            let start = f64::from(index as f32 * step - half);
+            let radius = f64::from(radius);
+            let from = center + Vec2::from_angle(start) * radius;
+            if path.is_empty() {
+                path.move_to(from);
             } else {
-                SEPARATOR_HALF_WIDTH
-            },
-        );
-        output.push_fill(swatch, Fill::NonZero, opaque(color));
+                path.line_to(from);
+            }
+            let arc = Arc::new(center, (radius, radius), start, f64::from(2.0 * half), 0.0);
+            path.extend(arc.append_iter(0.02));
+        }
+        path.close_path();
+        path
+    };
+    if let Some(border) = border {
+        let path = wedge(inner - WHEEL_BORDER_WIDTH, outer + WHEEL_BORDER_WIDTH, 0.0);
+        output.push(path, Fill::NonZero, border);
     }
+    output.push(wedge(inner, outer, edge_inset), Fill::NonZero, color);
 }
 
 pub(super) fn picker_bounds(center: Point) -> kurbo::Rect {
@@ -186,67 +140,47 @@ pub(super) fn picker_geometry<'a>(
     if bounds.intersect(viewport.inflate(1.0, 1.0)).area() == 0.0 {
         return None;
     }
-    let local_center = Point::new(center.x - origin[0], center.y - origin[1]);
-    let backdrop = Circle::new(
-        (f64::from(local_center.x), f64::from(local_center.y)),
-        f64::from(TOOL_OUTER_RADIUS + WHEEL_BORDER_WIDTH),
-    )
-    .to_path(0.02);
-    let mut output = Geometry::fill(backdrop, Fill::NonZero, GAP_LINE_COLOR);
-    push_color_preview(&mut output, local_center, current_color, presentation);
-    let step = std::f32::consts::TAU / tools.len() as f32;
-    for index in 0..tools.len() {
-        let is_hovered = hovered == Some(Choice::Tool(index));
-        let is_active = Some(index) == active;
-        let outer = TOOL_OUTER_RADIUS + if is_hovered { HOVER_EXTENSION } else { 0.0 };
-        let start = index as f32 * step - step * 0.5;
-        let end = start + step;
-        if is_hovered {
-            output.push_fill(
-                wedge(
-                    local_center,
-                    TOOL_INNER_RADIUS - WHEEL_BORDER_WIDTH,
-                    outer + WHEEL_BORDER_WIDTH,
-                    start..end,
-                    0.0,
-                ),
-                Fill::NonZero,
-                GAP_LINE_COLOR,
-            );
-        }
-        output.push_fill(
-            wedge(
-                local_center,
-                TOOL_INNER_RADIUS,
-                outer,
-                start..end,
-                SEPARATOR_HALF_WIDTH,
-            ),
-            Fill::NonZero,
-            if is_hovered {
-                HOVER_COLOR
-            } else if is_active {
-                ACTIVE_COLOR
-            } else {
-                [0.16, 0.18, 0.22, 0.95]
-            },
-        );
-    }
-    push_palette(&mut output, local_center, hovered, palette);
+    let center = Point::new(center.x - origin[0], center.y - origin[1]);
+    let radius = f64::from(TOOL_OUTER_RADIUS + WHEEL_BORDER_WIDTH);
+    let backdrop = Circle::new(kurbo_point(center), radius).to_path(0.02);
+    let mut output = Geometry::new(backdrop, Fill::NonZero, GAP_LINE_COLOR);
+    push_color_preview(&mut output, center, current_color, presentation);
     let mut svg_icons = Vec::new();
-    for (index, (tool, filled)) in tools.iter().copied().enumerate() {
-        let (sin, cos) = (index as f32 * step).sin_cos();
-        let tool_icon_center = Point::new(
-            local_center.x + TOOL_ICON_RADIUS * cos,
-            local_center.y + TOOL_ICON_RADIUS * sin,
-        );
+    for (index, &(tool, filled)) in tools.iter().enumerate() {
+        let is_hovered = hovered == Some(Choice::Tool(index));
+        let outer = TOOL_OUTER_RADIUS + if is_hovered { HOVER_EXTENSION } else { 0.0 };
+        let color = if is_hovered {
+            HOVER_COLOR
+        } else if Some(index) == active {
+            ACTIVE_COLOR
+        } else {
+            [0.16, 0.18, 0.22, 0.95]
+        };
+        let border = is_hovered.then_some(GAP_LINE_COLOR);
+        let segment = (index, tools.len());
+        let radii = [TOOL_INNER_RADIUS, outer];
+        let inset = SEPARATOR_HALF_WIDTH;
+        push_segment(&mut output, center, radii, segment, inset, border, color);
+        // Wedges stay within their segment, so each icon can follow its own wedge.
+        let angle = index as f32 * std::f32::consts::TAU / tools.len() as f32;
+        let icon_center = center + Point::new(angle.cos(), angle.sin()) * TOOL_ICON_RADIUS;
         match tool {
-            ToolIcon::Named(icon) => push_tool_icon(&mut output, tool_icon_center, *icon, filled),
-            ToolIcon::Svg(svg) => svg_icons.push((
-                svg,
-                Vec2::new(f64::from(tool_icon_center.x), f64::from(tool_icon_center.y)),
-            )),
+            ToolIcon::Named(icon) => push_tool_icon(&mut output, icon_center, *icon, filled),
+            ToolIcon::Svg(svg) => svg_icons.push((svg, kurbo_point(icon_center).to_vec2())),
         }
+    }
+    for (index, &color) in palette.iter().enumerate() {
+        let is_hovered = hovered == Some(Choice::Color(index));
+        let inset = if is_hovered {
+            WHEEL_BORDER_WIDTH
+        } else {
+            SEPARATOR_HALF_WIDTH
+        };
+        let border = is_hovered.then_some(HOVER_COLOR);
+        let segment = (index, palette.len());
+        let radii = [CENTER_RADIUS, COLOR_OUTER_RADIUS];
+        let color = opaque(color);
+        push_segment(&mut output, center, radii, segment, inset, border, color);
     }
     Some(LocalGeometry::new(
         output,
@@ -355,7 +289,7 @@ fn push_tool_icon(output: &mut Geometry, center: Point, tool: Icon, filled: bool
         }
     }
     if filled {
-        output.push_fill(path.clone(), Fill::NonZero, ICON_COLOR);
+        output.push(path.clone(), Fill::NonZero, ICON_COLOR);
     }
-    output.push_stroke(path, kurbo::Stroke::new(2.0), ICON_COLOR);
+    output.push(path, kurbo::Stroke::new(2.0), ICON_COLOR);
 }

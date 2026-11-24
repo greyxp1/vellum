@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
 use kurbo::{Affine, BezPath};
@@ -98,29 +99,26 @@ fn append_group(
         match node {
             usvg::Node::Group(group) => append_group(group, normalize, opacity, commands)?,
             usvg::Node::Path(path) if path.is_visible() => {
-                let transform = normalize * affine(path.abs_transform());
-                if let Some(fill) = path.fill().filter(|fill| fill.opacity().get() > 0.0) {
-                    commands.push(SvgCommand::Fill {
-                        path: bezier(path.data(), transform),
-                        rule: fill_rule(fill),
-                        opacity: opacity * fill.opacity().get(),
-                    });
-                }
-                if let Some(stroke) = path.stroke().filter(|stroke| stroke.opacity().get() > 0.0) {
-                    let stroke_style = stroke.to_tiny_skia();
-                    let dashed = stroke_style
+                let fill = path
+                    .fill()
+                    .map(|fill| (Cow::Borrowed(path.data()), fill_rule(fill), fill.opacity()));
+                let visible = |stroke: &&usvg::Stroke| stroke.opacity().get() > 0.0;
+                let stroke = path.stroke().filter(visible).and_then(|stroke| {
+                    let style = stroke.to_tiny_skia();
+                    let dashed = style
                         .dash
                         .as_ref()
                         .and_then(|dash| path.data().dash(dash, 1.0));
-                    if let Some(outline) = dashed
-                        .as_ref()
-                        .unwrap_or(path.data())
-                        .stroke(&stroke_style, 1.0)
-                    {
+                    let outline = dashed.as_ref().unwrap_or(path.data()).stroke(&style, 1.0)?;
+                    Some((Cow::Owned(outline), Fill::NonZero, stroke.opacity()))
+                });
+                let transform = normalize * affine(path.abs_transform());
+                for (data, rule, paint_opacity) in fill.into_iter().chain(stroke) {
+                    if paint_opacity.get() > 0.0 {
                         commands.push(SvgCommand::Fill {
-                            path: bezier(&outline, transform),
-                            rule: Fill::NonZero,
-                            opacity: opacity * stroke.opacity().get(),
+                            path: bezier(&data, transform),
+                            rule,
+                            opacity: opacity * paint_opacity.get(),
                         });
                     }
                 }

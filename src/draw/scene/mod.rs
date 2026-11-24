@@ -371,7 +371,7 @@ impl Element {
         let line = kurbo::Line::new(kurbo_point(start), kurbo_point(end));
         if matches!(self.kind, ElementKind::Text { .. }) {
             let path = kurbo::Rect::from(self.bounds).to_path(0.1);
-            return Geometry::fill(path, Fill::NonZero, self.style.color)
+            return Geometry::new(path, Fill::NonZero, self.style.color)
                 .swept_hit_test(line, f64::from(radius));
         }
         self.presentation_geometry(remaining, settings)

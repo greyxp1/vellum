@@ -5,21 +5,20 @@ use parley::PositionedLayoutItem;
 use skrifa::MetadataProvider;
 use skrifa::bitmap::{BitmapData, BitmapFormat, BitmapGlyph};
 use skrifa::raw::TableProvider;
-use vello_common::{TextureId, geometry::RectU16};
+use vello_common::TextureId;
 use wgpu::util::DeviceExt;
 
-use super::{srgb_to_linear, vello_color};
+use super::{checked_target_size, draw_texture, srgb_to_linear, texture_descriptor, vello_color};
 
 const DARK_TEXT_EMBOLDENING: f64 = 0.2;
 const BLACK_BACKGROUND_COLOR: f32 = 20.0 / 255.0;
 const WHITE_BACKGROUND_COLOR: f32 = 235.0 / 255.0;
 
 pub(crate) fn contrasting_color([red, green, blue, alpha]: [f32; 4]) -> [f32; 4] {
-    let luminance = 0.2126 * srgb_to_linear(red)
-        + 0.7152 * srgb_to_linear(green)
-        + 0.0722 * srgb_to_linear(blue);
+    let [red, green, blue] = srgb_to_linear([red, green, blue]);
+    let luminance = 0.2126 * red + 0.7152 * green + 0.0722 * blue;
     let contrast = |background| {
-        let background_luminance = srgb_to_linear(background);
+        let background_luminance = srgb_to_linear([background; 3])[0];
         (luminance.max(background_luminance) + 0.05) / (luminance.min(background_luminance) + 0.05)
     };
     let background = if contrast(BLACK_BACKGROUND_COLOR) >= contrast(WHITE_BACKGROUND_COLOR) {
@@ -56,12 +55,11 @@ struct Bitmaps {
 }
 
 impl TextSpec<'_> {
-    fn append_to_scene(
-        &self,
-        target: &mut TextTarget<'_>,
-        bitmaps: &mut Bitmaps,
-        outline_glyphs: &mut Vec<glifo::Glyph>,
-    ) {
+    pub(super) fn append_to_scene(&self, target: &mut TextTarget<'_>, text: &mut TextState) {
+        let TextState {
+            bitmaps,
+            outline_glyphs,
+        } = text;
         let scene = &mut *target.scene;
         let layout = self.layout;
         let target_is_srgb = target.is_srgb;
@@ -184,42 +182,24 @@ impl TextSpec<'_> {
                     return;
                 };
                 if target.is_srgb {
-                    for pixel in pixmap.data_mut() {
+                    for pixel in pixmap.data_mut().iter_mut().filter(|pixel| pixel.a > 0) {
                         let alpha = f32::from(pixel.a);
-                        if alpha > 0.0 {
-                            let convert = |channel| {
-                                (srgb_to_linear(f32::from(channel) / alpha) * alpha).round() as u8
-                            };
-                            pixel.r = convert(pixel.r);
-                            pixel.g = convert(pixel.g);
-                            pixel.b = convert(pixel.b);
-                        }
+                        let rgb =
+                            [pixel.r, pixel.g, pixel.b].map(|channel| f32::from(channel) / alpha);
+                        [pixel.r, pixel.g, pixel.b] =
+                            srgb_to_linear(rgb).map(|channel| (channel * alpha).round() as u8);
                     }
                 }
                 let size = [pixmap.width(), pixmap.height()];
-                let limit = target.device.limits().max_texture_dimension_2d;
-                if size
-                    .iter()
-                    .any(|&side| side == 0 || u32::from(side) > limit)
-                {
+                if checked_target_size(target.device, size.map(u32::from), "bitmap").is_err() {
                     return;
                 }
+                let format = wgpu::TextureFormat::Rgba8Unorm;
+                let usage = wgpu::TextureUsages::TEXTURE_BINDING;
+                let descriptor = texture_descriptor("bitmap glyph", format, usage, size);
                 let texture = target.device.create_texture_with_data(
                     target.queue,
-                    &wgpu::TextureDescriptor {
-                        label: Some("bitmap glyph"),
-                        size: wgpu::Extent3d {
-                            width: u32::from(size[0]),
-                            height: u32::from(size[1]),
-                            depth_or_array_layers: 1,
-                        },
-                        mip_level_count: 1,
-                        sample_count: 1,
-                        dimension: wgpu::TextureDimension::D2,
-                        format: wgpu::TextureFormat::Rgba8Unorm,
-                        usage: wgpu::TextureUsages::TEXTURE_BINDING,
-                        view_formats: &[],
-                    },
+                    &descriptor,
                     wgpu::util::TextureDataOrder::LayerMajor,
                     pixmap.data_as_u8_slice(),
                 );
@@ -242,13 +222,13 @@ impl TextSpec<'_> {
             * self.bitmap_transform(run, glyph, bitmap, image.size[1], units_per_em);
         target.scene.set_transform(transform);
         target.scene.push_opacity_layer(self.color[3]);
-        target.scene.draw_texture_rects(
+        let quality = peniko::ImageQuality::Medium;
+        draw_texture(
+            target.scene,
             image.texture,
-            peniko::ImageQuality::Medium,
-            [vello_hybrid::SampleRect {
-                source_region: RectU16::new(0, 0, image.size[0], image.size[1]),
-                transform: kurbo::Affine::IDENTITY,
-            }],
+            quality,
+            image.size,
+            kurbo::Affine::IDENTITY,
         );
         target.scene.pop_layer();
         target.scene.restore_state(saved);
@@ -262,10 +242,6 @@ pub(super) struct TextState {
 }
 
 impl TextState {
-    pub(super) fn append_to_scene(&mut self, target: &mut TextTarget<'_>, spec: &TextSpec<'_>) {
-        spec.append_to_scene(target, &mut self.bitmaps, &mut self.outline_glyphs);
-    }
-
     pub(super) fn finish_frame(&mut self, target: &mut TextTarget<'_>) {
         self.bitmaps.images.retain(|_, image| {
             let used = std::mem::take(&mut image.used);

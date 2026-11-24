@@ -5,7 +5,7 @@ mod picker;
 mod text;
 
 use crate::text::TextSpec;
-use geometry::DrawCommand;
+use geometry::{DrawCommand, Paint};
 pub(crate) use geometry::{Geometry, LocalGeometry};
 pub(crate) use text::contrasting_color;
 
@@ -53,7 +53,7 @@ pub(crate) struct WgpuState {
     main_scene: vello_hybrid::Scene,
     // Built on first use to avoid compiling a second pipeline per output.
     picker: Option<PickerState>,
-    annotation_cache: Option<AnnotationCache>,
+    annotation_cache: Option<(AnnotationKey, wgpu::TextureView)>,
     text: TextState,
     // Textures the main scene samples: the picker target, annotation cache and color glyph bitmaps.
     texture_bindings: vello_hybrid::TextureBindings,
@@ -61,11 +61,6 @@ pub(crate) struct WgpuState {
 
 // Revision, target size, origin and scale bits, and shadow overlap.
 type AnnotationKey = (u64, [u16; 2], [u32; 2], [u64; 2], bool);
-
-struct AnnotationCache {
-    key: AnnotationKey,
-    view: wgpu::TextureView,
-}
 
 impl WgpuState {
     pub(crate) fn size(&self) -> [u32; 2] {
@@ -83,27 +78,18 @@ impl WgpuState {
         let output_size = [width, height];
         let [width, height] = if can_shrink { [1, 1] } else { output_size };
         let capabilities = surface.get_capabilities(&gpu.adapter);
+        use wgpu::TextureFormat::{Bgra8Unorm, Bgra8UnormSrgb, Rgba8Unorm, Rgba8UnormSrgb};
         // Wayland blends encoded colors. Avoid sRGB targets (which encode RGB after
         // Vello premultiplies edge coverage) and 2-bit alpha formats like Rgb10a2Unorm.
         let format = capabilities
             .formats
             .iter()
-            .find(|format| {
-                matches!(
-                    format,
-                    wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Rgba8Unorm
-                )
-            })
-            .or_else(|| {
-                capabilities.formats.iter().find(|format| {
-                    matches!(
-                        format,
-                        wgpu::TextureFormat::Bgra8UnormSrgb | wgpu::TextureFormat::Rgba8UnormSrgb
-                    )
-                })
-            })
-            .or_else(|| capabilities.formats.first())
             .copied()
+            .min_by_key(|format| match format {
+                Bgra8Unorm | Rgba8Unorm => 0,
+                Bgra8UnormSrgb | Rgba8UnormSrgb => 1,
+                _ => 2,
+            })
             .ok_or("GPU adapter does not support the Wayland surface")?;
         // Vello writes premultiplied alpha. Wayland composites inherited alpha as premultiplied.
         let alpha_mode = [
@@ -272,6 +258,11 @@ impl WgpuState {
         } else {
             self.output_size
         });
+        // Creation and resize validate these dimensions.
+        let size = [
+            self.surface_config.width as u16,
+            self.surface_config.height as u16,
+        ];
         let annotated = items
             .iter()
             .any(|item| !matches!(item, SceneItem::Feedback(_)));
@@ -281,195 +272,121 @@ impl WgpuState {
         let cache_key = revision
             .filter(|_| interactive && annotated && shadows)
             .map(|revision| {
-                (
-                    revision,
-                    [
-                        self.surface_config.width as u16,
-                        self.surface_config.height as u16,
-                    ],
-                    viewport_origin.map(f32::to_bits),
-                    scale.map(f64::to_bits),
-                    shadow_overlap,
-                )
+                let (origin, scale) = (viewport_origin.map(f32::to_bits), scale.map(f64::to_bits));
+                (revision, size, origin, scale, shadow_overlap)
             });
         let Some(output) = self.acquire_frame()? else {
             return Ok(false);
         };
 
-        // Creation and resize validate these dimensions.
-        let main_size = [
-            self.surface_config.width as u16,
-            self.surface_config.height as u16,
-        ];
         let scene_transform = Affine::scale_non_uniform(scale[0], scale[1])
             * Affine::translate((
                 -f64::from(viewport_origin[0]),
                 -f64::from(viewport_origin[1]),
             ));
-        let mut cache_rebuilt = false;
-        if let Some(key) = cache_key
-            && self
-                .annotation_cache
-                .as_ref()
-                .is_none_or(|cache| cache.key != key)
-        {
-            self.render_annotation_cache(key, items, scene_transform)?;
-            cache_rebuilt = true;
+        let cached = self.annotation_cache.as_ref().map(|(key, _)| *key);
+        let cache_rebuilt = cache_key.is_some() && cached != cache_key;
+        if let Some(key) = cache_key.filter(|_| cache_rebuilt) {
+            let view = match self.annotation_cache.take() {
+                Some((old, view)) if old.1 == size => view,
+                _ => {
+                    let format = self.surface_config.format;
+                    let view = sampled_target(&self.device, "annotation cache", format, size);
+                    self.texture_bindings
+                        .insert(ANNOTATION_CACHE_TEXTURE, view.clone());
+                    view
+                }
+            };
+            self.render_scene(size, &view, |this, _, shadows| {
+                this.main_scene.set_transform(scene_transform);
+                let overlap = shadows.then_some(shadow_overlap);
+                this.append_annotations(items, &[], scene_transform, overlap);
+                Ok(())
+            })?;
+            self.annotation_cache = Some((key, view));
         }
-        let target_is_srgb = self.surface_config.format.is_srgb();
-        let mut shadows = shadows;
-        let encoder = loop {
-            if empty {
-                // Reset keeps the recorder's peak allocations. Empty frames can release
-                // that CPU storage while retaining the GPU device and pipelines.
-                self.main_scene = vello_hybrid::Scene::new(main_size[0], main_size[1]);
-            } else {
-                self.main_scene.reset_and_resize(main_size[0], main_size[1]);
-            }
+        if empty {
+            // Reset keeps the recorder's peak allocations. Empty frames can release
+            // that CPU storage while retaining the GPU device and pipelines.
+            self.main_scene = vello_hybrid::Scene::new(size[0], size[1]);
+        }
+        let swapchain_view = output.texture.create_view(&Default::default());
+        self.render_scene(size, &swapchain_view, |this, encoder, retry_shadows| {
+            let shadows = shadows && retry_shadows;
+            let is_srgb = this.surface_config.format.is_srgb();
+            let scene = &mut this.main_scene;
             if let Some(color) = background {
-                self.main_scene.set_transform(Affine::IDENTITY);
-                self.main_scene
-                    .set_paint(vello_color(color, target_is_srgb));
-                self.main_scene.fill_rect(&kurbo::Rect::new(
-                    0.0,
-                    0.0,
-                    f64::from(main_size[0]),
-                    f64::from(main_size[1]),
-                ));
+                let [width, height] = size.map(f64::from);
+                scene.set_paint(vello_color(color, is_srgb));
+                scene.fill_rect(&kurbo::Rect::new(0.0, 0.0, width, height));
             }
-            let mut encoder = self
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-            if cache_key.is_some() {
+            // Cached ink already carries its shadows, so previews draw their grouped shadow
+            // beneath it and only per-item shadows above it.
+            let (committed, overlap) = if cache_key.is_some() {
                 if shadows && !shadow_overlap && !previews.annotations.is_empty() {
-                    self.main_scene.set_transform(scene_transform);
-                    self.main_scene.push_layer(
-                        None,
-                        None,
-                        None,
-                        None,
-                        Some(shadow_filter(2.0, true)),
-                    );
+                    scene.set_transform(scene_transform);
+                    scene.push_filter_layer(shadow_filter(2.0, true));
                     for geometry in previews.annotations {
-                        replay_geometry(&mut self.main_scene, geometry, target_is_srgb);
+                        replay_geometry(scene, geometry, is_srgb);
                     }
-                    self.main_scene.pop_layer();
+                    scene.pop_layer();
+                    scene.set_transform(Affine::IDENTITY);
                 }
-                self.main_scene.set_transform(Affine::IDENTITY);
-                self.main_scene.draw_texture_rects(
-                    ANNOTATION_CACHE_TEXTURE,
-                    peniko::ImageQuality::Low,
-                    [vello_hybrid::SampleRect {
-                        source_region: RectU16::new(0, 0, main_size[0], main_size[1]),
-                        transform: Affine::IDENTITY,
-                    }],
-                );
-                self.main_scene.set_transform(scene_transform);
-                for geometry in previews.annotations {
-                    let layer =
-                        annotation_layer(&mut self.main_scene, 1.0, shadows && shadow_overlap);
-                    replay_geometry(&mut self.main_scene, geometry, target_is_srgb);
-                    if layer {
-                        self.main_scene.pop_layer();
-                    }
-                }
+                let quality = peniko::ImageQuality::Low;
+                let cache = ANNOTATION_CACHE_TEXTURE;
+                draw_texture(scene, cache, quality, size, Affine::IDENTITY);
+                (&[][..], (shadows && shadow_overlap).then_some(true))
             } else {
-                self.main_scene.set_transform(scene_transform);
-                self.append_annotations(
-                    items,
-                    previews.annotations,
-                    scene_transform,
-                    shadows,
-                    shadow_overlap,
-                );
-            }
+                (items, shadows.then_some(shadow_overlap))
+            };
+            scene.set_transform(scene_transform);
+            this.append_annotations(committed, previews.annotations, scene_transform, overlap);
+            let scene = &mut this.main_scene;
             for geometry in previews.decorations {
-                replay_geometry(&mut self.main_scene, geometry, target_is_srgb);
+                replay_geometry(scene, geometry, is_srgb);
             }
             if let Some(cursor) = &previews.cursor {
                 if shadows {
                     let bounds = cursor.bounds().unwrap_or_default();
                     let radius =
                         (bounds.width().min(bounds.height()) as f32 * 0.2).clamp(0.25, 2.0);
-                    self.main_scene.push_layer(
-                        None,
-                        None,
-                        None,
-                        None,
-                        Some(shadow_filter(radius, false)),
-                    );
+                    scene.push_filter_layer(shadow_filter(radius, false));
                 }
-                replay_geometry(&mut self.main_scene, cursor, target_is_srgb);
+                replay_geometry(scene, cursor, is_srgb);
                 if shadows {
-                    self.main_scene.pop_layer();
+                    scene.pop_layer();
                 }
             }
 
             if let Some(picker) = picker {
-                let picker_state = self.picker.get_or_insert_with(|| {
-                    PickerState::new(&self.device, self.surface_config.format)
+                let picker_state = this.picker.get_or_insert_with(|| {
+                    PickerState::new(&this.device, this.surface_config.format)
                 });
                 picker_state.prepare(
-                    &self.device,
-                    &mut self.main_scene,
-                    &mut self.texture_bindings,
-                    &self.surface_config,
+                    &this.device,
+                    &mut this.main_scene,
+                    &mut this.texture_bindings,
+                    &this.surface_config,
                     picker,
                     &viewport,
                 )?;
-                picker_state.render(&self.device, &self.queue, &mut encoder)?;
+                picker_state.render(&this.device, &this.queue, encoder)?;
             } else {
-                self.release_picker();
+                this.release_picker();
             }
 
-            self.main_scene.set_transform(scene_transform);
-            let mut target = text::TextTarget {
-                scene: &mut self.main_scene,
-                resources: &mut self.main_resources,
-                texture_bindings: &mut self.texture_bindings,
-                device: &self.device,
-                queue: &self.queue,
-                is_srgb: target_is_srgb,
-            };
+            this.main_scene.set_transform(scene_transform);
+            let (text, mut target) = this.text_target();
             for item in items {
                 if let SceneItem::Feedback(spec) = item {
-                    self.text.append_to_scene(&mut target, spec);
+                    spec.append_to_scene(&mut target, text);
                 }
             }
             if cache_key.is_none() || cache_rebuilt {
-                self.text.finish_frame(&mut target);
+                text.finish_frame(&mut target);
             }
-
-            let swapchain_view = output
-                .texture
-                .create_view(&wgpu::TextureViewDescriptor::default());
-            let render_size = vello_hybrid::RenderSize {
-                width: u32::from(main_size[0]),
-                height: u32::from(main_size[1]),
-            };
-            match self.main_renderer.render(
-                &self.main_scene,
-                &mut self.main_resources,
-                &self.device,
-                &self.queue,
-                &mut encoder,
-                &render_size,
-                &swapchain_view,
-                &self.texture_bindings,
-            ) {
-                Ok(()) => break encoder,
-                // Retry on the acquired frame when filter padding exceeds the hardware limit.
-                Err(error) if shadows && filter_too_large(&error) => {
-                    log::debug!("rendering without shadows for this frame: {error}");
-                    shadows = false;
-                }
-                Err(error) => {
-                    return Err(format!("Vello annotation render failed: {error}"));
-                }
-            }
-        };
-        log::trace!("submitting annotation frame");
-        self.queue.submit(Some(encoder.finish()));
+            Ok(())
+        })?;
         before_present();
         log::trace!("presenting annotation frame");
         output.present();
@@ -477,106 +394,22 @@ impl WgpuState {
         Ok(true)
     }
 
-    // Appends committed items and live previews with their grouped or per-item shadows.
-    fn append_annotations(
+    // Builds the main scene into `view` and submits it, retrying without shadows when filter
+    // padding exceeds the hardware limit.
+    fn render_scene(
         &mut self,
-        items: &[SceneItem<'_>],
-        previews: &[Geometry],
-        scene_transform: Affine,
-        shadows: bool,
-        shadow_overlap: bool,
-    ) {
-        let target_is_srgb = self.surface_config.format.is_srgb();
-        let mut target = text::TextTarget {
-            scene: &mut self.main_scene,
-            resources: &mut self.main_resources,
-            texture_bindings: &mut self.texture_bindings,
-            device: &self.device,
-            queue: &self.queue,
-            is_srgb: target_is_srgb,
-        };
-        if shadows && !shadow_overlap {
-            target
-                .scene
-                .push_layer(None, None, None, None, Some(shadow_filter(2.0, false)));
-        }
-        for item in items {
-            let (SceneItem::Geometry(_, _, opacity) | SceneItem::Text(_, opacity)) = item else {
-                continue;
-            };
-            let layer = annotation_layer(target.scene, *opacity, shadows && shadow_overlap);
-            match item {
-                SceneItem::Geometry(geometry, offset, _) => {
-                    if *offset != [0.0; 2] {
-                        target.scene.set_transform(
-                            scene_transform
-                                * Affine::translate((f64::from(offset[0]), f64::from(offset[1]))),
-                        );
-                    }
-                    replay_geometry(target.scene, geometry, target_is_srgb);
-                    if *offset != [0.0; 2] {
-                        target.scene.set_transform(scene_transform);
-                    }
-                }
-                SceneItem::Text(spec, _) => self.text.append_to_scene(&mut target, spec),
-                SceneItem::Feedback(_) => {}
-            }
-            if layer {
-                target.scene.pop_layer();
-            }
-        }
-        for geometry in previews {
-            let layer = annotation_layer(target.scene, 1.0, shadows && shadow_overlap);
-            replay_geometry(target.scene, geometry, target_is_srgb);
-            if layer {
-                target.scene.pop_layer();
-            }
-        }
-        if shadows && !shadow_overlap {
-            target.scene.pop_layer();
-        }
-    }
-
-    fn render_annotation_cache(
-        &mut self,
-        key: AnnotationKey,
-        items: &[SceneItem<'_>],
-        scene_transform: Affine,
+        [width, height]: [u16; 2],
+        view: &wgpu::TextureView,
+        mut build: impl FnMut(&mut Self, &mut wgpu::CommandEncoder, bool) -> Result<(), String>,
     ) -> Result<(), String> {
-        let (_, size, _, _, shadow_overlap) = key;
-        let cache = match self.annotation_cache.take() {
-            Some(cache) if cache.key.1 == size => cache,
-            _ => {
-                let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-                    label: Some("annotation cache"),
-                    size: wgpu::Extent3d {
-                        width: u32::from(size[0]),
-                        height: u32::from(size[1]),
-                        depth_or_array_layers: 1,
-                    },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format: self.surface_config.format,
-                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                        | wgpu::TextureUsages::TEXTURE_BINDING,
-                    view_formats: &[],
-                });
-                let view = texture.create_view(&Default::default());
-                self.texture_bindings
-                    .insert(ANNOTATION_CACHE_TEXTURE, view.clone());
-                AnnotationCache { key, view }
-            }
-        };
         let mut shadows = true;
         loop {
-            self.main_scene.reset_and_resize(size[0], size[1]);
-            self.main_scene.set_transform(scene_transform);
-            self.append_annotations(items, &[], scene_transform, shadows, shadow_overlap);
+            self.main_scene.reset_and_resize(width, height);
             let mut encoder = self.device.create_command_encoder(&Default::default());
-            let render_size = vello_hybrid::RenderSize {
-                width: u32::from(size[0]),
-                height: u32::from(size[1]),
+            build(self, &mut encoder, shadows)?;
+            let size = vello_hybrid::RenderSize {
+                width: width.into(),
+                height: height.into(),
             };
             match self.main_renderer.render(
                 &self.main_scene,
@@ -584,23 +417,80 @@ impl WgpuState {
                 &self.device,
                 &self.queue,
                 &mut encoder,
-                &render_size,
-                &cache.view,
+                &size,
+                view,
                 &self.texture_bindings,
             ) {
                 Ok(()) => {
+                    log::trace!("submitting annotation frame");
                     self.queue.submit(Some(encoder.finish()));
-                    break;
+                    return Ok(());
                 }
-                Err(error) if shadows && filter_too_large(&error) => shadows = false,
-                Err(error) => {
-                    self.texture_bindings.remove(ANNOTATION_CACHE_TEXTURE);
-                    return Err(format!("Vello annotation cache render failed: {error}"));
+                Err(vello_hybrid::RenderError::IntermediateTexture(
+                    error @ vello_hybrid::IntermediateTextureError::TooLarge { .. },
+                )) if shadows => {
+                    log::debug!("rendering without shadows for this frame: {error}");
+                    shadows = false;
                 }
+                Err(error) => return Err(format!("Vello annotation render failed: {error}")),
             }
         }
-        self.annotation_cache = Some(AnnotationCache { key, ..cache });
-        Ok(())
+    }
+
+    fn text_target(&mut self) -> (&mut TextState, text::TextTarget<'_>) {
+        let target = text::TextTarget {
+            scene: &mut self.main_scene,
+            resources: &mut self.main_resources,
+            texture_bindings: &mut self.texture_bindings,
+            device: &self.device,
+            queue: &self.queue,
+            is_srgb: self.surface_config.format.is_srgb(),
+        };
+        (&mut self.text, target)
+    }
+
+    // Appends committed items and live previews with grouped shadows, or per-item shadows when
+    // `shadow_overlap` is `Some(true)`. `None` disables shadows.
+    fn append_annotations(
+        &mut self,
+        items: &[SceneItem<'_>],
+        previews: &[Geometry],
+        scene_transform: Affine,
+        shadow_overlap: Option<bool>,
+    ) {
+        let (text, mut target) = self.text_target();
+        if shadow_overlap == Some(false) {
+            target.scene.push_filter_layer(shadow_filter(2.0, false));
+        }
+        let mut append = |item: &SceneItem<'_>| {
+            let (SceneItem::Geometry(_, _, opacity) | SceneItem::Text(_, opacity)) = item else {
+                return;
+            };
+            let layer = annotation_layer(target.scene, *opacity, shadow_overlap == Some(true));
+            match item {
+                SceneItem::Geometry(geometry, [0.0, 0.0], _) => {
+                    replay_geometry(target.scene, geometry, target.is_srgb);
+                }
+                SceneItem::Geometry(geometry, [x, y], _) => {
+                    let offset = Affine::translate((f64::from(*x), f64::from(*y)));
+                    target.scene.set_transform(scene_transform * offset);
+                    replay_geometry(target.scene, geometry, target.is_srgb);
+                    target.scene.set_transform(scene_transform);
+                }
+                SceneItem::Text(spec, _) => spec.append_to_scene(&mut target, text),
+                SceneItem::Feedback(_) => {}
+            }
+            if layer {
+                target.scene.pop_layer();
+            }
+        };
+        items.iter().for_each(&mut append);
+        for geometry in previews {
+            append(&SceneItem::Geometry(Cow::Borrowed(geometry), [0.0; 2], 1.0));
+        }
+        if shadow_overlap == Some(false) {
+            target.scene.pop_layer();
+        }
     }
 
     pub(crate) fn release_picker(&mut self) {
@@ -610,26 +500,12 @@ impl WgpuState {
     }
 }
 
-fn filter_too_large(error: &vello_hybrid::RenderError) -> bool {
-    matches!(
-        error,
-        vello_hybrid::RenderError::IntermediateTexture(
-            vello_hybrid::IntermediateTextureError::TooLarge { .. },
-        )
-    )
-}
-
 fn annotation_layer(scene: &mut vello_hybrid::Scene, opacity: f32, shadow: bool) -> bool {
     if !shadow && opacity == 1.0 {
         return false;
     }
-    scene.push_layer(
-        None,
-        None,
-        Some(opacity),
-        None,
-        shadow.then(|| shadow_filter(2.0, false)),
-    );
+    let filter = shadow.then(|| shadow_filter(2.0, false));
+    scene.push_layer(None, None, Some(opacity), None, filter);
     true
 }
 
@@ -677,24 +553,64 @@ fn checked_target_size(
     Ok([size[0] as u16, size[1] as u16])
 }
 
-fn replay_geometry(scene: &mut vello_hybrid::Scene, geometry: &Geometry, target_is_srgb: bool) {
-    for command in &geometry.commands {
-        match command {
-            DrawCommand::Fill {
-                path,
-                fill_rule,
-                color,
-            } => {
-                scene.set_paint(vello_color(*color, target_is_srgb));
-                scene.set_fill_rule(*fill_rule);
+fn texture_descriptor(
+    label: &str,
+    format: wgpu::TextureFormat,
+    usage: wgpu::TextureUsages,
+    [width, height]: [u16; 2],
+) -> wgpu::TextureDescriptor<'_> {
+    wgpu::TextureDescriptor {
+        label: Some(label),
+        size: wgpu::Extent3d {
+            width: width.into(),
+            height: height.into(),
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage,
+        view_formats: &[],
+    }
+}
+
+// An offscreen target that the main scene samples as a texture.
+fn sampled_target(
+    device: &wgpu::Device,
+    label: &str,
+    format: wgpu::TextureFormat,
+    size: [u16; 2],
+) -> wgpu::TextureView {
+    let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
+    let texture = device.create_texture(&texture_descriptor(label, format, usage, size));
+    texture.create_view(&Default::default())
+}
+
+fn draw_texture(
+    scene: &mut vello_hybrid::Scene,
+    texture: TextureId,
+    quality: peniko::ImageQuality,
+    [width, height]: [u16; 2],
+    transform: Affine,
+) {
+    let source_region = RectU16::new(0, 0, width, height);
+    let rect = vello_hybrid::SampleRect {
+        source_region,
+        transform,
+    };
+    scene.draw_texture_rects(texture, quality, [rect]);
+}
+
+fn replay_geometry(scene: &mut vello_hybrid::Scene, geometry: &Geometry, is_srgb: bool) {
+    for DrawCommand { path, paint, color } in &geometry.commands {
+        scene.set_paint(vello_color(*color, is_srgb));
+        match paint {
+            Paint::Fill(rule) => {
+                scene.set_fill_rule(*rule);
                 scene.fill_path(path);
             }
-            DrawCommand::Stroke {
-                path,
-                stroke,
-                color,
-            } => {
-                scene.set_paint(vello_color(*color, target_is_srgb));
+            Paint::Stroke(stroke) => {
                 scene.set_stroke(stroke.clone());
                 scene.stroke_path(path);
             }
@@ -702,21 +618,15 @@ fn replay_geometry(scene: &mut vello_hybrid::Scene, geometry: &Geometry, target_
     }
 }
 
-fn srgb_to_linear(component: f32) -> f32 {
-    if component <= 0.04045 {
-        component / 12.92
-    } else {
-        ((component + 0.055) / 1.055).powf(2.4)
-    }
+fn srgb_to_linear(rgb: [f32; 3]) -> [f32; 3] {
+    <color::Srgb as color::ColorSpace>::to_linear_srgb(rgb)
 }
 
-fn vello_color([red, green, blue, alpha]: [f32; 4], target_is_srgb: bool) -> peniko::Color {
-    let convert = |component| {
-        if target_is_srgb {
-            srgb_to_linear(component)
-        } else {
-            component
-        }
+fn vello_color([red, green, blue, alpha]: [f32; 4], is_srgb: bool) -> peniko::Color {
+    let [red, green, blue] = if is_srgb {
+        srgb_to_linear([red, green, blue])
+    } else {
+        [red, green, blue]
     };
-    peniko::Color::new([convert(red), convert(green), convert(blue), alpha])
+    peniko::Color::new([red, green, blue, alpha])
 }

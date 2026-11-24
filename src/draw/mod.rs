@@ -135,11 +135,8 @@ impl DrawState {
     pub(crate) fn select_tool(&mut self, tool: &str) -> Result<bool, String> {
         let was_editing_text = self.editor.is_editing_text();
         let changed = self.editor.switch_named_tool(tool)?;
-        Ok(if was_editing_text {
-            self.record(changed)
-        } else {
-            self.record_overlay(changed)
-        })
+        self.record(changed && was_editing_text);
+        Ok(self.record_overlay(changed))
     }
 
     pub(crate) fn set_tool_setting(
@@ -212,10 +209,9 @@ impl DrawState {
     }
 
     pub(crate) fn deactivate(&mut self, preserve_picker: bool) -> bool {
-        let mut changed = self.editor.deactivate(preserve_picker);
-        if self.feedback.take().is_some() | self.tool_cursor.take().is_some() {
-            changed = true;
-        }
+        let changed = self.editor.deactivate(preserve_picker)
+            | self.feedback.take().is_some()
+            | self.tool_cursor.take().is_some();
         self.caret_until = None;
         self.record(changed)
     }
@@ -237,11 +233,7 @@ impl DrawState {
         let user_input = !matches!(action, Action::ApplyTextInput(_));
         let mut effect = self.editor.handle_action(action);
         if let (Some(label), Some(at)) = (effect.feedback.take(), at) {
-            self.feedback = Some(Feedback {
-                text: crate::text::Text::new(label, self.editor.text_font(), 18.0),
-                anchor: at,
-                until: Instant::now() + self.feedback_duration,
-            });
+            self.show_feedback(label, at);
             effect.changed = true;
         }
         if (user_input || effect.changed) && self.show_caret() {
@@ -278,17 +270,13 @@ impl DrawState {
         if changed {
             self.show_caret();
         }
-        if erasing {
-            self.record(changed)
-        } else {
-            self.damage_interaction(changed, before)
-        }
+        self.record(changed && erasing);
+        self.damage_interaction(changed && !erasing, before);
+        changed
     }
 
     pub(crate) fn pen_motion(&mut self, motion: PenMotion, modifiers: Modifiers) -> bool {
-        let before = self.editor.interaction_bounds();
-        let changed = self.editor.pen_motion(motion, modifiers);
-        self.damage_interaction(changed, before)
+        self.interact(|editor| editor.pen_motion(motion, modifiers))
     }
 
     pub(crate) fn pen_release_tip(&self, point: Point, modifiers: Modifiers) -> Option<Point> {
@@ -296,9 +284,7 @@ impl DrawState {
     }
 
     pub(crate) fn modifiers_changed(&mut self, modifiers: Modifiers) -> bool {
-        let before = self.editor.interaction_bounds();
-        let changed = self.editor.modifiers_changed(modifiers);
-        self.damage_interaction(changed, before)
+        self.interact(|editor| editor.modifiers_changed(modifiers))
     }
 
     pub(crate) fn pointer_up(&mut self, point: Point, modifiers: Modifiers) -> bool {
@@ -334,25 +320,21 @@ impl DrawState {
             return false;
         }
         for (point, cursor) in [self.tool_cursor, cursor].into_iter().flatten() {
-            if let Some(bounds) = tool_cursor_geometry(point, cursor).bounds() {
-                let margin = if self.shadows { 10.0 } else { 0.0 };
-                self.damage_region(bounds.inflate(margin, margin));
-            }
+            self.damage_shadowed(tool_cursor_geometry(point, cursor).bounds());
         }
         self.tool_cursor = cursor;
         true
     }
 
     pub(crate) fn open_picker(&mut self, center: Point) {
-        let before = self.editor.interaction_bounds();
-        self.editor.open_picker(center);
-        self.damage_interaction(true, before);
+        self.interact(|editor| {
+            editor.open_picker(center);
+            true
+        });
     }
 
     pub(crate) fn picker_motion(&mut self, point: Point) -> bool {
-        let before = self.editor.interaction_bounds();
-        let changed = self.editor.picker_motion(point);
-        self.damage_interaction(changed, before)
+        self.interact(|editor| editor.picker_motion(point))
     }
 
     pub(crate) fn picker_release(&mut self, point: Point, latch_center: bool) -> bool {
@@ -361,9 +343,7 @@ impl DrawState {
     }
 
     pub(crate) fn dismiss_picker(&mut self) -> bool {
-        let before = self.editor.interaction_bounds();
-        let changed = self.editor.dismiss_picker();
-        self.damage_interaction(changed, before)
+        self.interact(Editor::dismiss_picker)
     }
 
     pub(crate) fn text_click_at(&mut self, point: Point, clicks: u8) -> Option<bool> {
@@ -380,19 +360,20 @@ impl DrawState {
         } else {
             self.editor.adjust(Property::Size, steps)
         };
-        if adjustment.changed {
-            self.record(true);
-        } else if adjustment.feedback.is_some() {
+        self.record(adjustment.changed);
+        if let Some(text) = adjustment.feedback {
+            self.show_feedback(text, at);
             self.record_overlay(true);
         }
-        if let Some(text) = adjustment.feedback {
-            self.feedback = Some(Feedback {
-                text: crate::text::Text::new(text, self.editor.text_font(), 18.0),
-                anchor: at,
-                until: Instant::now() + self.feedback_duration,
-            });
-        }
         adjustment.hit_stop
+    }
+
+    fn show_feedback(&mut self, label: String, anchor: Point) {
+        self.feedback = Some(Feedback {
+            text: crate::text::Text::new(label, self.editor.text_font(), 18.0),
+            anchor,
+            until: Instant::now() + self.feedback_duration,
+        });
     }
 
     pub(crate) fn add_output(&mut self, output: OutputId) {
@@ -457,6 +438,12 @@ impl DrawState {
         }
     }
 
+    fn interact(&mut self, change: impl FnOnce(&mut Editor) -> bool) -> bool {
+        let before = self.editor.interaction_bounds();
+        let changed = change(&mut self.editor);
+        self.damage_interaction(changed, before)
+    }
+
     // Damages the outputs under a live gesture or picker before and after an uncommitted change.
     fn damage_interaction(&mut self, changed: bool, before: Option<kurbo::Rect>) -> bool {
         if !changed {
@@ -466,11 +453,21 @@ impl DrawState {
         if before.is_none() && after.is_none() {
             return self.record(true);
         }
-        let margin = if self.shadows { 10.0 } else { 1.0 };
-        for bounds in [before, after].into_iter().flatten() {
-            self.damage_region(bounds.inflate(margin, margin));
+        for bounds in [before, after] {
+            self.damage_shadowed(bounds);
         }
         true
+    }
+
+    fn shadow_margin(&self) -> f64 {
+        if self.shadows { 10.0 } else { 1.0 }
+    }
+
+    fn damage_shadowed(&mut self, bounds: Option<kurbo::Rect>) {
+        if let Some(bounds) = bounds {
+            let margin = self.shadow_margin();
+            self.damage_region(bounds.inflate(margin, margin));
+        }
     }
 
     fn record(&mut self, changed: bool) -> bool {
@@ -480,11 +477,8 @@ impl DrawState {
                 .editor
                 .next_fade(Instant::now())
                 .map(|next| self.fade_frame.map_or(next, |current| current.min(next)));
-            for output in self.outputs.values_mut() {
-                output.dirty = true;
-            }
         }
-        changed
+        self.record_overlay(changed)
     }
 
     fn record_overlay(&mut self, changed: bool) -> bool {
@@ -513,17 +507,11 @@ impl DrawState {
             self.fade_frame = None;
             self.editor.expire_annotations(now);
         }
-        let mut changed = fading;
-        let mut feedback_expired = false;
-        if self
+        let feedback_expired = self
             .feedback
-            .as_ref()
-            .is_some_and(|feedback| now >= feedback.until)
-        {
-            self.feedback = None;
-            feedback_expired = true;
-            changed = true;
-        }
+            .take_if(|feedback| now >= feedback.until)
+            .is_some();
+        let mut changed = fading || feedback_expired;
         if self.caret_until.is_some_and(|until| now >= until) {
             if let Some(edit) = self.editor.text_edit() {
                 if let Some(bounds) = edit.caret().bounds() {
@@ -536,11 +524,8 @@ impl DrawState {
                 self.caret_until = None;
             }
         }
-        if fading {
-            self.record(true);
-        } else if feedback_expired {
-            self.record_overlay(true);
-        }
+        self.record(fading);
+        self.record_overlay(feedback_expired);
         changed
     }
 

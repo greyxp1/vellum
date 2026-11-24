@@ -19,43 +19,41 @@ impl State {
             return;
         }
         let presentation = self.presentation(output);
-        if let Some(output_state) = self.wayland.outputs.get_mut(&output) {
-            log::trace!("rendering output {output} ({:?})", output_state.name);
-            let scale = output_state.render_scale();
-            let Some(wgpu) = output_state.wgpu.as_mut() else {
-                return;
-            };
-            let text_input = &mut self.text_input;
-            let proxy = self.wayland.text_input.as_ref();
-            let surface = &output_state.surface;
-            let frame_pending = &mut output_state.frame_pending;
-            let commit_pending = &mut output_state.commit_pending;
-            let qhandle = &self.qhandle;
-            if let Err(error) = self.draw.render(
-                output,
-                output_state.origin,
-                scale,
-                presentation,
-                wgpu,
-                |snapshot| {
-                    text_input.sync_render(proxy, output, snapshot);
-                    *commit_pending = false;
-                    // Request the callback only once acquisition and rendering
-                    // succeeded, so Vulkan commits it with the new buffer.
-                    if !*frame_pending {
-                        surface.frame(qhandle, output);
-                        *frame_pending = true;
-                    }
-                },
-            ) {
-                self.fatal_error = Some(error);
-                return;
-            }
-            output_state.render_retry = self
-                .draw
-                .needs_render(output)
-                .then(|| Instant::now() + RENDER_RETRY_INTERVAL);
+        let Some(output_state) = self.wayland.outputs.get_mut(&output) else {
+            return;
+        };
+        log::trace!("rendering output {output} ({:?})", output_state.name);
+        let scale = output_state.render_scale();
+        let Some(wgpu) = output_state.wgpu.as_mut() else {
+            return;
+        };
+        let text_input = &mut self.text_input;
+        let proxy = self.wayland.text_input.as_ref();
+        let surface = &output_state.surface;
+        let frame_pending = &mut output_state.frame_pending;
+        let commit_pending = &mut output_state.commit_pending;
+        let qhandle = &self.qhandle;
+        let origin = output_state.origin;
+        let result = self
+            .draw
+            .render(output, origin, scale, presentation, wgpu, |snapshot| {
+                text_input.sync_render(proxy, output, snapshot);
+                *commit_pending = false;
+                // Request the callback only once acquisition and rendering
+                // succeeded, so Vulkan commits it with the new buffer.
+                if !*frame_pending {
+                    surface.frame(qhandle, output);
+                    *frame_pending = true;
+                }
+            });
+        if let Err(error) = result {
+            self.fatal_error = Some(error);
+            return;
         }
+        output_state.render_retry = self
+            .draw
+            .needs_render(output)
+            .then(|| Instant::now() + RENDER_RETRY_INTERVAL);
     }
 
     pub(super) fn request_render(&mut self) {

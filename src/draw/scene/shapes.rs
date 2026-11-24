@@ -142,7 +142,7 @@ pub(in crate::draw) fn geometry(kind: &ElementKind, style: Style) -> Geometry {
             arrow: true,
         } => {
             let (start, end) = pixel_aligned_segment(*start, *end, style.size);
-            Geometry::fill(
+            Geometry::new(
                 arrow_path(arrow_head(start, end, style.size), style.roundness),
                 Fill::NonZero,
                 style.color,
@@ -152,7 +152,7 @@ pub(in crate::draw) fn geometry(kind: &ElementKind, style: Style) -> Geometry {
         ElementKind::Segment {
             points: [start, end],
             arrow: false,
-        } => Geometry::fill(
+        } => Geometry::new(
             line_path(*start, *end, style.size, style.roundness),
             Fill::NonZero,
             style.color,
@@ -172,9 +172,9 @@ pub(in crate::draw) fn geometry(kind: &ElementKind, style: Style) -> Geometry {
             let radii = (f64::from(radii.0.max(0.0)), f64::from(radii.1.max(0.0)));
             let path = kurbo::Ellipse::new(kurbo_point(*center), radii, 0.0).to_path(0.1);
             if style.filled {
-                return Geometry::fill(path, Fill::NonZero, style.color);
+                return Geometry::new(path, Fill::NonZero, style.color);
             }
-            Geometry::stroke(
+            Geometry::new(
                 path,
                 kurbo::Stroke::new(f64::from(style.size))
                     .with_join(kurbo::Join::Miter)
@@ -234,7 +234,7 @@ fn rectangle_geometry(min: Point, max: Point, style: Style) -> Geometry {
             path.extend(rect.to_rounded_rect(f64::from(radius)).path_elements(0.1));
         }
     }
-    Geometry::fill(path, Fill::EvenOdd, style.color)
+    Geometry::new(path, Fill::EvenOdd, style.color)
 }
 
 #[derive(Clone, Copy)]
